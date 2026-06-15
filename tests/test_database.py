@@ -275,5 +275,39 @@ def test_database_weekly_vacuum(tmp_path):
     assert row2[0] > eight_days_ago
     conn.close()
 
+def test_project_context(tmp_path):
+    db_file = tmp_path / "test_context.db"
+    db = Database(str(db_file))
+    db.init_db()
+    
+    # Save a project
+    now_ts = int(time.time())
+    p = Project(id=1, name="My Project", path="~/my-proj", first_seen=now_ts, last_seen=now_ts, session_count=0, total_time=0)
+    db.save_data([p], [], [])
+    
+    # Verify project_context is initially None
+    projects = db.get_projects_by_ids([p.id])
+    assert len(projects) == 1
+    assert projects[0].project_context is None
+    
+    # Set project context
+    db.save_project_context("My Project", "This is my special project context description")
+    
+    # Verify it is stored and retrieved
+    projects = db.get_projects_by_ids([p.id])
+    assert len(projects) == 1
+    assert projects[0].project_context == "This is my special project context description"
+    
+    # Verify search_projects returns it
+    searched = db.search_projects("My Project")
+    assert len(searched) == 1
+    assert searched[0].project_context == "This is my special project context description"
+    
+    # Verify save_data preserves it
+    db.save_data([p], [], [])
+    projects = db.get_all_projects_with_stats()
+    assert len(projects) == 1
+    assert projects[0].project_context == "This is my special project context description"
+
 
 

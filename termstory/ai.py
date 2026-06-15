@@ -253,6 +253,27 @@ def generate_ai_summary(
     if provider == "disabled":
         return None
         
+    project_context = None
+    if project_name and project_name != "Other":
+        try:
+            from termstory.config import get_db_path
+            import sqlite3
+            db_path = get_db_path()
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT project_context FROM projects WHERE name = ? OR path = ?", (project_name, project_name))
+            row = cursor.fetchone()
+            if not row:
+                cursor.execute("SELECT project_context FROM projects WHERE name LIKE ? OR path LIKE ? LIMIT 1", (f"%{project_name}%", f"%{project_name}%"))
+                row = cursor.fetchone()
+            if row:
+                project_context = row[0]
+            conn.close()
+        except Exception:
+            pass
+
+    project_context_str = f" ({project_context})" if project_context else ""
+
     # 2. Formulate the prompt
     MAX_COMMANDS_PER_PROMPT = 80
     if len(sanitized_cmds) > MAX_COMMANDS_PER_PROMPT:
@@ -286,7 +307,7 @@ def generate_ai_summary(
         "2. START WITH ACTION VERBS: Each bullet line must start directly with an active, past-tense engineering verb (e.g., 'wired up', 'refactored', 'debugged', 'spun up', 'implemented').\n"
         "3. Keep each line extremely concise, informative, and technical.\n\n"
         "Input Data to Summarize:\n"
-        f"Project: {project_name}\n"
+        f"Project: {project_name}{project_context_str}\n"
         "Commands Executed:\n"
         f"{commands_block}\n"
         f"{commits_block}\n\n"
@@ -442,6 +463,13 @@ def generate_daily_chronicle_prompt(
         if proj_name == "General / No Project":
             proj_name = "Other"
             
+        proj_context = None
+        for p in projects:
+            if p.id == s.project_id:
+                proj_context = p.project_context
+                break
+        proj_context_str = f" [Context: {proj_context}]" if proj_context else ""
+            
         # Classify time of day for context
         start_hour = dt_start.hour
         if 0 <= start_hour < 5:
@@ -483,7 +511,7 @@ def generate_daily_chronicle_prompt(
             
         chrono_lines.append(f"SESSION: [{start_str} - {end_str}] ({duration_str})")
         chrono_lines.append(f"TIME CONTEXT: {time_context}")
-        chrono_lines.append(f"PROJECT: {proj_name}")
+        chrono_lines.append(f"PROJECT: {proj_name}{proj_context_str}")
         chrono_lines.append(f"DETECTED ACTIVITY: {activity_str}")
         
         # Git commits

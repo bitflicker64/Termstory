@@ -1,0 +1,34 @@
+I will start by executing Step 1 to fetch, checkout main, pull the latest changes, and create the new branch `feat/batch-4-release-profiler`.
+I will list the workspace directory to get a sense of the files present.
+I will view the `pyproject.toml` file to see the current build configuration.
+I will list the contents of the `.github` directory to see if there are any existing workflows.
+I will list the `.github/workflows` directory to see what workflows already exist.
+I will view `.github/workflows/release.yml` to see what is already there and what changes, if any, are needed.
+I will update `.github/workflows/release.yml` to include the GitHub Release creation step, including permissions to write to repository contents.
+I will verify if the build setup works locally by running `python3 -m build` with the check option.
+I will run `python3 -m build` to verify that the build environment works and produces the dist packages.
+I will view `termstory/cli.py` to inspect the Typer app structure and understand where to add the new profile commands.
+I will view the rest of `cli.py` from line 801 to the end to get the full picture of the Typer app structure.
+I will view `termstory/database.py` to see the SQLite connection logic, how queries are executed, and how we can implement query profiling / timing instrumentation.
+I will perform a search for `sqlite3.connect` to verify all connections in the codebase use our connection factory and `SafeConnection`.
+I will view the end of `termstory/database.py` to find the last few methods and class definitions.
+I will modify `termstory/database.py` to import the `time` module and instrument SQL execution to measure query execution times, storing them in a `query_profile` table.
+I will view lines 34 to 65 of `termstory/database.py` to see the structure of table creation in `init_db`.
+I will view lines 65 to 110 of `termstory/database.py` to see `init_db`.
+I will add the creation of the `query_profile` table inside the `init_db` function of `termstory/database.py`.
+I will view the end of `termstory/database.py` to get the exact trailing lines for inserting our new methods.
+I will add `get_slowest_queries` and `get_profile_sessions` to the end of `termstory/database.py`.
+I will run a search for format functions in `termstory/formatter.py` to see the formatting conventions.
+I will view the beginning of `termstory/formatter.py` to check the imported modules, styling rules, and how output strings are constructed.
+I will view the end of `termstory/formatter.py` to find where to append the `format_profile_output` function.
+I will modify `termstory/formatter.py` to add the `format_profile_output` function.
+I will modify the imports in `termstory/cli.py` to include `format_profile_output`.
+I will view lines 1120 to 1130 of `termstory/cli.py` to see where `config_app` is added to the main app, so we can register our `profile_app` in the same area.
+I will add the `profile` commands and register `profile_app` in `termstory/cli.py`.
+I will list the `tests` directory to see what test files exist.
+I will run pytest to see if our CLI and Database profile changes pass any existing tests, and check the command structure.
+I will check `termstory/archive.py` to see the transaction logic there.
+I will view lines 1 to 75 of `termstory/database.py` to make sure we replace the correct lines for the new thread-local connection logging logic.
+I will view lines 76 to 85 of `termstory/database.py` to check the context for `get_connection`.
+I will update the timing instrumentation in `termstory/database.py` to log queries via a thread-local, autocommit connection to avoid any transaction collision or interference.
+I will run the tests again to verify if the transaction-safe logging resolves the failure in `test_cli_archive_command`.

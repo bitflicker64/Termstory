@@ -569,6 +569,34 @@ def test_cli_stats_command(tmp_path, monkeypatch):
     assert "Project Breakdown" in result.stdout
     assert "HugeGraph" in result.stdout
 
+def test_cli_project_context_command(tmp_path, monkeypatch):
+    db_file = tmp_path / "test_cli_context.db"
+    monkeypatch.setattr("termstory.cli.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.config.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.cli.get_history_files", lambda: [])
+    
+    db = Database(str(db_file))
+    db.init_db()
+    
+    p = Project(id=1, name="My Awesome CLI Project", path="~/my-cli-proj", first_seen=0, last_seen=0, session_count=0, total_time=0)
+    db.save_data([p], [], [])
+    
+    runner = CliRunner()
+    
+    # 1. Set context using CLI
+    result = runner.invoke(app, ["project", "context", "My Awesome CLI Project", "--set", "High-frequency debugging sandbox"])
+    assert result.exit_code == 0
+    assert "Successfully set project context" in result.stdout
+    
+    # Verify in DB
+    projects = db.get_projects_by_ids([p.id])
+    assert projects[0].project_context == "High-frequency debugging sandbox"
+
+    # 2. Try setting context on non-existent project
+    result = runner.invoke(app, ["project", "context", "NonExistentProject", "--set", "Some description"])
+    assert result.exit_code == 1
+    assert "Error: Could not find project matching" in result.stdout or "Error: Could not find project matching" in result.stderr
+
 
 
 

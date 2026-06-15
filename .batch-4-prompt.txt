@@ -1,0 +1,66 @@
+EXECUTE ONLY. NO subagents. NO thinking.
+
+You are at /Users/himanshuverma/personal/termstory.
+
+=== GREPTILE PROTOCOL (FOLLOW EXACTLY) ===
+Greptile EDITS its review comment IN-PLACE. The `gh pr view --json reviews` array shows STALE data. To get the real score:
+  LATEST_BODY=$(gh pr view <number> --repo bitflicker64/Termstory --json comments --jq '[.comments[] | select(.author.login == "greptile-apps")] | last | .body')
+  SCORE=$(echo "$LATEST_BODY" | grep -oE '[0-9]/5' | head -1 | cut -d/ -f1)
+  echo "Greptile score: $SCORE/5"
+  Score >= 4 → merge. Score < 4 → fix ALL issues → commit+push → @greptileai review → wait 120s → re-check → repeat (max 5 attempts)
+
+=== BATCH 4 TASKS ===
+
+STEP 1 — Branch off main:
+  git fetch && git checkout main && git pull && git checkout -b feat/batch-4-release-profiler
+
+STEP 2 — PyPI Release Workflow:
+  - Read pyproject.toml to understand current build config
+  - Create .github/workflows/release.yml:
+    - Trigger: push tags matching v*
+    - Jobs: build wheel + sdist, publish to PyPI (or TestPyPI), create GitHub Release
+    - Uses pypa/gh-action-pypi-publish
+  - Update pyproject.toml if build backend config is missing (ensure setuptools-scm or similar)
+  - Verify: python3 -m build --check 2>&1 (install build if missing)
+
+STEP 3 — `termstory profile` command:
+  - Read cli.py to understand Typer app structure
+  - Create a new profile command group with:
+    - `termstory profile queries` — Top 10 slowest DB queries (reads from sqlite3 stats or timing hooks)
+    - `termstory profile sessions` — Top 10 longest sessions + highest command-count sessions
+  - Read database.py — add timing instrumentation or query stats collection
+  - Read formatter.py — add format_profile_output function
+  - Run: python3 -m pytest tests/ -x -v -k "profile or cli" 2>&1
+  - Fix any failures
+
+STEP 4 — Greptile review refactor (from Batch 2 feedback):
+  - Read tests/test_exporter.py
+  - The Greptile review suggested using CliRunner(mix_stderr=False) constructor param instead of the custom_invoke monkeypatch wrapper
+  - Refactor accordingly: create CliRunner(mix_stderr=False) once and use it for all invoke() calls
+  - Run: python3 -m pytest tests/test_exporter.py -x -v 2>&1
+
+STEP 5 — Full test suite:
+  source venv/bin/activate && python3 -m pytest tests/ -v 2>&1
+  Fix any regressions introduced by your changes.
+
+STEP 6 — Commit and push:
+  git add -A && git commit -m "feat: PyPI release workflow + profile command + Greptile refactor" && git push origin feat/batch-4-release-profiler
+
+STEP 7 — Create PR:
+  gh pr create --base main --head feat/batch-4-release-profiler --title "Batch 4: PyPI release + profile command + Greptile refactor" --body "Implements:\n1. GitHub Actions release workflow (tag→PyPI)\n2. termstory profile command (DB query profiler)\n3. Greptile feedback refactor (CliRunner mix_stderr)" --fill
+
+STEP 8 — Greptile review loop:
+  Poll every 30s. Use COMMENT BODY method above.
+  Score >= 4 → gh pr merge --squash --delete-branch
+  Score < 4 → fix ALL issues → commit+push → @greptileai review → wait 120s → re-check → repeat max 5
+
+STEP 9 — Done:
+  git checkout main && git pull
+  Print PR URL, Greptile score, and summary.
+
+RULES:
+- NO subagents (they hang)
+- Work directly on files
+- Run tests after each task
+- User-facing code: catch exceptions, show friendly messages, no raw tracebacks
+- 3 attempts max per task, then skip and report

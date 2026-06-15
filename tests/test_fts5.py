@@ -14,6 +14,10 @@ def test_fts5_migration_and_search(tmp_path):
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='search_index';")
     row = cursor.fetchone()
     assert row is not None, "FTS5 search_index table should be created"
+
+    for table in ["commands_fts", "sessions_fts", "ai_summaries_fts"]:
+        cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}';")
+        assert cursor.fetchone() is not None, f"FTS5 table {table} should be created"
     
     # Check that FTS is indeed enabled
     assert db._is_fts_enabled(cursor) is True
@@ -79,6 +83,26 @@ def test_fts5_migration_and_search(tmp_path):
     assert len(results) == 1
     assert results[0]["session_id"] == 1
     assert len(results[0]["matching_commits"]) == 1
+
+    # Verify content in new tables
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT command, session_id FROM commands_fts;")
+    c_rows = cursor.fetchall()
+    assert len(c_rows) == 1
+    assert c_rows[0] == ("npm run dev --port 3000", "1")
+
+    cursor.execute("SELECT content, session_id FROM sessions_fts;")
+    s_rows = cursor.fetchall()
+    assert len(s_rows) == 1
+    assert "Antigravity Web" in s_rows[0][0]
+    assert "Configure dev server port" in s_rows[0][0]
+
+    cursor.execute("SELECT ai_summary, session_id FROM ai_summaries_fts;")
+    a_rows = cursor.fetchall()
+    assert len(a_rows) == 1
+    assert "Configured the local dev server" in a_rows[0][0]
+    conn.close()
 
     # Verify query syntax error safety and fallback to traditional
     results = db.search_sessions('dev')

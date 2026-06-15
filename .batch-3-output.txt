@@ -1,0 +1,85 @@
+I will check out a new branch off main `feat/batch-3-fts5-stress-context` as requested in STEP 1.
+I will read the contents of [database.py](file:///Users/himanshuverma/personal/termstory/termstory/database.py) to understand the current schema and search implementation.
+I will read the rest of [database.py](file:///Users/himanshuverma/personal/termstory/termstory/database.py) to find where search/FTS is currently defined or implemented.
+I will run the existing search and database tests to see the current status.
+I will search for search formatting functions in [formatter.py](file:///Users/himanshuverma/personal/termstory/termstory/formatter.py).
+I will read [formatter.py](file:///Users/himanshuverma/personal/termstory/termstory/formatter.py) around line 729 to see how search results are formatted.
+I will search for the search command in [cli.py](file:///Users/himanshuverma/personal/termstory/termstory/cli.py).
+I will read [cli.py](file:///Users/himanshuverma/personal/termstory/termstory/cli.py) around line 144 to see how the search command works.
+I will read the rest of the search function in [cli.py](file:///Users/himanshuverma/personal/termstory/termstory/cli.py).
+I will read the contents of [search.py](file:///Users/himanshuverma/personal/termstory/termstory/search.py) to see how search functionality is structured and how FTS5 is integrated.
+I will read the contents of [test_fts5.py](file:///Users/himanshuverma/personal/termstory/tests/test_fts5.py) to see how the virtual tables and matching behavior are currently validated.
+I will search for `search_index` in the codebase to see where it is referenced.
+I will run all tests on the main branch before we make changes, to establish a baseline.
+I am waiting for the test execution task to finish. Once completed, I will inspect the results.
+I will read [ask.py](file:///Users/himanshuverma/personal/termstory/termstory/ask.py) to see how search/context queries are performed.
+I will search for search database/logic calls in [tui.py](file:///Users/himanshuverma/personal/termstory/termstory/tui.py) to check which search function is used.
+I will read lines 1245 to 1285 of [database.py](file:///Users/himanshuverma/personal/termstory/termstory/database.py) to prepare the migration code replacement.
+I will read lines 470 to 526 of [database.py](file:///Users/himanshuverma/personal/termstory/termstory/database.py) to check how `save_data` manages the FTS indexes.
+I will read lines 1045 to 1080 of [database.py](file:///Users/himanshuverma/personal/termstory/termstory/database.py) to view the `save_commits` function.
+I will apply the multiple FTS5 migration, sync, and search query updates to [database.py](file:///Users/himanshuverma/personal/termstory/termstory/database.py).
+I will read lines 61 to 103 of [search.py](file:///Users/himanshuverma/personal/termstory/termstory/search.py) to inspect the FTS5 search query logic there.
+I will update the FTS5 search query logic in [search.py](file:///Users/himanshuverma/personal/termstory/termstory/search.py) to match the new virtual tables structure.
+I will run the database and search tests to verify the changes so far.
+I will read [test_fts5.py](file:///Users/himanshuverma/personal/termstory/tests/test_fts5.py) to add FTS5 assertions for the new virtual tables.
+I will modify [test_fts5.py](file:///Users/himanshuverma/personal/termstory/tests/test_fts5.py) to assert creation and content updates for the new FTS5 tables: `commands_fts`, `sessions_fts`, and `ai_summaries_fts`.
+I will view the end of [test_fts5.py](file:///Users/himanshuverma/personal/termstory/tests/test_fts5.py).
+I will append new assertions to [test_fts5.py](file:///Users/himanshuverma/personal/termstory/tests/test_fts5.py) to check the contents of `commands_fts`, `sessions_fts`, and `ai_summaries_fts`.
+I will run the FTS5 tests to check if the new virtual table migrations and verification pass.
+I will run the search and database tests again to ensure there are no regressions.
+I will read [test_database.py](file:///Users/himanshuverma/personal/termstory/tests/test_database.py) to see the existing database test patterns.
+I will create a new stress test file [test_stress.py](file:///Users/himanshuverma/personal/termstory/tests/test_stress.py) with the massive history simulator and concurrent worker threads.
+I will write [test_stress.py](file:///Users/himanshuverma/personal/termstory/tests/test_stress.py) without artifact metadata as it is a codebase test file.
+I will execute the stress test to verify it completes successfully and detects no race conditions or deadlocks.
+I will read [ai.py](file:///Users/himanshuverma/personal/termstory/termstory/ai.py) to see how the prompt builder and LLM requests are currently structured.
+I will search for the definition of the `Project` class.
+I will read the definition of `Project` in [models.py](file:///Users/himanshuverma/personal/termstory/termstory/models.py).
+I will update the [models.py](file:///Users/himanshuverma/personal/termstory/termstory/models.py) file to add `project_context` to the `Project` dataclass.
+I will read lines 100 to 125 of [database.py](file:///Users/himanshuverma/personal/termstory/termstory/database.py).
+I will read lines 290 to 345 of [database.py](file:///Users/himanshuverma/personal/termstory/termstory/database.py) to see how projects are fetched and saved inside `save_data`.
+I will read lines 608 to 647 of [database.py](file:///Users/himanshuverma/personal/termstory/termstory/database.py).
+I will read lines 648 to 688 of [database.py](file:///Users/himanshuverma/personal/termstory/termstory/database.py) to locate `get_projects_by_ids`.
+I will read lines 689 to 710 of [database.py](file:///Users/himanshuverma/personal/termstory/termstory/database.py).
+I will read lines 966 to 1044 of [database.py](file:///Users/himanshuverma/personal/termstory/termstory/database.py).
+I will read lines 1045 to 1100 of [database.py](file:///Users/himanshuverma/personal/termstory/termstory/database.py).
+I will modify [database.py](file:///Users/himanshuverma/personal/termstory/termstory/database.py) to add `project_context` column to projects, retrieve it in all project query methods, and add `save_project_context`.
+I will verify the project query inside `save_data` (lines 290 to 310) in [database.py](file:///Users/himanshuverma/personal/termstory/termstory/database.py).
+I will read lines 308 to 330 of [database.py](file:///Users/himanshuverma/personal/termstory/termstory/database.py).
+I will update the project fetching and dictionary mapping in `save_data` in [database.py](file:///Users/himanshuverma/personal/termstory/termstory/database.py) to preserve `project_context`.
+I will read lines 229 to 270 of [cli.py](file:///Users/himanshuverma/personal/termstory/termstory/cli.py) to check how project commands are currently organized.
+I will read the top of [cli.py](file:///Users/himanshuverma/personal/termstory/termstory/cli.py) to see how Typer app is initialized and imported.
+I will search for the Typer app initialization in [cli.py](file:///Users/himanshuverma/personal/termstory/termstory/cli.py).
+I will read lines 65 to 75 of [cli.py](file:///Users/himanshuverma/personal/termstory/termstory/cli.py).
+I will update [cli.py](file:///Users/himanshuverma/personal/termstory/termstory/cli.py) to redefine the `project` command as a Typer command group with a callback and the new `context` subcommand.
+I will read lines 280 to 305 of [ai.py](file:///Users/himanshuverma/personal/termstory/termstory/ai.py) to check the prompt builder details.
+I will read lines 230 to 260 of [ai.py](file:///Users/himanshuverma/personal/termstory/termstory/ai.py).
+I will update `generate_ai_summary` in [ai.py](file:///Users/himanshuverma/personal/termstory/termstory/ai.py) to retrieve and append the project context into the input project line of the AI summary prompt.
+I will read lines 430 to 455 of [ai.py](file:///Users/himanshuverma/personal/termstory/termstory/ai.py).
+I will read lines 456 to 508 of [ai.py](file:///Users/himanshuverma/personal/termstory/termstory/ai.py).
+I will update `generate_daily_chronicle_prompt` in [ai.py](file:///Users/himanshuverma/personal/termstory/termstory/ai.py) to append the project context (if available) to the project line of the session.
+I will search for the definition of `format_project_output` in [formatter.py](file:///Users/himanshuverma/personal/termstory/termstory/formatter.py).
+I will read [formatter.py](file:///Users/himanshuverma/personal/termstory/termstory/formatter.py) around line 379 to inspect the project details formatting.
+I will modify `format_project_output` in [formatter.py](file:///Users/himanshuverma/personal/termstory/termstory/formatter.py) to render the project context if it is set.
+I will view the end of [test_database.py](file:///Users/himanshuverma/personal/termstory/tests/test_database.py).
+I will add a unit test for the project context database storage, retrieval, and preservation to [test_database.py](file:///Users/himanshuverma/personal/termstory/tests/test_database.py).
+I will run the database test suite to check that our new unit test and database modifications pass correctly.
+I will search for project command tests in [test_cli_commands.py](file:///Users/himanshuverma/personal/termstory/tests/test_cli_commands.py).
+I will read lines 415 to 445 of [test_cli_commands.py](file:///Users/himanshuverma/personal/termstory/tests/test_cli_commands.py) to see the structure of project-related CLI command tests.
+I will view the end of [test_cli_commands.py](file:///Users/himanshuverma/personal/termstory/tests/test_cli_commands.py).
+I will append a test for the CLI `project context` subcommand to [test_cli_commands.py](file:///Users/himanshuverma/personal/termstory/tests/test_cli_commands.py).
+I will run the CLI commands test suite to ensure our refactored `project` command and the new `context` command work perfectly.
+I will run pytest with stdout enabled (`-s`) to see why the Typer command invocation failed.
+I will execute a quick inline Python snippet to capture the exact error output of the Typer command invocation.
+I will run the Python command correctly using the underlying click object from Typer.
+I will test invoking the command with the project name before the `context` subcommand.
+I will update [cli.py](file:///Users/himanshuverma/personal/termstory/termstory/cli.py) to use this clean parameter-based approach for `project` command and `context` subcommand support.
+I will check if the Typer command parses the `project context` arguments correctly.
+I will run the CLI commands tests now that the parsing has been corrected.
+I will run a python one-liner to verify how projects are saved in the database when there are no sessions.
+I will run a python command to execute the test logic directly and print the output and exception to see exactly what failed.
+I will modify [cli.py](file:///Users/himanshuverma/personal/termstory/termstory/cli.py) to avoid catching `typer.Exit` inside the generic `except Exception` block.
+I will run the CLI commands tests now that the exception-handling bug has been resolved.
+I will run all tests related to search, database, or CLI commands to verify they all pass.
+I will run the full test suite to check for any other failures.
+I am waiting for the full test suite task to finish.
+I will commit our changes and push t

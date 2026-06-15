@@ -60,23 +60,19 @@ def _search_fts5(
     
     sql = """
         WITH fts_matches AS (
-            SELECT type, ref_id, project_id, timestamp, rank
-            FROM search_index
-            WHERE search_index MATCH ?
+            SELECT CAST(session_id AS INTEGER) as s_id, rank FROM commands_fts WHERE commands_fts MATCH ?
+            UNION ALL
+            SELECT CAST(session_id AS INTEGER) as s_id, rank FROM sessions_fts WHERE sessions_fts MATCH ?
+            UNION ALL
+            SELECT CAST(session_id AS INTEGER) as s_id, rank FROM ai_summaries_fts WHERE ai_summaries_fts MATCH ?
         )
         SELECT s.id, s.start_time, s.end_time, s.duration_seconds, s.project_id, p.name, p.path, s.ai_summary
         FROM sessions s
         LEFT JOIN projects p ON s.project_id = p.id
-        LEFT JOIN fts_matches f ON (
-            (f.type = 'session_summary' AND CAST(f.ref_id AS INTEGER) = s.id)
-            OR (f.type = 'command' AND CAST(f.ref_id AS INTEGER) = s.id)
-            OR (f.type = 'commit' AND s.project_id = CAST(f.project_id AS INTEGER) 
-                AND CAST(f.timestamp AS INTEGER) >= s.start_time - 300 
-                AND CAST(f.timestamp AS INTEGER) <= s.end_time + 600)
-        )
+        LEFT JOIN fts_matches f ON s.id = f.s_id
         WHERE (f.rank IS NOT NULL OR p.name LIKE ?)
     """
-    params = [fts_query, query_val]
+    params = [fts_query, fts_query, fts_query, query_val]
     
     if project_filter:
         sql += " AND p.name LIKE ?"

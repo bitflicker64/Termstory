@@ -13,7 +13,7 @@ from termstory.session import create_sessions
 from termstory.project import detect_projects
 from termstory.database import Database
 from termstory.date_utils import get_current_time, get_today_range
-from termstory.formatter import format_search_results, format_today_output, format_project_output, format_insights_output, format_stats_output
+from termstory.formatter import format_search_results, format_today_output, format_project_output, format_insights_output, format_stats_output, format_profile_output
 import sqlite3
 
 from rich.console import Console
@@ -228,13 +228,31 @@ def show_today(
 
 @app.command("project")
 def show_project(
-    name: str = typer.Argument(..., help="Name or path of the project")
+    name: str = typer.Argument(..., help="Name or path of the project"),
+    extra_arg: Optional[str] = typer.Argument(None, help="Project name when setting context"),
+    set_desc: Optional[str] = typer.Option(None, "--set", help="Project-specific context/description to store")
 ):
-    """Show detailed history for a specific project"""
+    """Show detailed history for a specific project, or set project-specific context"""
     db_path = get_db_path()
     db = Database(db_path)
     safe_init_db(db)
     
+    if name == "context":
+        if not extra_arg:
+            Console(stderr=True).print("[bold red]Error: Missing project name argument when setting context.[/bold red]")
+            raise typer.Exit(code=1)
+        if not set_desc:
+            Console(stderr=True).print("[bold red]Error: Missing --set option when setting context.[/bold red]")
+            raise typer.Exit(code=1)
+            
+        try:
+            db.save_project_context(extra_arg, set_desc)
+            console.print(f"[bold green]Successfully set project context for '{extra_arg}'[/]")
+        except Exception as e:
+            Console(stderr=True).print(f"[bold red]Error: {e}[/]")
+            raise typer.Exit(code=1)
+        return
+            
     run_ingestion(db)
     
     projects = db.get_all_projects_with_stats()
@@ -1103,6 +1121,43 @@ def remind_cmd(
         
     console.print(table)
 
+profile_app = typer.Typer(help="Profile and analyze database queries and session performance")
+
+@profile_app.command("queries")
+def profile_queries(
+    limit: int = typer.Option(10, "--limit", "-l", help="Number of slowest queries to display")
+):
+    """List the top slowest database queries and their execution latency"""
+    db_path = get_db_path()
+    db = Database(db_path)
+    safe_init_db(db)
+    
+    run_ingestion(db)
+    
+    queries = db.get_slowest_queries(limit=limit)
+    output = format_profile_output("queries", queries)
+    
+    from rich.text import Text
+    console.print(Text.from_ansi(output))
+
+@profile_app.command("sessions")
+def profile_sessions(
+    limit: int = typer.Option(10, "--limit", "-l", help="Number of top sessions to display")
+):
+    """List the top longest sessions and sessions with highest command counts"""
+    db_path = get_db_path()
+    db = Database(db_path)
+    safe_init_db(db)
+    
+    run_ingestion(db)
+    
+    data = db.get_profile_sessions(limit=limit)
+    output = format_profile_output("sessions", data)
+    
+    from rich.text import Text
+    console.print(Text.from_ansi(output))
+
+app.add_typer(profile_app, name="profile")
 app.add_typer(config_app, name="config")
 
 

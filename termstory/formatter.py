@@ -388,9 +388,11 @@ def format_project_output(sessions: List[Session], project: Project) -> str:
 
     header_lines = [
         f"📁 Project: [bold cyan]{project.name}[/] [dim]({project.path})[/]",
-        f"Active: [bold]{unique_days}[/] {day_word} worked | Total: [bold green]{format_duration(total_time_seconds)}[/]",
-        ""
     ]
+    if getattr(project, "project_context", None):
+        header_lines.append(f"📝 Context: [italic]{project.project_context}[/]")
+    header_lines.append(f"Active: [bold]{unique_days}[/] {day_word} worked | Total: [bold green]{format_duration(total_time_seconds)}[/]")
+    header_lines.append("")
 
     # Group sessions by calendar day
     sessions_by_day = defaultdict(list)
@@ -1426,6 +1428,84 @@ def format_stats_output(db) -> str:
     output_lines.append(indented_table)
     
     return render_to_string(Text.from_markup("\n".join(output_lines).strip()))
+
+
+def format_profile_output(profile_type: str, data: Any) -> str:
+    """Format profile statistics into highly dense, aligned tables."""
+    from rich.table import Table
+    from rich.box import SIMPLE
+    import datetime
+
+    if profile_type == "queries":
+        table = Table(title="⏱️ Top 10 Slowest DB Queries", box=SIMPLE, border_style="cyan")
+        table.add_column("Timestamp", style="dim")
+        table.add_column("Latency (ms)", style="bold yellow", justify="right")
+        table.add_column("Query", style="green")
+
+        for q in data:
+            dt = datetime.datetime.fromtimestamp(q["timestamp"]).strftime("%Y-%m-%d %H:%M:%S")
+            # Collapse whitespace/newlines in sql for display
+            clean_sql = " ".join(q["sql"].split())
+            if len(clean_sql) > 120:
+                clean_sql = clean_sql[:117] + "..."
+            table.add_row(dt, f"{q['execution_time_ms']:.2f}", clean_sql)
+
+        if not data:
+            return "No query profile data recorded yet."
+        return render_to_string(table)
+
+    elif profile_type == "sessions":
+        longest = data.get("longest_sessions", [])
+        highest = data.get("highest_count_sessions", [])
+
+        if not longest and not highest:
+            return "No session profile data recorded yet."
+
+        table_longest = Table(title="⏳ Top 10 Longest Sessions", box=SIMPLE, border_style="cyan")
+        table_longest.add_column("ID", style="bold cyan")
+        table_longest.add_column("Project", style="magenta")
+        table_longest.add_column("Start Time", style="dim")
+        table_longest.add_column("Duration", style="bold green")
+        table_longest.add_column("Commands", style="yellow", justify="right")
+
+        for s in longest:
+            dt = datetime.datetime.fromtimestamp(s["start_time"]).strftime("%Y-%m-%d %H:%M")
+            dur_str = format_duration(s["duration_seconds"])
+            table_longest.add_row(
+                f"#{s['id']}",
+                s["project_name"],
+                dt,
+                dur_str,
+                str(s["command_count"])
+            )
+
+        table_highest = Table(title="💻 Top 10 Sessions by Command Count", box=SIMPLE, border_style="cyan")
+        table_highest.add_column("ID", style="bold cyan")
+        table_highest.add_column("Project", style="magenta")
+        table_highest.add_column("Start Time", style="dim")
+        table_highest.add_column("Duration", style="bold green")
+        table_highest.add_column("Commands", style="yellow", justify="right")
+
+        for s in highest:
+            dt = datetime.datetime.fromtimestamp(s["start_time"]).strftime("%Y-%m-%d %H:%M")
+            dur_str = format_duration(s["duration_seconds"])
+            table_highest.add_row(
+                f"#{s['id']}",
+                s["project_name"],
+                dt,
+                dur_str,
+                str(s["command_count"])
+            )
+
+        from rich.console import Group
+        group = Group(
+            table_longest,
+            "",
+            table_highest
+        )
+        return render_to_string(group)
+    return ""
+
 
 
 

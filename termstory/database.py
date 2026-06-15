@@ -1,18 +1,81 @@
 import sqlite3
+import time
+import threading
 from datetime import datetime
 from typing import List, Dict, Optional
 from termstory.models import Command, Session, Project
 
+# Thread-local storage for profile connections to avoid transaction interference
+_profile_conns = threading.local()
+
+def log_query_profile(db_path, sql, execution_time_ms):
+    if not db_path:
+        return
+    try:
+        sql_lower = sql.lower()
+        if "query_profile" in sql_lower or "pragma" in sql_lower:
+            return
+        if not hasattr(_profile_conns, "conn") or _profile_conns.db_path != db_path:
+            conn = sqlite3.connect(db_path, timeout=30.0)
+            conn.isolation_level = None  # autocommit mode
+            _profile_conns.conn = conn
+            _profile_conns.db_path = db_path
+        _profile_conns.conn.execute(
+            "INSERT INTO query_profile (sql, execution_time_ms) VALUES (?, ?)",
+            (sql, execution_time_ms)
+        )
+    except Exception:
+        pass
+
 def safe_execute(cursor_or_conn, sql, *args, **kwargs):
-    """A reusable helper to safely execute SQL queries."""
-    if isinstance(cursor_or_conn, sqlite3.Cursor):
-        return sqlite3.Cursor.execute(cursor_or_conn, sql, *args, **kwargs)
-    else:
-        return sqlite3.Connection.execute(cursor_or_conn, sql, *args, **kwargs)
+    """A reusable helper to safely execute SQL queries with timing hooks."""
+    sql_lower = sql.lower()
+    is_profile = "query_profile" in sql_lower or "pragma" in sql_lower
+    
+    if is_profile:
+        if isinstance(cursor_or_conn, sqlite3.Cursor):
+            return sqlite3.Cursor.execute(cursor_or_conn, sql, *args, **kwargs)
+        else:
+            return sqlite3.Connection.execute(cursor_or_conn, sql, *args, **kwargs)
+
+    start = time.perf_counter()
+    try:
+        if isinstance(cursor_or_conn, sqlite3.Cursor):
+            res = sqlite3.Cursor.execute(cursor_or_conn, sql, *args, **kwargs)
+        else:
+            res = sqlite3.Connection.execute(cursor_or_conn, sql, *args, **kwargs)
+        return res
+    finally:
+        dur = (time.perf_counter() - start) * 1000.0
+        try:
+            conn = cursor_or_conn if isinstance(cursor_or_conn, sqlite3.Connection) else cursor_or_conn.connection
+            db_path = getattr(conn, "db_path", None)
+            log_query_profile(db_path, sql, dur)
+        except Exception:
+            pass
 
 class SafeCursor(sqlite3.Cursor):
     def execute(self, sql, *args, **kwargs):
         return safe_execute(self, sql, *args, **kwargs)
+
+    def executemany(self, sql, *args, **kwargs):
+        sql_lower = sql.lower()
+        is_profile = "query_profile" in sql_lower or "pragma" in sql_lower
+        
+        if is_profile:
+            return super().executemany(sql, *args, **kwargs)
+            
+        start = time.perf_counter()
+        try:
+            res = super().executemany(sql, *args, **kwargs)
+            return res
+        finally:
+            dur = (time.perf_counter() - start) * 1000.0
+            try:
+                db_path = getattr(self.connection, "db_path", None)
+                log_query_profile(db_path, sql, dur)
+            except Exception:
+                pass
 
 class SafeConnection(sqlite3.Connection):
     def cursor(self, cursor_factory=SafeCursor):
@@ -21,6 +84,7 @@ class SafeConnection(sqlite3.Connection):
     def execute(self, sql, *args, **kwargs):
         return safe_execute(self, sql, *args, **kwargs)
 
+
 class Database:
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -28,6 +92,7 @@ class Database:
     def get_connection(self) -> sqlite3.Connection:
         """Create and return a database connection with foreign key support enabled"""
         conn = sqlite3.connect(self.db_path, timeout=30.0, factory=SafeConnection)
+        conn.db_path = self.db_path
         conn.execute("PRAGMA foreign_keys = ON;")
         return conn
         
@@ -38,6 +103,15 @@ class Database:
         
         # Enable WAL mode for better concurrency and speed
         cursor.execute("PRAGMA journal_mode = WAL;")
+        
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS query_profile (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sql TEXT NOT NULL,
+            execution_time_ms REAL NOT NULL,
+            timestamp INTEGER DEFAULT (strftime('%s', 'now'))
+        );
+        """)
         
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS projects (
@@ -99,6 +173,13 @@ class Database:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project_date ON sessions(project_id, start_time);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_commits_timestamp ON commits(timestamp DESC);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_commits_project_id ON commits(project_id);")
+        
+        # Add project_context column to projects if not exists
+        try:
+            cursor.execute("ALTER TABLE projects ADD COLUMN project_context TEXT;")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise
         
         # Add ai_summary column to sessions if not exists
         try:
@@ -296,8 +377,8 @@ class Database:
                         path_to_old_ids[p.path] = []
                     path_to_old_ids[p.path].append(p.id)
             
-            cursor.execute("SELECT id, name, path, first_seen, last_seen FROM projects")
-            db_projects = {row[2]: {"id": row[0], "name": row[1], "first_seen": row[3], "last_seen": row[4]} for row in cursor.fetchall()}
+            cursor.execute("SELECT id, name, path, first_seen, last_seen, project_context FROM projects")
+            db_projects = {row[2]: {"id": row[0], "name": row[1], "first_seen": row[3], "last_seen": row[4], "project_context": row[5]} for row in cursor.fetchall()}
             
             project_id_map = {} # old_python_id -> db_id
             
@@ -310,6 +391,7 @@ class Database:
                     db_p = db_projects[project.path]
                     db_id = db_p["id"]
                     project.id = db_id
+                    project.project_context = db_p["project_context"]
                     
                     # Update first_seen/last_seen ranges if they expanded
                     new_first = min(db_p["first_seen"], project.first_seen)
@@ -489,6 +571,14 @@ class Database:
                         FROM commands
                         WHERE session_id = ? AND session_id IS NOT NULL;
                     """, (session_id,))
+
+                    cursor.execute("DELETE FROM commands_fts WHERE session_id = ?", (str(session_id),))
+                    cursor.execute("""
+                        INSERT INTO commands_fts (command, session_id, project_id, timestamp)
+                        SELECT command, CAST(session_id AS TEXT), project_id, timestamp
+                        FROM commands
+                        WHERE session_id = ? AND session_id IS NOT NULL;
+                    """, (session_id,))
                 
                 # Sync session summaries for all sessions passed in
                 for session in sessions:
@@ -499,6 +589,35 @@ class Database:
                                 INSERT INTO search_index (content, type, ref_id, project_id, timestamp)
                                 VALUES (?, 'session_summary', ?, ?, ?)
                             """, (session.ai_summary, str(session.id), session.project_id, session.start_time))
+
+                        cursor.execute("DELETE FROM ai_summaries_fts WHERE session_id = ?", (str(session.id),))
+                        if session.ai_summary:
+                            cursor.execute("""
+                                INSERT INTO ai_summaries_fts (ai_summary, session_id, project_id, timestamp)
+                                VALUES (?, ?, ?, ?)
+                            """, (session.ai_summary, str(session.id), session.project_id, session.start_time))
+
+                        cursor.execute("DELETE FROM sessions_fts WHERE session_id = ?", (str(session.id),))
+                        cursor.execute("SELECT name, path FROM projects WHERE id = ?", (session.project_id,))
+                        proj_row = cursor.fetchone()
+                        proj_name = proj_row[0] if proj_row else ""
+                        proj_path = proj_row[1] if proj_row else ""
+                        tags = session.tags or ""
+                        
+                        commits_content = ""
+                        if session.project_id is not None:
+                            cursor.execute("""
+                                SELECT cleaned_message FROM commits 
+                                WHERE project_id = ? AND timestamp >= ? AND timestamp <= ?
+                            """, (session.project_id, session.start_time - 300, session.end_time + 600))
+                            commits_content = " ".join(r[0] for r in cursor.fetchall())
+                            
+                        session_content = f"{proj_name} {proj_path} {tags} {commits_content}".strip()
+                        if session_content:
+                            cursor.execute("""
+                                INSERT INTO sessions_fts (content, session_id, project_id, timestamp)
+                                VALUES (?, ?, ?, ?)
+                            """, (session_content, str(session.id), session.project_id, session.start_time))
                             
                 # Clean up any session summaries/commands for deleted sessions
                 cursor.execute("""
@@ -510,6 +629,18 @@ class Database:
                     DELETE FROM search_index 
                     WHERE type = 'command' 
                       AND ref_id NOT IN (SELECT CAST(id AS TEXT) FROM sessions);
+                """)
+                cursor.execute("""
+                    DELETE FROM commands_fts 
+                    WHERE session_id NOT IN (SELECT CAST(id AS TEXT) FROM sessions);
+                """)
+                cursor.execute("""
+                    DELETE FROM ai_summaries_fts 
+                    WHERE session_id NOT IN (SELECT CAST(id AS TEXT) FROM sessions);
+                """)
+                cursor.execute("""
+                    DELETE FROM sessions_fts 
+                    WHERE session_id NOT IN (SELECT CAST(id AS TEXT) FROM sessions);
                 """)
 
             cursor.execute("""
@@ -616,7 +747,7 @@ class Database:
             
             placeholders = ",".join("?" for _ in project_ids)
             cursor.execute(f"""
-                SELECT id, name, path, first_seen, last_seen
+                SELECT id, name, path, first_seen, last_seen, project_context
                 FROM projects
                 WHERE id IN ({placeholders})
             """, project_ids)
@@ -624,7 +755,7 @@ class Database:
             rows = cursor.fetchall()
             projects = []
             for row in rows:
-                p_id, name, path, first, last = row
+                p_id, name, path, first, last, proj_context = row
                 # Calculate counts dynamically based on all sessions
                 cursor.execute("""
                     SELECT COUNT(*), SUM(duration_seconds)
@@ -640,7 +771,8 @@ class Database:
                     first_seen=first,
                     last_seen=last,
                     session_count=s_count or 0,
-                    total_time=t_time or 0
+                    total_time=t_time or 0,
+                    project_context=proj_context
                 ))
         finally:
             conn.close()
@@ -896,6 +1028,13 @@ class Database:
                             INSERT INTO search_index (content, type, ref_id, project_id, timestamp)
                             VALUES (?, 'session_summary', ?, ?, ?)
                         """, (ai_summary, str(session_id), project_id, start_time))
+                    
+                    cursor.execute("DELETE FROM ai_summaries_fts WHERE session_id = ?", (str(session_id),))
+                    if ai_summary:
+                        cursor.execute("""
+                            INSERT INTO ai_summaries_fts (ai_summary, session_id, project_id, timestamp)
+                            VALUES (?, ?, ?, ?)
+                        """, (ai_summary, str(session_id), project_id, start_time))
             conn.commit()
         except Exception as e:
             conn.rollback()
@@ -972,7 +1111,8 @@ class Database:
             cursor.execute("""
                 SELECT p.id, p.name, p.path, p.first_seen, p.last_seen,
                        COUNT(s.id) AS session_count,
-                       SUM(s.duration_seconds) AS total_time
+                       SUM(s.duration_seconds) AS total_time,
+                       p.project_context
                 FROM projects p
                 LEFT JOIN sessions s ON p.id = s.project_id
                 GROUP BY p.id
@@ -981,7 +1121,7 @@ class Database:
             rows = cursor.fetchall()
             projects = []
             for row in rows:
-                p_id, name, path, first, last, s_count, t_time = row
+                p_id, name, path, first, last, s_count, t_time, proj_context = row
                 projects.append(Project(
                     id=p_id,
                     name=name,
@@ -989,7 +1129,8 @@ class Database:
                     first_seen=first,
                     last_seen=last,
                     session_count=s_count or 0,
-                    total_time=t_time or 0
+                    total_time=t_time or 0,
+                    project_context=proj_context
                 ))
         finally:
             conn.close()
@@ -1004,7 +1145,8 @@ class Database:
             cursor.execute("""
                 SELECT p.id, p.name, p.path, p.first_seen, p.last_seen,
                        COUNT(s.id) AS session_count,
-                       SUM(s.duration_seconds) AS total_time
+                       SUM(s.duration_seconds) AS total_time,
+                       p.project_context
                 FROM projects p
                 LEFT JOIN sessions s ON p.id = s.project_id
                 WHERE p.name LIKE ? OR p.path LIKE ?
@@ -1014,7 +1156,7 @@ class Database:
             rows = cursor.fetchall()
             projects = []
             for row in rows:
-                p_id, name, path, first, last, s_count, t_time = row
+                p_id, name, path, first, last, s_count, t_time, proj_context = row
                 projects.append(Project(
                     id=p_id,
                     name=name,
@@ -1022,7 +1164,8 @@ class Database:
                     first_seen=first,
                     last_seen=last,
                     session_count=s_count or 0,
-                    total_time=t_time or 0
+                    total_time=t_time or 0,
+                    project_context=proj_context
                 ))
             
             # Sort results: exact name matches first, then prefix matches, then substring matches, then path matches
@@ -1041,6 +1184,33 @@ class Database:
         finally:
             conn.close()
         return projects
+
+    def save_project_context(self, project_name_or_path: str, context: str) -> None:
+        """Update the project_context for a matching project"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE;")
+            # Find matching project by exact name or path
+            cursor.execute("SELECT id FROM projects WHERE name = ? OR path = ?", (project_name_or_path, project_name_or_path))
+            row = cursor.fetchone()
+            if not row:
+                # Fuzzy search
+                cursor.execute("SELECT id FROM projects WHERE name LIKE ? OR path LIKE ? LIMIT 1", (f"%{project_name_or_path}%", f"%{project_name_or_path}%"))
+                row = cursor.fetchone()
+                
+            if row:
+                cursor.execute("""
+                    UPDATE projects SET project_context = ? WHERE id = ?
+                """, (context, row[0]))
+                conn.commit()
+            else:
+                raise ValueError(f"Could not find project matching '{project_name_or_path}'")
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
 
     def save_commits(self, project_id: int, commits: List[Dict]) -> None:
         """Upsert commits for a project using INSERT OR IGNORE"""
@@ -1068,6 +1238,32 @@ class Database:
                         INSERT INTO search_index (content, type, ref_id, project_id, timestamp)
                         VALUES (?, 'commit', ?, ?, ?)
                     """, (c["cleaned_message"], c["hash"], project_id, c["timestamp"]))
+
+                    # Update sessions_fts containing this commit
+                    cursor.execute("""
+                        SELECT id, start_time, end_time, tags FROM sessions
+                        WHERE project_id = ? AND start_time - 300 <= ? AND end_time + 600 >= ?
+                    """, (project_id, c["timestamp"], c["timestamp"]))
+                    overlapping_sessions = cursor.fetchall()
+                    for s_id, start_time, end_time, tags in overlapping_sessions:
+                        cursor.execute("DELETE FROM sessions_fts WHERE session_id = ?", (str(s_id),))
+                        cursor.execute("SELECT name, path FROM projects WHERE id = ?", (project_id,))
+                        proj_row = cursor.fetchone()
+                        proj_name = proj_row[0] if proj_row else ""
+                        proj_path = proj_row[1] if proj_row else ""
+                        
+                        cursor.execute("""
+                            SELECT cleaned_message FROM commits 
+                            WHERE project_id = ? AND timestamp >= ? AND timestamp <= ?
+                        """, (project_id, start_time - 300, end_time + 600))
+                        commits_content = " ".join(r[0] for r in cursor.fetchall())
+                        
+                        session_content = f"{proj_name} {proj_path} {tags or ''} {commits_content}".strip()
+                        if session_content:
+                            cursor.execute("""
+                                INSERT INTO sessions_fts (content, session_id, project_id, timestamp)
+                                VALUES (?, ?, ?, ?)
+                            """, (session_content, str(s_id), project_id, start_time))
             
             conn.commit()
         except Exception as e:
@@ -1259,6 +1455,33 @@ class Database:
         );
         """)
 
+        cursor.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS commands_fts USING fts5(
+            command,
+            session_id UNINDEXED,
+            project_id UNINDEXED,
+            timestamp UNINDEXED
+        );
+        """)
+
+        cursor.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
+            content,
+            session_id UNINDEXED,
+            project_id UNINDEXED,
+            timestamp UNINDEXED
+        );
+        """)
+
+        cursor.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS ai_summaries_fts USING fts5(
+            ai_summary,
+            session_id UNINDEXED,
+            project_id UNINDEXED,
+            timestamp UNINDEXED
+        );
+        """)
+
         cursor.execute("SELECT COUNT(*) FROM search_index LIMIT 1;")
         count = cursor.fetchone()[0]
         if count == 0:
@@ -1282,6 +1505,50 @@ class Database:
                 WHERE ai_summary IS NOT NULL;
             """)
 
+        # Populate commands_fts if empty
+        cursor.execute("SELECT COUNT(*) FROM commands_fts LIMIT 1;")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("""
+                INSERT INTO commands_fts (command, session_id, project_id, timestamp)
+                SELECT command, CAST(session_id AS TEXT), project_id, timestamp
+                FROM commands
+                WHERE session_id IS NOT NULL;
+            """)
+
+        # Populate ai_summaries_fts if empty
+        cursor.execute("SELECT COUNT(*) FROM ai_summaries_fts LIMIT 1;")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("""
+                INSERT INTO ai_summaries_fts (ai_summary, session_id, project_id, timestamp)
+                SELECT ai_summary, CAST(id AS TEXT), project_id, start_time
+                FROM sessions
+                WHERE ai_summary IS NOT NULL;
+            """)
+
+        # Populate sessions_fts if empty
+        cursor.execute("SELECT COUNT(*) FROM sessions_fts LIMIT 1;")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("""
+                SELECT s.id, s.project_id, s.start_time, s.end_time, s.tags, p.name, p.path
+                FROM sessions s
+                LEFT JOIN projects p ON s.project_id = p.id
+            """)
+            sessions_data = cursor.fetchall()
+            for s_id, project_id, start_time, end_time, tags, proj_name, proj_path in sessions_data:
+                commits_content = ""
+                if project_id is not None:
+                    cursor.execute("""
+                        SELECT cleaned_message FROM commits
+                        WHERE project_id = ? AND timestamp >= ? AND timestamp <= ?
+                    """, (project_id, start_time - 300, end_time + 600))
+                    commits_content = " ".join(r[0] for r in cursor.fetchall())
+                session_content = f"{proj_name or ''} {proj_path or ''} {tags or ''} {commits_content}".strip()
+                if session_content:
+                    cursor.execute("""
+                        INSERT INTO sessions_fts (content, session_id, project_id, timestamp)
+                        VALUES (?, ?, ?, ?)
+                    """, (session_content, str(s_id), project_id, start_time))
+
     def search_fts5(self, query: str, project_filter: Optional[str] = None, since_ts: Optional[int] = None) -> List[Dict]:
         """Ranked full-text search across sessions, commands, and commits using FTS5 virtual table"""
         conn = self.get_connection()
@@ -1303,24 +1570,20 @@ class Database:
             
             sql = """
                 WITH fts_matches AS (
-                    SELECT type, ref_id, project_id, timestamp, rank
-                    FROM search_index
-                    WHERE search_index MATCH ?
+                    SELECT CAST(session_id AS INTEGER) as s_id, rank FROM commands_fts WHERE commands_fts MATCH ?
+                    UNION ALL
+                    SELECT CAST(session_id AS INTEGER) as s_id, rank FROM sessions_fts WHERE sessions_fts MATCH ?
+                    UNION ALL
+                    SELECT CAST(session_id AS INTEGER) as s_id, rank FROM ai_summaries_fts WHERE ai_summaries_fts MATCH ?
                 )
                 SELECT s.id, s.start_time, s.end_time, s.duration_seconds, s.project_id, p.name, p.path, s.ai_summary,
                        MIN(f.rank) as min_rank
                 FROM sessions s
                 LEFT JOIN projects p ON s.project_id = p.id
-                LEFT JOIN fts_matches f ON (
-                    (f.type = 'session_summary' AND CAST(f.ref_id AS INTEGER) = s.id)
-                    OR (f.type = 'command' AND CAST(f.ref_id AS INTEGER) = s.id)
-                    OR (f.type = 'commit' AND s.project_id = CAST(f.project_id AS INTEGER) 
-                        AND CAST(f.timestamp AS INTEGER) >= s.start_time - 300 
-                        AND CAST(f.timestamp AS INTEGER) <= s.end_time + 600)
-                )
+                LEFT JOIN fts_matches f ON s.id = f.s_id
                 WHERE (f.rank IS NOT NULL OR p.name LIKE ?)
             """
-            params = [fts_query, query_val]
+            params = [fts_query, fts_query, fts_query, query_val]
             
             if project_filter:
                 sql += " AND p.name LIKE ?"
@@ -1389,3 +1652,96 @@ class Database:
         finally:
             conn.close()
         return results
+
+    def get_slowest_queries(self, limit: int = 10) -> List[Dict]:
+        """Fetch the top slowest SQL queries from query_profile table"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT sql, execution_time_ms, timestamp
+                FROM query_profile
+                ORDER BY execution_time_ms DESC
+                LIMIT ?
+            """, (limit,))
+            rows = cursor.fetchall()
+            return [
+                {
+                    "sql": row[0],
+                    "execution_time_ms": row[1],
+                    "timestamp": row[2]
+                }
+                for row in rows
+            ]
+        except Exception:
+            return []
+        finally:
+            conn.close()
+
+    def get_profile_sessions(self, limit: int = 10) -> Dict:
+        """Fetch top sessions by duration and highest command count"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            # 1. Top longest sessions
+            cursor.execute("""
+                SELECT s.id, s.start_time, s.end_time, s.duration_seconds, s.project_id, p.name, p.path,
+                       (SELECT COUNT(*) FROM commands WHERE session_id = s.id) as cmd_count
+                FROM sessions s
+                LEFT JOIN projects p ON s.project_id = p.id
+                ORDER BY s.duration_seconds DESC
+                LIMIT ?
+            """, (limit,))
+            longest_rows = cursor.fetchall()
+            
+            longest_sessions = [
+                {
+                    "id": row[0],
+                    "start_time": row[1],
+                    "end_time": row[2],
+                    "duration_seconds": row[3],
+                    "project_id": row[4],
+                    "project_name": row[5] or "Other",
+                    "project_path": row[6] or "",
+                    "command_count": row[7]
+                }
+                for row in longest_rows
+            ]
+            
+            # 2. Top command count sessions
+            cursor.execute("""
+                SELECT s.id, s.start_time, s.end_time, s.duration_seconds, s.project_id, p.name, p.path,
+                       (SELECT COUNT(*) FROM commands WHERE session_id = s.id) as cmd_count
+                FROM sessions s
+                LEFT JOIN projects p ON s.project_id = p.id
+                ORDER BY cmd_count DESC, s.duration_seconds DESC
+                LIMIT ?
+            """, (limit,))
+            count_rows = cursor.fetchall()
+            
+            highest_count_sessions = [
+                {
+                    "id": row[0],
+                    "start_time": row[1],
+                    "end_time": row[2],
+                    "duration_seconds": row[3],
+                    "project_id": row[4],
+                    "project_name": row[5] or "Other",
+                    "project_path": row[6] or "",
+                    "command_count": row[7]
+                }
+                for row in count_rows
+            ]
+            
+            return {
+                "longest_sessions": longest_sessions,
+                "highest_count_sessions": highest_count_sessions
+            }
+        except Exception:
+            return {
+                "longest_sessions": [],
+                "highest_count_sessions": []
+            }
+        finally:
+            conn.close()
+
