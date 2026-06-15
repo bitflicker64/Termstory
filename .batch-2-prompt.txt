@@ -1,0 +1,31 @@
+EXECUTE ONLY. NO thinking aloud.
+
+STEP 1: git checkout main && git pull && git checkout -b feat/batch-2-fix-tests-release
+
+TASK 1: Fix tests/test_exporter.py
+- Add mix_stderr=False to all runner.invoke() calls in test_cli_export_command
+- Then run: source venv/bin/activate && python -m pytest tests/test_exporter.py -v -x
+- If tests pass, continue. If not, diagnose and fix.
+
+TASK 2: Bump version
+- Read termstory/__init__.py, find version string, bump to 0.5.0
+
+TASK 3: Commit and push
+- git add -A && git commit -m "fix: CliRunner mix_stderr compat + bump v0.5.0"
+- git push origin feat/batch-2-fix-tests-release
+
+TASK 4: Create PR
+- gh pr create --base main --head feat/batch-2-fix-tests-release --fill
+
+TASK 5: Wait for Greptile review
+- Greptile edits its comment in-place (not new reviews)
+- Check gh pr view --json comments for Greptile score
+- If score >= 4: gh pr merge --squash --delete-branch
+- If score < 4: read feedback, fix, push, re-trigger with @greptileai review, wait again
+
+TASK 6: Release
+- After merge: git checkout main && git pull && git tag v0.5.0 && git push --tags
+
+Final: Print the PR URL and release status.
+
+NO subagents. NO thinking. Just execute tasks sequentially.

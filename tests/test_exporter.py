@@ -3,8 +3,15 @@ import json
 import csv
 import sys
 from datetime import datetime, timedelta
-from typer.testing import CliRunner
+from typer.testing import CliRunner as TyperCliRunner
 import pytest
+
+class CliRunner(TyperCliRunner):
+    def invoke(self, *args, **kwargs):
+        mix_stderr = kwargs.pop("mix_stderr", None)
+        if mix_stderr is not None:
+            self.mix_stderr = mix_stderr
+        return super().invoke(*args, **kwargs)
 
 from termstory.cli import app
 from termstory.database import Database
@@ -185,7 +192,7 @@ def test_cli_export_command(tmp_path, monkeypatch):
     runner = CliRunner()
     
     # Test JSON stdout export
-    result = runner.invoke(app, ["export", "--format", "json"])
+    result = runner.invoke(app, ["export", "--format", "json"], mix_stderr=False)
     assert result.exit_code == 0
     data = json.loads(result.stdout)
     assert len(data) == 1
@@ -193,7 +200,7 @@ def test_cli_export_command(tmp_path, monkeypatch):
     assert data[0]["commands"][0]["command"] == "echo 'CLI test'"
     
     # Test CSV stdout export
-    result_csv = runner.invoke(app, ["export", "-f", "csv"])
+    result_csv = runner.invoke(app, ["export", "-f", "csv"], mix_stderr=False)
     assert result_csv.exit_code == 0
     reader = csv.DictReader(result_csv.stdout.splitlines())
     rows = list(reader)
@@ -203,7 +210,7 @@ def test_cli_export_command(tmp_path, monkeypatch):
     
     # Test file export
     json_path = tmp_path / "cli_out.json"
-    result_file = runner.invoke(app, ["export", "--format", "json", "-o", str(json_path)])
+    result_file = runner.invoke(app, ["export", "--format", "json", "-o", str(json_path)], mix_stderr=False)
     assert result_file.exit_code == 0
     assert os.path.exists(json_path)
     with open(json_path, "r") as f:
@@ -211,11 +218,11 @@ def test_cli_export_command(tmp_path, monkeypatch):
     assert data_file[0]["project_name"] == "CLI Project"
     
     # Test filter matching nothing
-    result_empty = runner.invoke(app, ["export", "--project", "non-existent"])
+    result_empty = runner.invoke(app, ["export", "--project", "non-existent"], mix_stderr=False)
     assert result_empty.exit_code == 0
     assert "No sessions found matching filters" in result_empty.stderr
     
     # Test invalid format
-    result_invalid = runner.invoke(app, ["export", "--format", "xml"])
+    result_invalid = runner.invoke(app, ["export", "--format", "xml"], mix_stderr=False)
     assert result_invalid.exit_code == 1
     assert "Error: Unsupported format" in result_invalid.stderr
