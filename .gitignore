@@ -46,3 +46,4 @@ venv.bak/
 .pytest_cache/
 .coverage
 htmlcov/
+.batch-*

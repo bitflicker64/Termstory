@@ -89,6 +89,7 @@ class Project:
     last_seen: int              # Unix timestamp
     session_count: int          # Number of sessions in this project
     total_time: int             # Total seconds worked on project
+    project_context: Optional[str] = None  # New field for AI context per project
 
 @dataclass
 class DaysSummary:

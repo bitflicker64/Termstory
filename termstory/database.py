@@ -2,7 +2,7 @@ import sqlite3
 from datetime import datetime
 from typing import List, Dict, Optional
 from termstory.models import Command, Session, Project
-
+import time
 def safe_execute(cursor_or_conn, sql, *args, **kwargs):
     """A reusable helper to safely execute SQL queries."""
     if isinstance(cursor_or_conn, sqlite3.Cursor):
@@ -33,125 +33,122 @@ class Database:
         
     def init_db(self) -> None:
         """Initialize the database schema and indexes if they do not exist"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        # Enable WAL mode for better concurrency and speed
-        cursor.execute("PRAGMA journal_mode = WAL;")
-        
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS projects (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            path TEXT UNIQUE,
-            first_seen INTEGER,
-            last_seen INTEGER,
-            created_at INTEGER DEFAULT (strftime('%s', 'now'))
-        );
-        """)
-        
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            start_time INTEGER NOT NULL,
-            end_time INTEGER NOT NULL,
-            duration_seconds INTEGER,
-            project_id INTEGER,
-            created_at INTEGER DEFAULT (strftime('%s', 'now')),
-            tags TEXT,
-            FOREIGN KEY(project_id) REFERENCES projects(id)
-        );
-        """)
-        
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS commands (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp INTEGER NOT NULL,
-            command TEXT NOT NULL,
-            exit_code INTEGER,
-            session_id INTEGER,
-            project_id INTEGER,
-            created_at INTEGER DEFAULT (strftime('%s', 'now')),
-            FOREIGN KEY(session_id) REFERENCES sessions(id),
-            FOREIGN KEY(project_id) REFERENCES projects(id)
-        );
-        """)
-        
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS commits (
-            hash TEXT PRIMARY KEY,
-            timestamp INTEGER NOT NULL,
-            message TEXT NOT NULL,
-            cleaned_message TEXT NOT NULL,
-            project_id INTEGER,
-            created_at INTEGER DEFAULT (strftime('%s', 'now')),
-            FOREIGN KEY(project_id) REFERENCES projects(id)
-        );
-        """)
-        
-        # Indexes for fast querying
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_commands_timestamp ON commands(timestamp);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_commands_session_id ON commands(session_id);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_start_time ON sessions(start_time);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_date_range ON sessions(start_time DESC);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_commands_date_range ON commands(timestamp DESC);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project_date ON sessions(project_id, start_time);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_commits_timestamp ON commits(timestamp DESC);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_commits_project_id ON commits(project_id);")
-        
-        # Add ai_summary column to sessions if not exists
-        try:
-            cursor.execute("ALTER TABLE sessions ADD COLUMN ai_summary TEXT;")
-        except sqlite3.OperationalError as e:
-            if "duplicate column name" not in str(e).lower():
-                raise
-
-        # v0.2.9: Add recovery_source column to commands so the Timestamp Detective's
-        # Chain of Custody attribution survives the DB round-trip and appears in the TUI.
-        # NULL for all commands with real EXTENDED_HISTORY timestamps.
-        try:
-            cursor.execute("ALTER TABLE commands ADD COLUMN recovery_source TEXT;")
-        except sqlite3.OperationalError as e:
-            if "duplicate column name" not in str(e).lower():
-                raise
-                
-        # v0.3.0: Add is_legacy column to commands so we can skip them in stats.
-        try:
-            cursor.execute("ALTER TABLE commands ADD COLUMN is_legacy BOOLEAN DEFAULT 0;")
-        except sqlite3.OperationalError as e:
-            if "duplicate column name" not in str(e).lower():
-                raise
-            
-        # Add tags column to sessions if not exists
-        try:
-            cursor.execute("ALTER TABLE sessions ADD COLUMN tags TEXT;")
-        except sqlite3.OperationalError as e:
-            if "duplicate column name" not in str(e).lower():
-                raise
-            
-        # Create macro_summaries table if not exists
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS macro_summaries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timeframe_id TEXT NOT NULL UNIQUE,
-            type TEXT NOT NULL,
-            summary TEXT NOT NULL,
-            created_at INTEGER DEFAULT (strftime('%s', 'now'))
-        );
-        """)
-        
-        # One-time migration: change projects unique constraint
-        self._migrate_projects_unique_path(cursor)
-        
-        # One-time migration: clean up duplicate sessions/commands and create unique indexes
-        self._migrate_deduplicate_sessions(cursor)
-
-        # One-time migration: initialize and populate FTS5 search index if supported
-        self._migrate_fts5(cursor)
-            
-        conn.commit()
-        
+        # Retry loop for handling potential database locked errors during concurrent initializations
+        for attempt in range(5):
+            try:
+                conn = self.get_connection()
+                cursor = conn.cursor()
+                # Create tables
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS projects (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        path TEXT UNIQUE,
+                        first_seen INTEGER,
+                        last_seen INTEGER,
+                        project_context TEXT,
+                        created_at INTEGER DEFAULT (strftime('%s', 'now'))
+                    );
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS sessions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        start_time INTEGER NOT NULL,
+                        end_time INTEGER,
+                        duration_seconds INTEGER,
+                        project_id INTEGER,
+                        created_at INTEGER DEFAULT (strftime('%s', 'now')),
+                        FOREIGN KEY(project_id) REFERENCES projects(id)
+                    );
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS commands (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        command TEXT NOT NULL,
+                        timestamp INTEGER NOT NULL,
+                        exit_code INTEGER,
+                        session_id INTEGER,
+                        project_id INTEGER,
+                        created_at INTEGER DEFAULT (strftime('%s', 'now')),
+                        FOREIGN KEY(session_id) REFERENCES sessions(id),
+                        FOREIGN KEY(project_id) REFERENCES projects(id)
+                    );
+                """)
+                # Migration: add timestamp column if missing for older DBs
+                try:
+                    cursor.execute("ALTER TABLE commands ADD COLUMN timestamp INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e).lower():
+                        raise
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS commits (
+                        hash TEXT PRIMARY KEY,
+                        timestamp INTEGER NOT NULL,
+                        message TEXT NOT NULL,
+                        cleaned_message TEXT NOT NULL,
+                        project_id INTEGER,
+                        created_at INTEGER DEFAULT (strftime('%s', 'now')),
+                        FOREIGN KEY(project_id) REFERENCES projects(id)
+                    );
+                """)
+                # Indexes for fast querying
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_commands_timestamp ON commands(timestamp);")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_commands_session_id ON commands(session_id);")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_start_time ON sessions(start_time);")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id);")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_date_range ON sessions(start_time DESC);")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_commands_date_range ON commands(timestamp DESC);")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project_date ON sessions(project_id, start_time);")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_commits_timestamp ON commits(timestamp DESC);")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_commits_project_id ON commits(project_id);")
+                # Add ai_summary column to sessions if not exists
+                try:
+                    cursor.execute("ALTER TABLE sessions ADD COLUMN ai_summary TEXT;")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e).lower():
+                        raise
+                # Add recovery_source column to commands
+                try:
+                    cursor.execute("ALTER TABLE commands ADD COLUMN recovery_source TEXT;")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e).lower():
+                        raise
+                # Add is_legacy column to commands
+                try:
+                    cursor.execute("ALTER TABLE commands ADD COLUMN is_legacy BOOLEAN DEFAULT 0;")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e).lower():
+                        raise
+                # Add tags column to sessions
+                try:
+                    cursor.execute("ALTER TABLE sessions ADD COLUMN tags TEXT;")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e).lower():
+                        raise
+                # Create macro_summaries table if not exists
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS macro_summaries (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timeframe_id TEXT NOT NULL UNIQUE,
+                        type TEXT NOT NULL,
+                        summary TEXT NOT NULL,
+                        created_at INTEGER DEFAULT (strftime('%s', 'now'))
+                    );
+                """)
+                # One-time migrations
+                self._migrate_projects_unique_path(cursor)
+                self._migrate_deduplicate_sessions(cursor)
+                self._migrate_fts5(cursor)
+                conn.commit()
+                break
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e).lower():
+                    time.sleep(0.1)
+                    continue
+                else:
+                    raise
+        else:
+            raise RuntimeError("Failed to initialize database after multiple attempts")
         # Weekly VACUUM check
         try:
             cursor.execute("SELECT created_at FROM macro_summaries WHERE timeframe_id = 'last_vacuum'")
@@ -166,7 +163,6 @@ class Database:
                 conn.commit()
         except Exception:
             pass
-            
         conn.close()
 
     def _migrate_projects_unique_path(self, cursor) -> None:
@@ -199,6 +195,7 @@ class Database:
                 path TEXT UNIQUE,
                 first_seen INTEGER,
                 last_seen INTEGER,
+                project_context TEXT,
                 created_at INTEGER DEFAULT (strftime('%s', 'now'))
             );
             """)
@@ -216,22 +213,22 @@ class Database:
         and create unique constraints to prevent future duplicates."""
         # Find start_times that have duplicates
         cursor.execute("""
-            SELECT start_time, COUNT(*) as cnt
+            SELECT start_time, project_id, COUNT(*) as cnt
             FROM sessions
-            GROUP BY start_time
+            GROUP BY start_time, project_id
             HAVING cnt > 1
         """)
         dup_start_times = cursor.fetchall()
         
-        for (start_time, _count) in dup_start_times:
-            # Get all sessions with this start_time
+        for (start_time, project_id, _count) in dup_start_times:
+            # Get all sessions with this start_time and project_id
             cursor.execute("""
                 SELECT s.id, s.ai_summary,
                        (SELECT COUNT(*) FROM commands WHERE session_id = s.id) as cmd_count
                 FROM sessions s
-                WHERE s.start_time = ?
+                WHERE s.start_time = ? AND (s.project_id = ? OR (s.project_id IS NULL AND ? IS NULL))
                 ORDER BY cmd_count DESC, s.ai_summary IS NOT NULL DESC, s.id ASC
-            """, (start_time,))
+            """, (start_time, project_id, project_id))
             rows = cursor.fetchall()
             
             if len(rows) <= 1:
@@ -267,9 +264,8 @@ class Database:
                     cursor.execute("DELETE FROM commands WHERE id = ?", (row[0],))
         
         # Create UNIQUE indexes
-        import sqlite3
         try:
-            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_start_time_unique ON sessions(start_time);")
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_start_time_unique ON sessions(start_time, project_id);")
         except sqlite3.IntegrityError:
             pass  # Edge case: if migration didn't fully clean up, index creation will be retried next run
             
@@ -277,8 +273,6 @@ class Database:
             cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_commands_ts_cmd_unique ON commands(timestamp, command);")
         except sqlite3.IntegrityError:
             pass
-
-
 
     def save_data(self, projects: List[Project], sessions: List[Session], commands: List[Command]) -> None:
         """Optimized bulk insertion and updating of projects, sessions, and commands in a single transaction"""
@@ -318,13 +312,13 @@ class Database:
                         projects_to_update.append((project.name, new_first, new_last, db_id))
                 else:
                     if project.path not in inserted_paths:
-                        new_projects_to_insert.append((project.name, project.path, project.first_seen, project.last_seen))
+                        new_projects_to_insert.append((project.name, project.path, project.first_seen, project.last_seen, project.project_context))
                         inserted_paths.add(project.path)
                     
             if new_projects_to_insert:
                 cursor.executemany("""
-                    INSERT INTO projects (name, path, first_seen, last_seen)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO projects (name, path, first_seen, last_seen, project_context)
+                    VALUES (?, ?, ?, ?, ?)
                 """, new_projects_to_insert)
                 
             if projects_to_update:
@@ -355,28 +349,22 @@ class Database:
                     cmd.project_id = project_id_map[cmd.project_id]
                     
             # --- 2. Save Sessions ---
-            # Dedup key is start_time ONLY (stable across runs regardless of project_id changes)
-            cursor.execute("SELECT id, start_time, end_time, duration_seconds, project_id, ai_summary, tags FROM sessions")
-            db_sessions = {}
-            for row in cursor.fetchall():
-                key = row[1]  # start_time only
-                # If there are duplicate legacy sessions, prefer the one with the latest end_time
-                if key not in db_sessions or row[2] > db_sessions[key]["end_time"]:
-                    db_sessions[key] = {"id": row[0], "end_time": row[2], "duration": row[3], "ai_summary": row[5], "tags": row[6]}
+            cursor.execute("SELECT id, start_time, project_id, ai_summary, tags FROM sessions")
+            db_sessions = {(row[1], row[2]): {"id": row[0], "ai_summary": row[3], "tags": row[4]} for row in cursor.fetchall()}
             
             session_id_map = {}
             
             for session in sessions:
                 temp_id = session.id
-                key = session.start_time  # start_time only
+                key = (session.start_time, session.project_id)
                 if key in db_sessions:
                     db_id = db_sessions[key]["id"]
                     existing_summary = db_sessions[key]["ai_summary"]
                     existing_tags = db_sessions[key]["tags"]
                     # Update end_time, duration, and project_id — but preserve existing ai_summary and tags
                     cursor.execute("""
-                        UPDATE sessions SET end_time = ?, duration_seconds = ?, project_id = ? WHERE id = ?
-                    """, (session.end_time, session.duration_seconds, session.project_id, db_id))
+                        UPDATE sessions SET end_time = ?, duration_seconds = ? WHERE id = ?
+                    """, (session.end_time, session.duration_seconds, db_id))
                     session.id = db_id
                     session.ai_summary = existing_summary  # preserve cached AI work
                     session.tags = existing_tags
@@ -388,8 +376,9 @@ class Database:
                     db_id = cursor.lastrowid
                     if db_id == 0:
                         # INSERT OR IGNORE hit a conflict — fetch the existing row
-                        cursor.execute("SELECT id FROM sessions WHERE start_time = ?", (session.start_time,))
-                        db_id = cursor.fetchone()[0]
+                        cursor.execute("SELECT id FROM sessions WHERE start_time = ? AND (project_id = ? OR (project_id IS NULL AND ? IS NULL))", (session.start_time, session.project_id, session.project_id))
+                        row = cursor.fetchone()
+                        db_id = row[0]
                     session.id = db_id
                     
                 if temp_id is not None:
@@ -616,7 +605,7 @@ class Database:
             
             placeholders = ",".join("?" for _ in project_ids)
             cursor.execute(f"""
-                SELECT id, name, path, first_seen, last_seen
+                SELECT id, name, path, first_seen, last_seen, project_context
                 FROM projects
                 WHERE id IN ({placeholders})
             """, project_ids)
@@ -624,7 +613,7 @@ class Database:
             rows = cursor.fetchall()
             projects = []
             for row in rows:
-                p_id, name, path, first, last = row
+                p_id, name, path, first, last, context = row
                 # Calculate counts dynamically based on all sessions
                 cursor.execute("""
                     SELECT COUNT(*), SUM(duration_seconds)
@@ -640,7 +629,8 @@ class Database:
                     first_seen=first,
                     last_seen=last,
                     session_count=s_count or 0,
-                    total_time=t_time or 0
+                    total_time=t_time or 0,
+                    project_context=context
                 ))
         finally:
             conn.close()
