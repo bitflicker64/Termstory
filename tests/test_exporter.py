@@ -218,4 +218,4 @@ def test_cli_export_command(tmp_path, monkeypatch):
     # Test invalid format
     result_invalid = runner.invoke(app, ["export", "--format", "xml"])
     assert result_invalid.exit_code == 1
-    assert "Error: Unsupported format" in result_invalid.stdout
+    assert "Error: Unsupported format" in result_invalid.stderr
