@@ -1,10 +1,11 @@
 import os
 
-# Supported tags for session categorization
-TAGS = ["deploy", "debug", "setup", "test", "docs"]
 import typer
 from typing import Optional, List
 from dateutil import parser as date_parser
+
+# Supported tags for session categorization
+TAGS = ["deploy", "debug", "setup", "test", "docs"]
 
 from termstory.config import get_history_files, get_db_path
 from termstory.parser import parse_all_histories

@@ -116,9 +116,9 @@ def generate_heatmap(sessions: List[Session], days_limit: int = 30) -> str:
         if cmd_count == 0:
             heatmap_blocks.append("[bright_black]░[/]")
         elif cmd_count < 5:
-            heatmap_blocks.append("[red]▄[/]")
+            heatmap_blocks.append("[bright_black]▄[/]")
         elif cmd_count < 20:
-            heatmap_blocks.append("[yellow]■[/]")
+            heatmap_blocks.append("[green]■[/]")
         else:
             heatmap_blocks.append("[bold green]█[/]")
             
