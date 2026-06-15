@@ -35,9 +35,12 @@ class Database:
         """Initialize the database schema and indexes if they do not exist"""
         # Retry loop for handling potential database locked errors during concurrent initializations
         for attempt in range(5):
+            conn = None
             try:
                 conn = self.get_connection()
                 cursor = conn.cursor()
+                # Ensure WAL mode for concurrent read/write
+                cursor.execute("PRAGMA journal_mode = WAL;")
                 # Create tables
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS projects (
@@ -143,9 +146,13 @@ class Database:
                 break
             except sqlite3.OperationalError as e:
                 if "database is locked" in str(e).lower():
+                    if conn:
+                        conn.close()
                     time.sleep(0.1)
                     continue
                 else:
+                    if conn:
+                        conn.close()
                     raise
         else:
             raise RuntimeError("Failed to initialize database after multiple attempts")
@@ -211,11 +218,11 @@ class Database:
     def _migrate_deduplicate_sessions(self, cursor) -> None:
         """One-time migration: remove duplicate sessions and commands that share the same keys,
         and create unique constraints to prevent future duplicates."""
-        # Find start_times that have duplicates
+        # Find (start_time, project_id) that have duplicates - use COALESCE for NULL project_id
         cursor.execute("""
             SELECT start_time, project_id, COUNT(*) as cnt
             FROM sessions
-            GROUP BY start_time, project_id
+            GROUP BY start_time, COALESCE(project_id, -1)
             HAVING cnt > 1
         """)
         dup_start_times = cursor.fetchall()
@@ -263,9 +270,9 @@ class Database:
                 for row in cmd_rows[1:]:
                     cursor.execute("DELETE FROM commands WHERE id = ?", (row[0],))
         
-        # Create UNIQUE indexes
+        # Create UNIQUE indexes - use COALESCE to handle NULL project_id (SQLite treats NULL as unequal in UNIQUE)
         try:
-            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_start_time_unique ON sessions(start_time, project_id);")
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_start_time_unique ON sessions(start_time, COALESCE(project_id, -1));")
         except sqlite3.IntegrityError:
             pass  # Edge case: if migration didn't fully clean up, index creation will be retried next run
             

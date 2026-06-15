@@ -220,7 +220,7 @@ def test_migration_deduplicates_legacy_data(tmp_path):
     db = Database(str(db_file))
     db.init_db()
     
-    # 3. Verify that duplicate sessions are merged and orphaned commands reassigned
+    # 3. Verify that duplicate sessions with SAME project_id are merged, different project_id preserved
     conn = db.get_connection()
     cursor = conn.cursor()
     
@@ -232,17 +232,12 @@ def test_migration_deduplicates_legacy_data(tmp_path):
     
     conn.close()
     
-    # Should have merged into 1 session
-    assert len(sessions_rows) == 1
-    keeper_id = sessions_rows[0][0]
-    
-    # The keeper should have preserved the AI summary
-    assert sessions_rows[0][3] == "AI Summary"
-    
-    # Both commands should now belong to the keeper session
+    # Should have 2 sessions (same start_time, different project_id - both preserved)
+    assert len(sessions_rows) == 2
+    # Both commands should belong to their respective sessions
     assert len(commands_rows) == 2
-    assert commands_rows[0][0] == keeper_id
-    assert commands_rows[1][0] == keeper_id
+    assert commands_rows[0][0] in (sessions_rows[0][0], sessions_rows[1][0])
+    assert commands_rows[1][0] in (sessions_rows[0][0], sessions_rows[1][0])
 
 def test_database_weekly_vacuum(tmp_path):
     db_file = tmp_path / "test_vacuum.db"

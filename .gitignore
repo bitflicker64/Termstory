@@ -32,6 +32,7 @@ MANIFEST
 *.db-shm
 *.db-wal
 *.bak
+test_stress.db
 
 # Environments
 .env

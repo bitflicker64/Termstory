@@ -1,4 +1,4 @@
-"""Concurrency stress test: 10k commands, 500 sessions, concurrent reader/writer"""
+"""Concurrency stress test: 2 sessions x 20 commands = 40 commands per worker (lightweight)"""
 import sqlite3
 import threading
 import time
@@ -10,7 +10,7 @@ from termstory.models import Project, Session, Command
 DB_PATH = "test_stress.db"
 
 def writer_worker(worker_id, num_sessions=2, commands_per_session=20):
-    """Write ~2000 commands per worker (25 sessions x 80 commands)"""
+    """Write ~40 commands per worker (2 sessions x 20 commands)"""
     db = Database(DB_PATH)
     db.init_db()
     
