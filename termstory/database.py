@@ -206,10 +206,8 @@ class Database:
                 created_at INTEGER DEFAULT (strftime('%s', 'now'))
             );
             """)
-            cursor.execute("""
-            INSERT INTO projects (id, name, path, first_seen, last_seen, created_at)
-            SELECT id, name, path, first_seen, last_seen, created_at FROM projects_old;
-            """)
+            cursor.execute("""INSERT INTO projects (id, name, path, first_seen, last_seen, project_context, created_at)
+            SELECT id, name, path, first_seen, last_seen, project_context, created_at FROM projects_old;""")
             cursor.execute("DROP TABLE projects_old;")
             
             cursor.connection.commit()
