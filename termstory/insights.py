@@ -426,6 +426,7 @@ def calculate_vampire_coder_index(sessions: List[Session]) -> float:
     """Calculate the percentage of commands and commits executed between midnight and 5:00 AM."""
     total_count = 0
     vampire_count = 0
+    seen_commits = set()  # Track commit timestamps to avoid double-counting
     for s in sessions:
         for cmd in s.commands:
             total_count += 1
@@ -433,9 +434,10 @@ def calculate_vampire_coder_index(sessions: List[Session]) -> float:
             if 0 <= dt.hour < 5:
                 vampire_count += 1
         for commit in s.commits:
-            total_count += 1
             ts = commit.get("timestamp")
-            if ts:
+            if ts and ts not in seen_commits:
+                total_count += 1
+                seen_commits.add(ts)
                 dt = datetime.fromtimestamp(ts)
                 if 0 <= dt.hour < 5:
                     vampire_count += 1

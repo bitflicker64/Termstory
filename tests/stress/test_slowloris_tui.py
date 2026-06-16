@@ -111,31 +111,34 @@ async def test_slowloris_tarpit(tmp_path, monkeypatch):
     app.sessions = sessions
     app.projects = [p]
     
-    # Start the app in a background task
-    async with app.run_test() as pilot:
-        # Simulate holding down the down-arrow key at 60 FPS
-        # By querying the Tree and sending cursor down events or just calling the selection event directly
-        tree = app.query_one("#history-navigator")
-        
-        start_time = time.time()
-        for i in range(50):
-            # We trigger the generation of single session stories rapidly
-            app.generate_single_session_story(sessions[i])
-            # Sleep slightly to allow the scheduler to queue them
-            await asyncio.sleep(0.01)
-        
-        # Wait a bit for the workers to process
-        await asyncio.sleep(2.0)
+    try:
+        # Start the app in a background task
+        async with app.run_test() as pilot:
+            # Simulate holding down the down-arrow key at 60 FPS
+            # By querying the Tree and sending cursor down events or just calling the selection event directly
+            tree = app.query_one("#history-navigator")
+            
+            start_time = time.time()
+            for i in range(50):
+                # We trigger the generation of single session stories rapidly
+                app.generate_single_session_story(sessions[i])
+                # Sleep slightly to allow the scheduler to queue them
+                await asyncio.sleep(0.01)
+            
+            # Wait a bit for the workers to process
+            await asyncio.sleep(2.0)
 
-        # Let's check if the main thread is blocked. We can verify by checking if the TUI responds to another action.
-        assert time.time() - start_time < 10.0, "Main thread was blocked by slowloris!"
-        
-        # Since we use exclusive=True (for some workers) and thread=True, the worker pool could be exhausted.
-        # But our secondary wall-clock threading timeout `worker_thread.join(timeout + 1.0)` in ai.py should protect us.
-        
-        # Wait for circuit breaker to trip
-        await asyncio.sleep(1.0)
-        from termstory.ai import _circuit_breaker_failures
-        assert _circuit_breaker_failures > 0, "Circuit breaker should have registered failures from timeouts"
-
-    server.server_close()
+            # Let's check if the main thread is blocked. We can verify by checking if the TUI responds to another action.
+            assert time.time() - start_time < 10.0, "Main thread was blocked by slowloris!"
+            
+            # Since we use exclusive=True (for some workers) and thread=True, the worker pool could be exhausted.
+            # But our secondary wall-clock threading timeout `worker_thread.join(timeout + 1.0)` in ai.py should protect us.
+            
+            # Wait for circuit breaker to trip
+            await asyncio.sleep(1.0)
+            from termstory.ai import _circuit_breaker_failures
+            assert _circuit_breaker_failures > 0, "Circuit breaker should have registered failures from timeouts"
+            
+    finally:
+        server.shutdown()
+        server.server_close()

@@ -80,12 +80,14 @@ def test_slowloris_tarpit():
         print("Caught socket.timeout:", e)
     except Exception as e:
         print("Caught unexpected exception:", e)
+    finally:
+        server.shutdown()
+        server.server_close()
 
     end_time = time.time()
     duration = end_time - start_time
     
     print(f"Request took {duration:.2f} seconds.")
-    server.server_close()
 
 if __name__ == '__main__':
     test_slowloris_tarpit()
