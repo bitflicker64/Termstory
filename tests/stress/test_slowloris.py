@@ -45,7 +45,8 @@ def find_free_port():
     return port
 
 def start_slow_server(port):
-    server = HTTPServer(('localhost', port), SlowlorisHandler)
+    from http.server import ThreadingHTTPServer
+    server = ThreadingHTTPServer(('localhost', port), SlowlorisHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server
