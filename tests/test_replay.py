@@ -154,3 +154,31 @@ def test_cli_replay_command(tmp_path, monkeypatch):
         args, kwargs = mock_run_replay.call_args
         assert kwargs["session_id"] == 1
         assert kwargs["speed"] == 4.0
+
+
+def test_cli_replay_mcp_command(tmp_path, monkeypatch):
+    db_file = tmp_path / "test_cli_replay_mcp.db"
+    monkeypatch.setattr("termstory.cli.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.config.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.cli.get_history_files", lambda: [])
+    
+    db = Database(str(db_file))
+    db.init_db()
+    
+    now = int(time.time())
+    p = Project(id=1, name="My Awesome Project", path="~/awesome", first_seen=now, last_seen=now, session_count=1, total_time=100)
+    cmd = Command(timestamp=now, command="echo 'test cli'", exit_code=0, session_id=1, project_id=1)
+    s = Session(id=1, start_time=now, end_time=now, duration_seconds=0, project_id=1, commands=[cmd])
+    db.save_data([p], [s], [cmd])
+    
+    # Save a mock snapshot
+    db.save_mcp_snapshot(1, "cli", {"cwd": "/mock/cwd", "ide": {"ide_name": "VS Code", "env_vars": {}}, "git": {"is_repo": False}}, now)
+    
+    runner = CliRunner()
+    
+    result = runner.invoke(app, ["replay", "1", "--mcp"])
+    assert result.exit_code == 0
+    assert "MCP Workspace Snapshots" in result.output
+    assert "/mock/cwd" in result.output
+    assert "VS Code" in result.output
+

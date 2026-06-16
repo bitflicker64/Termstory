@@ -141,6 +141,10 @@ def run_ingestion(db: Database) -> None:
     from termstory.tags import auto_tag_all_sessions
     auto_tag_all_sessions(db)
 
+    # Capture MCP snapshot of current workspace/IDE/terminal state
+    from termstory.mcp_snapshot import capture_and_store_mcp_snapshot
+    capture_and_store_mcp_snapshot(db)
+
 @app.command("search")
 def search_history(
     query: Optional[str] = typer.Argument(None, help="Search term/query across commits, commands, and project names"),
@@ -989,15 +993,33 @@ def run_agy():
 def replay_cmd(
     session_id: Optional[int] = typer.Argument(None, help="ID of the session to replay. If not provided, the most recent session is used."),
     speed: float = typer.Option(1.0, "--speed", "-s", help="Playback speed multiplier (e.g. 2.0 for fast, 0.5 for slow)"),
-    list_sessions: bool = typer.Option(False, "--list", "-l", help="List recent sessions to choose from")
+    list_sessions: bool = typer.Option(False, "--list", "-l", help="List recent sessions to choose from"),
+    mcp: bool = typer.Option(False, "--mcp", help="Show captured MCP snapshots for the session")
 ):
-    """Replay a selected terminal session in fast or slow motion"""
+    """Replay a selected terminal session in fast or slow motion, or show MCP snapshots"""
     db_path = get_db_path()
     db = Database(db_path)
     safe_init_db(db)
     
     run_ingestion(db)
     
+    if mcp:
+        if session_id is None:
+            session_id = db.get_latest_session_id()
+            if session_id is None:
+                Console().print("[yellow]No sessions found in the database.[/yellow]")
+                return
+        
+        sessions = db.get_sessions_by_ids([session_id])
+        if not sessions:
+            Console().print(f"[bold red]Error: Session #{session_id} not found.[/bold red]")
+            raise typer.Exit(code=1)
+            
+        snapshots = db.get_mcp_snapshots(session_id)
+        from termstory.formatter import format_mcp_snapshots
+        Console().print(format_mcp_snapshots(snapshots))
+        return
+        
     from termstory.replay import run_replay
     run_replay(db, session_id=session_id, speed=speed, list_sessions=list_sessions)
 

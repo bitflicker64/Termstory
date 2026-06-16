@@ -1848,6 +1848,66 @@ def format_rage_quit_signatures(rage_quit_info: Dict[str, Any]) -> str:
     return render_to_string(Text.from_markup("\n".join(output_lines).strip()))
 
 
+def format_mcp_snapshots(snapshots: List[Dict]) -> str:
+    """Format captured MCP snapshots into a beautiful, dense list."""
+    from rich.markup import escape
+    from datetime import datetime
+    
+    if not snapshots:
+        return "No MCP snapshots captured for this session."
+        
+    output_lines = [
+        "📸 [bold cyan]MCP Workspace Snapshots[/bold cyan]",
+        "[dim]────────────────────────────────────────────────────────────────────────────────[/]",
+    ]
+    
+    for idx, snap in enumerate(snapshots, 1):
+        captured_at = snap.get("captured_at")
+        source = snap.get("source", "unknown")
+        payload = snap.get("payload", {})
+        
+        date_str = datetime.fromtimestamp(captured_at).strftime("%Y-%m-%d %I:%M:%S %p") if captured_at else "Unknown time"
+        
+        output_lines.append(f"[bold yellow]Snapshot #{idx}[/] | Captured at: {date_str} | Source: {escape(source)}")
+        
+        cwd = payload.get("cwd", "Unknown")
+        output_lines.append(f"  📂 [bold]CWD:[/] [cyan]{escape(cwd)}[/]")
+        
+        # Git state
+        git = payload.get("git", {})
+        is_repo = git.get("is_repo", False)
+        if is_repo:
+            branch = git.get("branch") or "detached"
+            uncommitted = git.get("uncommitted_files", [])
+            output_lines.append(f"  🌿 [bold]Git Branch:[/] [magenta]{escape(branch)}[/]")
+            if uncommitted:
+                output_lines.append(f"  ⚠️  [bold]Uncommitted Files ({len(uncommitted)}):[/]")
+                # Limit to 5 files
+                for file_status in uncommitted[:5]:
+                    output_lines.append(f"    • {escape(file_status)}")
+                if len(uncommitted) > 5:
+                    output_lines.append(f"    • ... and {len(uncommitted) - 5} more files")
+            else:
+                output_lines.append("  ✨ [bold]Git status:[/] Clean")
+        else:
+            output_lines.append("  🌿 [bold]Git:[/] Not a repository")
+            
+        # IDE State
+        ide = payload.get("ide", {})
+        ide_name = ide.get("ide_name", "Unknown")
+        env_vars = ide.get("env_vars", {})
+        output_lines.append(f"  💻 [bold]IDE/Editor:[/] {escape(ide_name)}")
+        if env_vars:
+            output_lines.append("    [bold]Relevant Env Vars:[/bold]")
+            for k, v in sorted(env_vars.items()):
+                output_lines.append(f"      • {escape(k)}={escape(str(v))}")
+        
+        output_lines.append("[dim]────────────────────────────────────────────────────────────────────────────────[/]")
+        
+    return render_to_string(Text.from_markup("\n".join(output_lines).strip()))
+
+
+
 
 
 

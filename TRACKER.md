@@ -8,6 +8,7 @@
   * **Version Promotion**: Promoted version to `0.6.0` across the package core files.
 
 ## Completed
+* **MCP Time-Machine Snapshots (Batch 13)**: Create `mcp_snapshot.py` to capture active IDE state, Git status, and active terminal working directory. Store snapshots in `mcp_snapshots` SQLite table. Add `termstory replay --mcp <session_id>` CLI subcommand and custom formatters to display captured snapshots.
 * **Documentation & Technical Debt Cleanup (Batch 12)**: Align README.md with all new subcommands, update plans/tasks/tracker tracking systems.
 * **Project-Specific AI Contexts (Batch 11)**: Added `termstory project context` CLI subcommand for context setting and viewing, wired `project_context` from database to AI prompts in `ai.py` for `generate_ai_summary` and `generate_executive_review`, enhanced `termstory predict` with `--json` and `--days`, and escaped all LLM outputs.
 * **Ghost Typer Playback & Web Export (Batch 10)**: Add interactive chronicle playback with `p` keybinding in TUI, `--template` and `--date-range` flags for HTML exports, calendar heatmap filtering in web templates, and escaped LLM outputs.
@@ -54,7 +55,6 @@
 ## Backlog
 * **Long-Term R&D Concepts**:
   * **"REM Sleep" Context Consolidation**: Background processing of command clusters during idle periods.
-  * **Model Context Protocol (MCP) Time-Machine Snapshots**: Capturing external workspace context (IDE state, browser tabs).
   * **Semantic Deep-Dive via Local RAG**: Zero-keyword query searching via locally generated command/commit embeddings.
   * **SQLite FTS5 Integration**: Speeding up deep-history string matching and providing ranked search capabilities across sessions/commands/AI summaries.
   * **Concurrency Stress Tests & Massive History Simulations**: Hardening the test suite by synthesizing massive, multi-year history logs to simulate worst-case ingestion scenarios.
@@ -73,3 +73,4 @@
 * **Batch 10 — Ghost Typer Playback & Web Export improvements**: ✅ Completed
 * **Batch 11 — Project-Specific AI Contexts**: ✅ Completed
 * **Batch 12 — Technical Debt & Cleanup**: ✅ Completed (v0.6.0 Release Prep)
+* **Batch 13 — MCP Time-Machine Snapshots**: ✅ Completed

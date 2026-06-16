@@ -1,4 +1,5 @@
 import sqlite3
+import json
 from datetime import datetime
 from typing import List, Dict, Optional
 from termstory.models import Command, Session, Project
@@ -179,6 +180,18 @@ class Database:
                         created_at INTEGER DEFAULT (strftime('%s', 'now'))
                     );
                 """)
+                # Create mcp_snapshots table if not exists
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS mcp_snapshots (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id INTEGER,
+                        source TEXT NOT NULL,
+                        payload JSON NOT NULL,
+                        captured_at INTEGER NOT NULL,
+                        FOREIGN KEY(session_id) REFERENCES sessions(id)
+                    );
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_mcp_snapshots_session_id ON mcp_snapshots(session_id);")
                 # One-time migrations
                 self._migrate_projects_unique_path(cursor)
                 self._migrate_deduplicate_sessions(cursor)
@@ -952,6 +965,58 @@ class Database:
         except Exception as e:
             conn.rollback()
             raise e
+        finally:
+            conn.close()
+
+    def save_mcp_snapshot(self, session_id: int, source: str, payload: Dict, captured_at: int) -> None:
+        """Save an MCP snapshot in the database"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("BEGIN IMMEDIATE;")
+            cursor.execute("""
+                INSERT INTO mcp_snapshots (session_id, source, payload, captured_at)
+                VALUES (?, ?, ?, ?)
+            """, (session_id, source, json.dumps(payload), captured_at))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+
+    def get_mcp_snapshots(self, session_id: int) -> List[Dict]:
+        """Fetch MCP snapshots for a session"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT source, payload, captured_at FROM mcp_snapshots WHERE session_id = ? ORDER BY captured_at ASC
+            """, (session_id,))
+            rows = cursor.fetchall()
+            results = []
+            for row in rows:
+                try:
+                    payload_dict = json.loads(row[1])
+                except Exception:
+                    payload_dict = row[1]
+                results.append({
+                    "source": row[0],
+                    "payload": payload_dict,
+                    "captured_at": row[2]
+                })
+            return results
+        finally:
+            conn.close()
+
+    def get_latest_session_id(self) -> Optional[int]:
+        """Get the ID of the most recent session"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM sessions ORDER BY end_time DESC, start_time DESC LIMIT 1")
+            row = cursor.fetchone()
+            return row[0] if row else None
         finally:
             conn.close()
 
