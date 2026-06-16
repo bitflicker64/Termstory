@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-06-17
+### Added
+- **RPG Classes Alter Ego (`termstory rpg-class`)**: Assigns and displays daily RPG class alter egos (e.g., *Regex Sorcerer*, *Docker Demolitionist*) based on shell history command distribution, including a custom LLM-generated biography.
+- **Vampire Coder Index (`termstory vampire-index`)**: Analyzes late-night coding intensity by tracking terminal density and percentage of commands executed between midnight and 5:00 AM.
+- **Project Necromancer Score (`termstory necromancer`)**: Measures project resurrection rates for dormant projects that sudden exhibit active sessions after 6+ months of inactivity.
+- **Rage-Quit Signatures (`termstory rage-quit`)**: Automatically identifies final commands executed in terminal sessions directly preceding long periods of inactivity (12+ hours).
+- **Interactive Project Context (`termstory project context`)**: Allows setting, displaying, and managing goals and context descriptions for specific workspaces, and feeds this context directly into AI summaries.
+- **Semantic / RAG Search (`termstory search --semantic`)**: Integrates local hybrid BM25 and semantic search using LLM context mapping to query shell history.
+- **Pre-Cognitive Predict Command (`termstory predict`)**: Enhanced prediction model with `--json` outputs and variable history `--days` filtering to forecast upcoming workspace transitions.
+- **Performance Profiling (`termstory profile`)**: Tracks database execution latency and identifies N+1 queries to prevent performance bottlenecks.
+- **TUI Cyberpunk Aesthetics & Playbacks**: Custom Matrix-style falling code defrag animation on log ingestion, heatmap hover CSS pulses, streak glitches, and interactive ghost typewriter playbacks.
+
+### Changed
+- **Version Bump**: Promoted version to `0.6.0` across `__init__.py`, `setup.py`, and `pyproject.toml`.
+
+### Fixed
+- **Onboarding Timestamps Consent**: Safe detection of missing Zsh timestamps with automated onboarding to enable `EXTENDED_HISTORY`.
+
 ## [0.5.0] - 2026-06-14
 ### Added
 - **Advanced Search Subcommand (`termstory search`)**: Added multi-filter capability to search sessions, commands, and commits by date range (`--since`, `--until`), project (`--project`), and tags (`--tag`/`-t`), using the newly introduced `termstory/search.py` module.

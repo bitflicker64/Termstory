@@ -656,6 +656,22 @@ The pre-cognitive workspace predicts what project or workspace you will work on 
 - `termstory predict`
 - `termstory predict --top 5`
 - `termstory predict --json`
+- `termstory predict --days 30`
+
+### 🎮 Gamification & Personality Profiles
+- **RPG Class Alter Ego (`termstory rpg-class`)**: Automatically profiles your developer style into daily classes (e.g. *Regex Sorcerer*, *Docker Demolitionist*) based on commands executed, with optional AI biography generation.
+- **Vampire Coder Index (`termstory vampire-index`)**: Measures late-night work intensity by tracking commands and commits done between midnight and 5:00 AM.
+- **Project Necromancer Score (`termstory necromancer`)**: Measures the resurrection frequency of stale projects that were dormant for 6+ months.
+- **Rage-Quit Signatures (`termstory rage-quit`)**: Analyzes the final terminal command run right before 12h+ coding breaks to identify patterns in how sessions end.
+
+### 💢 Anger Translator (`termstory anger-translator`)
+Translates developer commits and preceding terminal error diagnostics/rebuild attempts into emotional roasts and real internal states.
+
+### 🔮 Fortune Teller (`termstory fortune-teller`)
+Scans late-night chaotic sessions (such as bypass-tests, frantic commit iterations, rapid edits) to generate witty Monday-morning bug fortunes and predictions.
+
+### ⏱️ Database Profiler (`termstory profile`)
+Profiles database query execution times and identifies N+1 read patterns to help keep the TermStory TUI/CLI extremely fast.
 
 ### 📹 Replay (Terminal Session Playback)
 Replay the exact commands and delays of a past development session directly in your terminal like a movie.
@@ -704,11 +720,12 @@ termstory today --stats      # Command category frequency table
 ### Search
 
 ```bash
-termstory search <query>
+termstory search <query>             # Chronological session search
 termstory search docker
 termstory search docker --project myapp
 termstory search docker --since 2026-05-01
 termstory search docker --detailed
+termstory search docker --semantic   # Local hybrid semantic/RAG search
 ```
 
 ### Historical
@@ -724,19 +741,34 @@ termstory month --last       # Previous month
 ### Projects
 
 ```bash
-termstory project <name>             # 30-day deep dive
-termstory project myapp --files      # Files edited, by frequency
-termstory project myapp --stats      # Command category breakdown
-termstory projects                   # All tracked projects
-termstory projects --sort time       # By total hours (default)
-termstory projects --sort recent     # By last active date
-termstory projects --sort name       # Alphabetically
+termstory project <name>                       # 30-day deep dive
+termstory project myapp --files                # Files edited, by frequency
+termstory project myapp --stats                # Command category breakdown
+termstory projects                             # All tracked projects
+termstory projects --sort time                 # By total hours (default)
+termstory projects --sort recent               # By last active date
+termstory projects --sort name                 # Alphabetically
+termstory project context <name> "description" # Set goals/context for a project
+termstory project context <name> --show        # View project context description
 ```
 
-### Insights
+### Insights & Metrics
 
 ```bash
-termstory insights           # Executive insights: focus scores, time-of-day distribution, and project focus
+termstory insights           # Focus scores, time-of-day distribution, project focus
+termstory rpg-class          # Assigner for daily RPG developer class with biography
+termstory vampire-index      # Late-night coding intensity analytics
+termstory necromancer        # Dormant project reactivation metrics
+termstory rage-quit          # Final commands run prior to 12h+ inactivity periods
+```
+
+### Diagnostics & Tuning
+
+```bash
+termstory profile            # Profile database query latency (defaults to limit 10)
+termstory profile --limit 20 # Profile top 20 queries and identify N+1 paths
+termstory fortune-teller     # Detect chaotic sessions & predict Monday-morning bugs
+termstory anger-translator   # Translate recent commits/errors into emotional states
 ```
 
 ### Stats
@@ -758,6 +790,7 @@ termstory ask "When did I fix the database deadlocks?"
 termstory predict            # Pre-Cognitive Workspace: predict what you will work on next
 termstory predict --top 5    # Show top 5 predicted projects
 termstory predict --json     # Output predictions as machine-readable JSON
+termstory predict --days 30  # Analyze specific number of days of history
 ```
 
 ### Replay
@@ -788,12 +821,11 @@ termstory export --since 2026-06-01                      # Export sessions since
 ### Tags
 
 ```bash
-termstory tags               # View summary of session counts and durations per tag (deploy, debug, setup, test, docs)
+termstory tags               # View summary of session counts and durations per tag
 termstory tags debug         # List recent sessions tagged with "debug"
 termstory tags test --limit 10 # List top 10 sessions with "test" tag
 termstory tags --rebuild     # Force rebuild/re-evaluate tag classification for all sessions
 ```
-
 
 ### TUI
 
