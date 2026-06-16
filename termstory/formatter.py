@@ -1514,5 +1514,113 @@ def format_profile_output(db, limit: int = 10) -> str:
     return render_to_string(Text.from_markup("\n".join(output_lines).strip()))
 
 
+def format_anger_translation(translation: str) -> str:
+    """Format the raw LLM output of anger translation into a clean developer-focused layout."""
+    output_lines = [
+        "😡 [bold red]Git-Blame Anger Translator[/bold red]",
+        "[dim]────────────────────────────────────────────────────────────────────────────────[/]",
+        translation.strip(),
+        "[dim]────────────────────────────────────────────────────────────────────────────────[/]"
+    ]
+    return render_to_string(Text.from_markup("\n".join(output_lines)))
+
+
+def format_anger_translation_heuristics(commit_data: List[Dict]) -> str:
+    """Provide a witty heuristic translation of emotions from commit history and preceding shell errors."""
+    output_lines = [
+        "😡 [bold red]Git-Blame Anger Translator (Heuristic Fallback Mode)[/bold red]",
+        "[dim]────────────────────────────────────────────────────────────────────────────────[/]",
+    ]
+    
+    for item in commit_data:
+        commit_hash = item.get("hash", "unknown")[:7]
+        commit_msg = item.get("message", "")
+        errors = item.get("preceding_errors", [])
+        
+        # Analyze emotion
+        if len(errors) > 3:
+            emotion = "🤬 RAGE & DESPAIR"
+            emoji = "🤬"
+            color = "red"
+            roast = "You fired off a barrage of failing commands before this commit. The anger is palpable. Did you punch the desk?"
+        elif 1 <= len(errors) <= 3:
+            emotion = "😩 FRUSTRATION / WORKAROUND"
+            emoji = "😩"
+            color = "yellow"
+            roast = "A few syntax/compilation issues tripped you up. You fixed it, committed, and pretended everything was fine."
+        else:
+            emotion = "🏆 TRIUMPH / SMOOTH SAILING"
+            emoji = "🏆"
+            color = "green"
+            roast = "Zero preceding terminal errors. Either you wrote perfect code, or you did all of the testing inside your IDE."
+            
+        if any(x in commit_msg.lower() for x in ["fix", "bug", "crash", "issue"]):
+            emotion = "🩹 EXHAUSTION / PATCHING SHIT"
+            emoji = "🩹"
+            color = "magenta"
+            roast = "A bug fix was shipped, but we know it took some late-night soul searching and caffeine."
+
+        output_lines.append(f"[bold {color}]{emoji} {emotion}[/bold {color}] | Commit: [cyan]{commit_msg}[/] ([dim]{commit_hash}[/])")
+        if errors:
+            output_lines.append("  [dim]Preceding Failures:[/]")
+            for err in errors[:3]:
+                output_lines.append(f"    - [red]FAIL:[/] {err}")
+            if len(errors) > 3:
+                output_lines.append(f"    - ... and {len(errors) - 3} more errors")
+        output_lines.append(f"  [italic]{roast}[/italic]")
+        output_lines.append("")
+        
+    output_lines.append("[dim]────────────────────────────────────────────────────────────────────────────────[/]")
+    return render_to_string(Text.from_markup("\n".join(output_lines).strip()))
+
+
+def format_bug_predictions(predictions: str) -> str:
+    """Format the raw LLM output of bug predictions into a clean developer-focused layout."""
+    output_lines = [
+        "🔮 [bold magenta]Predictive Bug Fortune Teller[/bold magenta]",
+        "[dim]────────────────────────────────────────────────────────────────────────────────[/]",
+        predictions.strip(),
+        "[dim]────────────────────────────────────────────────────────────────────────────────[/]"
+    ]
+    return render_to_string(Text.from_markup("\n".join(output_lines)))
+
+
+def format_bug_predictions_heuristics(sessions: List[Dict]) -> str:
+    """Witty heuristic bug prediction based on session telemetry when LLM is unavailable."""
+    output_lines = [
+        "🔮 [bold magenta]Predictive Bug Fortune Teller (Heuristic Fallback Mode)[/bold magenta]",
+        "[dim]────────────────────────────────────────────────────────────────────────────────[/]",
+    ]
+    
+    for s in sessions:
+        hour = s.get("hour", 0)
+        p_name = s.get("project_name", "Other")
+        failed = s.get("failed_commands", [])
+        cmds = s.get("commands", [])
+        
+        # Determine likely bug category
+        if any("docker" in cmd.lower() for cmd in cmds):
+            bug = "Docker Port Bind Collision / Zombie Container"
+            desc = "You ran docker multiple times late at night. There's a 90% chance a container is hanging, blocking port 8080 or local databases."
+        elif any("test" in cmd.lower() or "pytest" in cmd.lower() for cmd in cmds):
+            bug = "Mock Leak or Bypassed/Commented Assertion"
+            desc = "Multiple test errors around midnight suggest you got sick of fixing them and either commented one out or disabled a strict check."
+        elif any("amend" in cmd.lower() or "force" in cmd.lower() for cmd in cmds):
+            bug = "Detached HEAD or Git Desynchronization"
+            desc = "Desperate force-pushes or commit amends at this hour are a recipe for history corruption. Look out for branch conflicts."
+        else:
+            bug = "Sleep-Deprived Off-by-One or Typos"
+            desc = f"Your brain was at 10% capacity at {hour}:00. Double check your `<` vs `<=` boundaries and environment variable spelling."
+            
+        output_lines.append(f"[bold cyan]Session {s['session_id']} ({hour:02d}:00)[/] in [yellow]{p_name}[/]")
+        output_lines.append(f"  🚨 [bold red]Predicted Bug:[/] {bug}")
+        output_lines.append(f"  📝 [italic]{desc}[/italic]")
+        output_lines.append("")
+        
+    output_lines.append("[dim]────────────────────────────────────────────────────────────────────────────────[/]")
+    return render_to_string(Text.from_markup("\n".join(output_lines).strip()))
+
+
+
 
 

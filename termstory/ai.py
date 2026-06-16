@@ -4,7 +4,7 @@ import urllib.error
 import threading
 import time
 import socket
-from typing import List, Optional
+from typing import List, Optional, Dict
 from termstory.sanitizer import sanitize_session_commands
 
 _local_ai_state = threading.local()
@@ -683,5 +683,104 @@ def generate_wrapped_summary(
         prompt, api_key, api_base_url, model_name, provider,
         max_tokens=1500, timeout=effective_timeout
     )
+
+
+def translate_git_anger(
+    commit_data: List[Dict],
+    api_key: str,
+    api_base_url: str,
+    model_name: str,
+    provider: str,
+    timeout: Optional[float] = None
+) -> Optional[str]:
+    """Query LLM to translate git commits and preceding terminal errors into raw emotions and developer roasts."""
+    if provider == "disabled" or not commit_data:
+        return None
+
+    formatted_blocks = []
+    for item in commit_data:
+        commit_hash = item.get("hash", "unknown")[:7]
+        commit_msg = item.get("message", "")
+        errors = item.get("preceding_errors", [])
+        error_lines = "\n".join(f"  - [FAIL] {err}" for err in errors) if errors else "  - (No preceding terminal errors detected)"
+        formatted_blocks.append(
+            f"Commit: {commit_msg} ({commit_hash})\n"
+            f"Preceding Errors:\n{error_lines}"
+        )
+    
+    payload = "\n\n".join(formatted_blocks)
+
+    prompt = (
+        "You are the 'Git-Blame Anger Translator', a developer memory engine sub-module designed to read between the lines.\n"
+        "Analyze the following Git commits and the terminal shell command errors that immediately preceded them.\n"
+        "Your task is to translate these technical activities into the raw, unfiltered emotional state of the developer at the time of commit.\n\n"
+        "YOUR CORE GOALS:\n"
+        "1. Identify the predominant emotion (e.g. Rage, Despair, Exhaustion, Triumph, Sarcasm, Confusion) for each commit.\n"
+        "2. Write a highly humorous, sarcastic, developer-authentic translation/roast explaining the transition from the failing commands to the commit message.\n"
+        "3. Output a clean, CLI-friendly list/table using ASCII symbols (like 😡, 😩, 🏆, ├─, └─). No markdown formatting, no code blocks, no conversational preamble/filler.\n\n"
+        "EMOTIONAL ANALYSIS PAYLOAD:\n"
+        f"{payload}\n\n"
+        "Output format: Return ONLY the formatted emotional translations. Keep it dense, punchy, and highly developer-focused."
+    )
+
+    from termstory.config import load_config
+    config = load_config()
+    effective_timeout = timeout if timeout is not None else config.get("request_timeout_seconds", 30.0)
+    return _send_llm_request(
+        prompt, api_key, api_base_url, model_name, provider,
+        max_tokens=1500, timeout=effective_timeout
+    )
+
+
+def predict_bugs_from_sessions(
+    sessions_data: List[Dict],
+    api_key: str,
+    api_base_url: str,
+    model_name: str,
+    provider: str,
+    timeout: Optional[float] = None
+) -> Optional[str]:
+    """Query LLM to predict potential bugs based on late-night chaotic session command telemetry."""
+    if provider == "disabled" or not sessions_data:
+        return None
+        
+    session_blocks = []
+    for s in sessions_data:
+        hour_str = f"{s['hour']}:00"
+        failed_cmds = s.get("failed_commands", [])
+        failed_lines = "\n".join(f"  - [FAIL] {cmd}" for cmd in failed_cmds) if failed_cmds else "  - (No command execution errors)"
+        all_cmds = "\n".join(f"  - {cmd}" for cmd in s.get("commands", [])[:10])
+        commits = "\n".join(f"  - {c}" for c in s.get("commits", []))
+        session_blocks.append(
+            f"Session ID: {s['session_id']} | Project: {s['project_name']} | Time: {hour_str}\n"
+            f"Failed Commands:\n{failed_lines}\n"
+            f"Recent Commands Executed:\n{all_cmds}\n"
+            f"Git Commits: {commits}"
+        )
+    
+    payload = "\n\n".join(session_blocks)
+    
+    prompt = (
+        "You are the 'Predictive Bug Fortune Teller', a developer memory engine sub-module designed to foresee bugs.\n"
+        "Analyze the following late-night chaotic work sessions. These sessions were conducted in the middle of the night, "
+        "often with failing commands, repeating test cycles, or desperate commit amends.\n"
+        "Your task is to predict the potential bugs/issues the developer likely introduced during these sessions.\n\n"
+        "YOUR CORE GOALS:\n"
+        "1. Predict 1-2 highly plausible, funny, yet technically accurate bug types (e.g. race conditions, off-by-one errors, unresolved merge markers, config path typos, logic reversals) for each chaotic session.\n"
+        "2. Formulate your predictions as a warning in a sarcastic, developer-to-developer style.\n"
+        "3. Output a clean, high-density, CLI-styled console block using ASCII symbols. No markdown formatting, no code blocks, no conversational preamble/filler.\n\n"
+        "Telemetry Payload:\n"
+        f"{payload}\n\n"
+        "Output format: Return ONLY the raw bug prediction logs."
+    )
+    
+    from termstory.config import load_config
+    config = load_config()
+    effective_timeout = timeout if timeout is not None else config.get("request_timeout_seconds", 30.0)
+    return _send_llm_request(
+        prompt, api_key, api_base_url, model_name, provider,
+        max_tokens=1500, timeout=effective_timeout
+    )
+
 
 

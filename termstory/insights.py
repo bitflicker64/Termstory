@@ -295,3 +295,98 @@ def analyze_all(db=None) -> Dict:
         "streak": streak
     }
 
+
+def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
+    """Detect late-night sessions (between 11 PM and 5 AM) that exhibit chaotic characteristics
+    (e.g., high command frequency, high failure count, or specific developer desperation patterns).
+    """
+    if db is None:
+        from termstory.config import get_db_path
+        from termstory.database import Database
+        db = Database(get_db_path())
+
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+
+        # Load all sessions
+        cursor.execute("""
+            SELECT id, start_time, end_time, duration_seconds, project_id
+            FROM sessions
+            ORDER BY start_time DESC
+        """)
+        session_rows = cursor.fetchall()
+
+        # Get project names map
+        cursor.execute("SELECT id, name FROM projects")
+        project_names = {row[0]: row[1] for row in cursor.fetchall()}
+
+        chaotic_sessions = []
+
+        for row in session_rows:
+            s_id, start, end, duration, p_id = row
+            dt = datetime.fromtimestamp(start)
+            hour = dt.hour
+
+            # Late night check: 11 PM (23) to 5 AM (5)
+            is_late_night = (hour >= 23 or hour < 5)
+            if not is_late_night:
+                continue
+
+            # Fetch commands for this session
+            cursor.execute("""
+                SELECT command, exit_code
+                FROM commands
+                WHERE session_id = ?
+                ORDER BY timestamp ASC
+            """, (s_id,))
+            cmd_rows = cursor.fetchall()
+            if not cmd_rows:
+                continue
+
+            commands = [r[0] for r in cmd_rows]
+            failed_cmds = [r[0] for r in cmd_rows if r[1] != 0]
+            failed_count = len(failed_cmds)
+            total_count = len(commands)
+
+            # Chaos score heuristics:
+            # 1. Total command count >= 10 (working intensely)
+            # 2. Failed command count >= 3 (struggling)
+            # 3. Running git commit --amend or similar desperate commands
+            has_desperate_command = any("amend" in cmd or "revert" in cmd or "force" in cmd or "reset" in cmd for cmd in commands)
+
+            is_chaotic = (total_count >= 10 or failed_count >= 3 or has_desperate_command)
+
+            if is_chaotic:
+                p_name = project_names.get(p_id, "Other")
+                if p_name == "General / No Project" or not p_name:
+                    p_name = "Other"
+
+                # Fetch commits in session
+                commits = []
+                if p_id is not None:
+                    cursor.execute("""
+                        SELECT message
+                        FROM commits
+                        WHERE project_id = ? AND timestamp >= ? AND timestamp <= ?
+                        ORDER BY timestamp ASC
+                    """, (p_id, start - 300, end + 600))
+                    commits = [r[0] for r in cursor.fetchall()]
+
+                chaotic_sessions.append({
+                    "session_id": s_id,
+                    "start_time": start,
+                    "end_time": end,
+                    "duration_seconds": duration,
+                    "project_name": p_name,
+                    "commands": commands,
+                    "failed_commands": failed_cmds,
+                    "commits": commits,
+                    "hour": hour
+                })
+
+        return chaotic_sessions
+    finally:
+        conn.close()
+
+

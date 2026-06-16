@@ -18,6 +18,7 @@ import sqlite3
 
 from rich.console import Console
 from rich.table import Table
+from rich.text import Text
 
 import sys
 import re
@@ -506,6 +507,178 @@ def predict_cmd(
     output = format_predict_output(result)
     from rich.text import Text
     console.print(Text.from_ansi(output))
+
+
+@app.command("anger-translator")
+def anger_translator(
+    project: Optional[str] = typer.Option(None, "--project", help="Filter matches by project name"),
+    limit: int = typer.Option(5, "--limit", help="Maximum number of commits to analyze"),
+):
+    """
+    Analyze recent git commits and their preceding terminal errors to translate them
+    into the developer's real emotional states/roasts.
+    """
+    db_path = get_db_path()
+    db = Database(db_path)
+    safe_init_db(db)
+    
+    run_ingestion(db)
+    
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        
+        project_id = None
+        if project:
+            cursor.execute("SELECT id FROM projects WHERE name LIKE ?", (f"%{project}%",))
+            row = cursor.fetchone()
+            if row:
+                project_id = row[0]
+            else:
+                Console(stderr=True).print(f"[bold red]Error: Project '{project}' not found.[/]")
+                raise typer.Exit(code=1)
+                
+        if project_id is not None:
+            cursor.execute("""
+                SELECT hash, timestamp, message, cleaned_message, project_id
+                FROM commits
+                WHERE project_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, (project_id, limit))
+        else:
+            cursor.execute("""
+                SELECT hash, timestamp, message, cleaned_message, project_id
+                FROM commits
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, (limit,))
+            
+        commit_rows = cursor.fetchall()
+        
+        commit_data = []
+        for hash_val, ts, msg, clean_msg, p_id in commit_rows:
+            cursor.execute("""
+                SELECT command, exit_code
+                FROM commands
+                WHERE timestamp >= ? AND timestamp < ? AND exit_code != 0
+                ORDER BY timestamp DESC
+            """, (ts - 1800, ts))
+            err_rows = cursor.fetchall()
+            
+            preceding_errors = [r[0] for r in err_rows]
+            
+            commit_data.append({
+                "hash": hash_val,
+                "timestamp": ts,
+                "message": msg,
+                "cleaned_message": clean_msg,
+                "preceding_errors": preceding_errors
+            })
+            
+    finally:
+        conn.close()
+        
+    if not commit_data:
+        console.print("No git commits found to analyze.")
+        return
+        
+    from termstory.config import load_config
+    config = load_config()
+    ai_enabled = config.get("ai_enabled", False)
+    provider = config.get("ai_provider", "disabled")
+    
+    if ai_enabled and provider != "disabled":
+        from termstory.ai import translate_git_anger
+        api_key = config.get(f"providers.{provider}.api_key", config.get(f"{provider}_api_key", ""))
+        api_base_url = config.get(f"providers.{provider}.api_base_url", config.get(f"{provider}_api_base_url", ""))
+        model_name = config.get(f"providers.{provider}.model_name", config.get(f"{provider}_model_name", ""))
+        
+        if not api_base_url:
+            if provider == "groq":
+                api_base_url = "https://api.groq.com/openapi/v1"
+            elif provider == "openai":
+                api_base_url = "https://api.openai.com/v1"
+            elif provider == "ollama":
+                api_base_url = "http://localhost:11434/v1"
+                
+        console.print("[bold yellow]Translating developer's git blame and terminal frustration...[/]")
+        translation = translate_git_anger(
+            commit_data,
+            api_key=api_key,
+            api_base_url=api_base_url,
+            model_name=model_name,
+            provider=provider
+        )
+        if translation:
+            from termstory.formatter import format_anger_translation
+            formatted = format_anger_translation(translation)
+            console.print(Text.from_ansi(formatted))
+            return
+            
+    from termstory.formatter import format_anger_translation_heuristics
+    formatted = format_anger_translation_heuristics(commit_data)
+    console.print(Text.from_ansi(formatted))
+
+
+@app.command("fortune-teller")
+def fortune_teller(
+    limit: int = typer.Option(5, "--limit", help="Maximum number of chaotic sessions to analyze"),
+):
+    """
+    Detect late-night chaotic sessions and generate bug predictions.
+    """
+    db_path = get_db_path()
+    db = Database(db_path)
+    safe_init_db(db)
+    
+    run_ingestion(db)
+    
+    from termstory.insights import detect_late_night_chaotic_sessions
+    sessions = detect_late_night_chaotic_sessions(db)
+    sessions = sessions[:limit]
+    
+    if not sessions:
+        console.print("No late-night chaotic sessions detected.")
+        return
+        
+    from termstory.config import load_config
+    config = load_config()
+    ai_enabled = config.get("ai_enabled", False)
+    provider = config.get("ai_provider", "disabled")
+    
+    if ai_enabled and provider != "disabled":
+        from termstory.ai import predict_bugs_from_sessions
+        api_key = config.get(f"providers.{provider}.api_key", config.get(f"{provider}_api_key", ""))
+        api_base_url = config.get(f"providers.{provider}.api_base_url", config.get(f"{provider}_api_base_url", ""))
+        model_name = config.get(f"providers.{provider}.model_name", config.get(f"{provider}_model_name", ""))
+        
+        if not api_base_url:
+            if provider == "groq":
+                api_base_url = "https://api.groq.com/openapi/v1"
+            elif provider == "openai":
+                api_base_url = "https://api.openai.com/v1"
+            elif provider == "ollama":
+                api_base_url = "http://localhost:11434/v1"
+                
+        console.print("[bold yellow]Foretelling potential bugs from late-night chaotic session telemetry...[/]")
+        predictions = predict_bugs_from_sessions(
+            sessions,
+            api_key=api_key,
+            api_base_url=api_base_url,
+            model_name=model_name,
+            provider=provider
+        )
+        if predictions:
+            from termstory.formatter import format_bug_predictions
+            formatted = format_bug_predictions(predictions)
+            console.print(Text.from_ansi(formatted))
+            return
+            
+    from termstory.formatter import format_bug_predictions_heuristics
+    formatted = format_bug_predictions_heuristics(sessions)
+    console.print(Text.from_ansi(formatted))
+
 
 
 def cleanup_shell_marker():
