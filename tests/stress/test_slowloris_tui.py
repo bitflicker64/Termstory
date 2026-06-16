@@ -138,5 +138,4 @@ async def test_slowloris_tarpit(tmp_path, monkeypatch):
         from termstory.ai import _circuit_breaker_failures
         assert _circuit_breaker_failures > 0, "Circuit breaker should have registered failures from timeouts"
 
-    server.shutdown()
     server.server_close()

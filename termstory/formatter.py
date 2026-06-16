@@ -1580,7 +1580,7 @@ def format_bug_predictions(predictions: str) -> str:
     """Format the raw LLM output of bug fortune predictions into a clean developer-focused layout."""
     from rich.markup import escape
     output_lines = [
-        "[bold yellow]Bug Fortune Teller[/bold yellow]",
+        "[bold yellow]Predictive Bug Fortune Teller[/bold yellow]",
         "[dim]───────────────────────────────────────────────────────────────[/]",
         escape(predictions.strip()),
         "[dim]───────────────────────────────────────────────────────────────[/]"
@@ -1621,6 +1621,153 @@ def format_bug_predictions_heuristics(sessions: List[Dict]) -> str:
         output_lines.append("")
         
     output_lines.append("[dim]────────────────────────────────────────────────────────────────────────────────[/]")
+    return render_to_string(Text.from_markup("\n".join(output_lines).strip()))
+
+
+CRESTS = {
+    "Regex Sorcerer": (
+        "      /\\\n"
+        "     /  \\\n"
+        "    /    \\\n"
+        "   /======\\\n"
+        "  /  ||||  \\\n"
+        " /   ||||   \\\n"
+        "|   [.*?]    |\n"
+        " \\__________/"
+    ),
+    "Docker Demolitionist": (
+        "  _________\n"
+        " [_________]\n"
+        "  |  |  |  |\n"
+        "  |==|==|==|\n"
+        "  |  |  |  |\n"
+        " [_________]\n"
+        "   \\_____/"
+    ),
+    "Git Paladin": (
+        "     |\\\n"
+        "     | \\\n"
+        "  ===|===\\\n"
+        "     |    \\\n"
+        "     | o   |\n"
+        "     |  o  |\n"
+        "     |   o |\n"
+        "     \\____/"
+    ),
+    "Frontend Bard": (
+        "   /\\_____/\\\n"
+        "  /  o   o  \\\n"
+        " (    \" \"    )\n"
+        "  \\   ---   /\n"
+        "   \\_______/\n"
+        "    | | | |\n"
+        "    |_|_|_|"
+    ),
+    "Python Alchemist": (
+        "    .----.\n"
+        "   /  __  \\\n"
+        "  |  (  )  |\n"
+        "   \\  ~~  /\n"
+        "    |====|\n"
+        "   /======\\\n"
+        "  /________\\"
+    ),
+    "Database Necromancer": (
+        "   .--------.\n"
+        "  (_|_|_|_|_)\n"
+        "    |      |\n"
+        "   (_|_|_|_)\n"
+        "    |      |\n"
+        "   (________)"
+    ),
+    "Systems Ranger": (
+        "     /\\ \n"
+        "    /  \\ \n"
+        "   /____\\ \n"
+        "  /\\    /\\ \n"
+        " /  \\  /  \\ \n"
+        "/____\\/____\\"
+    ),
+    "Terminal Nomad": (
+        "   _______\n"
+        "  /       \\\n"
+        " /  ~   ~  \\\n"
+        "|   o   o   |\n"
+        "|     ^     |\n"
+        " \\_________/ \n"
+        "  /  | |  \\"
+    )
+}
+
+def format_rpg_class(rpg_info: Dict[str, Any], bio: Optional[str] = None) -> str:
+    """Format the developer's RPG class alter ego into a clean CLI character sheet."""
+    from rich.markup import escape
+    
+    class_name = rpg_info.get("class_name", "Terminal Nomad")
+    description = rpg_info.get("description", "")
+    
+    output_lines = [
+        "🧙‍♂️ [bold magenta]Daily RPG Class Assigner[/bold magenta]",
+        "[dim]────────────────────────────────────────────────────────────────────────────────[/]",
+        f"Class: [bold yellow]{class_name}[/bold yellow]",
+        f"Core Trait: [italic]{description}[/italic]",
+        "",
+    ]
+    
+    crest = CRESTS.get(class_name, CRESTS["Terminal Nomad"])
+    output_lines.append("[bold cyan]Crest:[/bold cyan]")
+    output_lines.extend(crest.split("\n"))
+    output_lines.append("")
+    
+    if bio:
+        output_lines.append("📜 [bold]Developer Biography & Quest:[/bold]")
+        output_lines.append(escape(bio.strip()))
+    else:
+        output_lines.append("📊 [bold]Command Breakdown:[/bold]")
+        counts = rpg_info.get("counts", {})
+        for cls, cnt in counts.items():
+            if cnt > 0:
+                output_lines.append(f"  • {cls}: {cnt} commands")
+                
+    output_lines.append("[dim]────────────────────────────────────────────────────────────────────────────────[/]")
+    return render_to_string(Text.from_markup("\n".join(output_lines).strip()))
+
+
+def format_vampire_index(metrics: Dict[str, Any]) -> str:
+    """Format the Vampire Coder Index into a beautiful, dark-themed diagnostic summary."""
+    index = metrics.get("vampire_index", 0.0)
+    vamp_cmds = metrics.get("vampire_commands", 0)
+    total_cmds = metrics.get("total_commands", 0)
+    vamp_commits = metrics.get("vampire_commits", 0)
+    total_commits = metrics.get("total_commits", 0)
+    
+    if index >= 50.0:
+        title = "Dracula Level Vampire"
+        color = "red"
+        roast = "You are practically photosensitive. Put down the energy drink, close the terminal, and go to sleep."
+    elif 20.0 <= index < 50.0:
+        title = "Late-Night Bat"
+        color = "yellow"
+        roast = "You definitely do some of your best (or most chaotic) work under the moonlight."
+    elif 5.0 <= index < 20.0:
+        title = "Midnight Caffeinator"
+        color = "cyan"
+        roast = "Occasionally burning the midnight oil, but you still remember what sunlight feels like."
+    else:
+        title = "Solar Coder"
+        color = "green"
+        roast = "A highly disciplined daytime developer. Either that or you have a very healthy sleep schedule."
+        
+    output_lines = [
+        "🧛‍♂️ [bold red]The Vampire Coder Index[/bold red]",
+        "[dim]────────────────────────────────────────────────────────────────────────────────[/]",
+        f"Vampire Index : [bold {color}]{index}%[/bold {color}] ([bold {color}]{title}[/bold {color}])",
+        f"Midnight-5AM Commands : {vamp_cmds} / {total_cmds}",
+        f"Midnight-5AM Commits  : {vamp_commits} / {total_commits}",
+        "",
+        f"[italic]{roast}[/italic]",
+        "[dim]────────────────────────────────────────────────────────────────────────────────[/]"
+    ]
     return render_to_string(Text.from_markup("\n".join(output_lines).strip()))
 
 

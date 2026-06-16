@@ -1,103 +1,66 @@
 # TermStory Batch Dispatch — What Works
 
-## THE PATTERN (proven across 30+ test runs)
+## THE PATTERN (30+ runs, proven across 5 batches)
 
 ```
-Hermes writes prompt → dispatch to tmux → agy codes + tests + commits → Hermes pushes + PRs → Greptile reviews → Hermes merges
+1. Write single-line prompt → .batch-N-prompt.txt
+2. run-batch.sh N 1800s          (agy does code + tests + commit)
+3. git push origin feat/batch-N   (Hermes, 5s)
+4. gh pr create --fill            (Hermes, 2s)
+5. greptile-watch N               (zero tokens, polls + reports)
+6. If score >= 4: gh pr merge N --squash --delete-branch
 ```
 
-| Step | Who | Works? |
-|------|-----|--------|
-| Write prompt file | Hermes | ✅ |
-| agy code changes | tmux session 0 | ✅ |
-| agy runs tests | tmux session 0 | ✅ |
-| agy commits | tmux session 0 | ✅ (times out on complex tasks) |
-| git push | Hermes terminal | ✅ |
-| gh pr create | Hermes terminal | ✅ |
-| Greptile review | Auto (webhook) | ✅ |
-| gh pr merge | Hermes terminal | ✅ |
+## What agy CAN do (via tmux session 0):
+- Write code across multiple files (+400 lines per batch)
+- Run tests (all pass)
+- Commit changes
+- Use subagents (with GH token in prompt)
+- Read project files correctly (Gemini + cleared brain + --add-dir)
 
-## agy WORKS when:
+## What agy CANNOT do:
+- Push to remote (always times out)
+- Create PR (always times out)
+- Wait for Greptile + merge (always times out)
+- Run directly in Hermes terminal (no Keychain for OAuth)
+- Handle multi-line prompts (shell dquote> bug)
 
-1. **Model: Gemini 3.5 Flash (High)** — fast, no permission spam
-2. **Brain cleared** — `rm -rf ~/.gemini/antigravity-cli/brain/* ~/.gemini/antigravity-cli/history.jsonl`
-3. **Flag: `--add-dir "/path"`** — forces correct workspace
-4. **Flag: `--print-timeout 1800s`** — 30 min
-5. **Settings: `permissionMode: "always-proceed"`** — no popups
-6. **Single-line prompts** — no newlines (shell `dquote>` bug)
-7. **Prompt starts with `cd /path`** — explicit working dir
-8. **Subagents work** with GH token in prompt
-9. **GH token in prompt**: `echo "ghp_xxx" | gh auth login --with-token`
-10. **Clean tmux**: C-c + clear before each dispatch
+## Proof (5 batches, 12+ PRs):
+| Batch | What | Files | Lines | Tests | Greptile |
+|-------|------|-------|-------|-------|----------|
+| 4a | Profile command | 4 | +161 | 26/26 | 3/5 |
+| 4b | Greptile refactor | 1 | +12 | 8/8 | 4/5 |
+| 4c | Release verify | 0 | empty | - | 3/5 |
+| 4d | Subagents test | 0 | empty | - | 5/5 |
+| 5 | Anger + Fortunes | 4 | +476 | 22/22 | 3/5 (stale) |
 
-## agy DOESN'T WORK when:
+## Greptile gate (STRICT):
+- Score >= 4: `gh pr merge N --squash --delete-branch`
+- Score < 4: NEVER merge. Fix issues, push, re-trigger.
+- Use `greptile-watch N` to poll (zero tokens, bash+gh only)
+- If Greptile reviews stale commit: force-push amended commit
 
-- Model is GPT-OSS 120B (too slow, permission spam)
-- Brain has stale workspace data from old sessions
-- Multi-line prompts with newlines (shell `dquote>` artifacts)
-- Running from Hermes terminal directly (no Keychain for OAuth)
-- Timeout < 600s for multi-file tasks
-- Push/PR steps at end (always times out before those)
-- `--dangerously-skip-permissions` alone (needs `permissionMode` too)
+## Zero-token tools:
+| Tool | What | Where |
+|------|------|-------|
+| `run-batch.sh N 1800s` | Dispatch agy to tmux | agy-orchestration skill |
+| `batch-finish.sh` | Push + PR + Greptile | repo root |
+| `greptile-watch N` | Poll + report, NO merge | ~/.local/bin/ |
+| `gh pr merge N` | Manual merge (score >= 4) | gh CLI |
 
-## Full Workflow (from scratch):
-
+## Required setup:
 ```bash
-# 1. Clear brain (fixes stale workspace)
+# ~/.gemini/antigravity-cli/settings.json:
+{"model":"Gemini 3.5 Flash (High)","permissionMode":"always-proceed","permissions":{"allow":["command(git)","command(python3)","command(pytest)","write_file","edit_file","read_file"]},"allowNonWorkspaceAccess":true}
+
+# Clear stale brain:
 rm -rf ~/.gemini/antigravity-cli/brain/* ~/.gemini/antigravity-cli/history.jsonl
-
-# 2. Ensure settings.json has correct model + permissions
-cat > ~/.gemini/antigravity-cli/settings.json << 'END'
-{
-  "enableTelemetry": false,
-  "model": "Gemini 3.5 Flash (High)",
-  "permissionMode": "always-proceed",
-  "permissions": { "allow": ["command(git)","command(python3)","command(pytest)","write_file","edit_file","read_file"] },
-  "allowNonWorkspaceAccess": true
-}
-END
-
-# 3. Clean tmux
-tmux send-keys -t 0 C-c
-sleep 2
-tmux send-keys -t 0 'clear' Enter
-
-# 4. Write prompt file in repo
-# Single line only! No newlines.
-
-# 5. Dispatch to tmux
-run-batch.sh N 1800s
-
-# 6. After agy commits, complete workflow:
-cd ~/personal/termstory
-git push origin feat/batch-N
-gh pr create --base main --head feat/batch-N --fill
-gh pr comment N --body "@greptileai review"
-sleep 120
-gh pr view N --json comments --jq 'last | .body' | grep -oE '[0-9]/5'
-# if >= 4: gh pr merge N --squash --delete-branch
 ```
 
-## Prompt format (proven single-line):
-
+## Prompt format (single line only):
 ```
-EXECUTE ONLY. NO subagents. cd /Users/himanshuverma/personal/termstory. git checkout main && git pull. git checkout -b feat/batch-N. [TASK]. Run pytest tests/ -v. git add -A && git commit -m "feat: ...". git push origin feat/batch-N. gh pr create --base main --head feat/batch-N --fill.
-```
-
-## With subagents + GH token (proven working):
-
-```
-EXECUTE ONLY. Use define_subagent for each task. cd /Users/himanshuverma/personal/termstory. git checkout main && git pull. git checkout -b feat/batch-N. echo "ghp_xxx" | gh auth login --with-token. [TASK]. Run tests. git add -A && git commit -m "feat: ...". git push. gh pr create --fill. Print result after each step.
+EXECUTE ONLY. NO chat. cd /Users/himanshuverma/personal/termstory. git checkout main && git pull. git checkout -b feat/batch-N. [TASK]. Run pytest tests/ -v. git add -A && git commit -m "feat: ...". Print result.
 ```
 
-## Git auth in Hermes terminal:
-
-```bash
-echo "YOUR_PAT" | gh auth login --with-token
-```
-
-## Greptile score check:
-
-```bash
-gh pr view N --json comments --jq '[.comments[] | select(.author.login=="greptile-apps")] | last | .body' | grep -oE '[0-9]/5'
-```
+## GH token for agy (optional, enables push/PR from agy):
+Include in prompt: `echo "ghp_YOUR_TOKEN" | gh auth login --with-token`.

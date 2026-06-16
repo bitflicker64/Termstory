@@ -85,7 +85,6 @@ def test_slowloris_tarpit():
     duration = end_time - start_time
     
     print(f"Request took {duration:.2f} seconds.")
-    server.shutdown()
     server.server_close()
 
 if __name__ == '__main__':

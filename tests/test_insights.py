@@ -98,5 +98,73 @@ def test_analyze_all(tmp_path, monkeypatch):
     assert stats["most_used_projects"][0][1] == 3600
     assert stats["most_used_projects"][1][0] == "Project Beta"
     assert stats["most_used_projects"][1][1] == 1800
+    assert stats["vampire_index"] == 0.0
+    assert stats["rpg_class"] == "Docker Demolitionist"
+
+
+def test_vampire_coder_index():
+    from termstory.insights import calculate_vampire_coder_index, get_vampire_metrics
+    from datetime import datetime
+    
+    # 2 AM timestamp (vampire time)
+    ts_vampire = int(datetime(2026, 6, 1, 2, 30, 0).timestamp())
+    # 2 PM timestamp (non-vampire time)
+    ts_day = int(datetime(2026, 6, 1, 14, 30, 0).timestamp())
+    
+    s = Session(
+        id=1,
+        start_time=ts_vampire,
+        end_time=ts_vampire + 100,
+        duration_seconds=100,
+        project_id=1,
+        commands=[
+            Command(timestamp=ts_vampire, command="git status"),
+            Command(timestamp=ts_day, command="git push")
+        ],
+        commits=[
+            {"hash": "h1", "timestamp": ts_vampire, "message": "fix: bug"}
+        ]
+    )
+    
+    # 2 vampire events (status, commit), 1 day event (push). Total events = 3.
+    # Vampire Index = 2 / 3 * 100 = 66.666... -> 66.7%
+    index = calculate_vampire_coder_index([s])
+    assert index == 66.7
+    
+    metrics = get_vampire_metrics([s])
+    assert metrics["vampire_index"] == 66.7
+    assert metrics["vampire_commands"] == 1
+    assert metrics["total_commands"] == 2
+    assert metrics["vampire_commits"] == 1
+    assert metrics["total_commits"] == 1
+
+
+def test_assign_rpg_class():
+    from termstory.insights import assign_rpg_class
+    
+    # Test Regex Sorcerer
+    s1 = Session(
+        id=1, start_time=0, end_time=100, duration_seconds=100, project_id=1,
+        commands=[
+            Command(timestamp=0, command="cat file.txt | grep pattern"),
+            Command(timestamp=10, command="awk '{print $1}'"),
+            Command(timestamp=20, command="git status") # Git Paladin
+        ]
+    )
+    r1 = assign_rpg_class([s1])
+    assert r1["class_name"] == "Regex Sorcerer"
+    assert r1["counts"]["Regex Sorcerer"] == 2
+    
+    # Test Docker Demolitionist
+    s2 = Session(
+        id=2, start_time=0, end_time=100, duration_seconds=100, project_id=1,
+        commands=[
+            Command(timestamp=0, command="docker ps"),
+            Command(timestamp=10, command="docker-compose up -d")
+        ]
+    )
+    r2 = assign_rpg_class([s2])
+    assert r2["class_name"] == "Docker Demolitionist"
+
 
 

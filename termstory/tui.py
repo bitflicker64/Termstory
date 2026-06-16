@@ -145,6 +145,10 @@ def calculate_dashboard_stats(sessions: List[Session], projects: List[Project], 
         latest_ts = max(s.end_time for s in sessions)
         last_ingestion_str = datetime.fromtimestamp(latest_ts).strftime("%b %d %H:%M")
 
+    from termstory.insights import calculate_vampire_coder_index, assign_rpg_class
+    vamp_index = calculate_vampire_coder_index(sessions)
+    rpg_res = assign_rpg_class(sessions)
+
     return {
         "total_time": total_time_str,
         "active_days": len(active_dates),
@@ -152,6 +156,8 @@ def calculate_dashboard_stats(sessions: List[Session], projects: List[Project], 
         "projects_count": len(projects),
         "heatmap": heatmap,
         "last_ingestion": last_ingestion_str,
+        "vampire_index": vamp_index,
+        "rpg_class": rpg_res["class_name"],
     }
 
 
@@ -576,12 +582,22 @@ class StatsHeader(Static):
         ingestion_str = ""
         if stats.get("last_ingestion"):
             ingestion_str = f"  │  [dim]Synced: {stats['last_ingestion']}[/dim]"
+            
+        vamp_str = ""
+        if "vampire_index" in stats:
+            vamp_str = f"  │  [bold red]Vampire Index:[/bold red] {stats['vampire_index']}%"
+            
+        rpg_str = ""
+        if "rpg_class" in stats:
+            rpg_str = f"  │  [bold magenta]Class:[/bold magenta] {stats['rpg_class']}"
+            
         self.update(
             f"[bold cyan]TermStory[/bold cyan] [dim]v{__version__}[/dim]  │  "
             f"[bold]Time logged:[/bold] {stats['total_time']}  │  "
             f"[bold]Active Days:[/bold] {stats['active_days']}  │  "
             f"[bold green]Streak:[/bold green] {stats['streak']} Days  │  "
-            f"[bold]Projects:[/bold] {stats['projects_count']}  │  "
+            f"[bold]Projects:[/bold] {stats['projects_count']}"
+            f"{vamp_str}{rpg_str}"
             f"{ai_status}{ingestion_str}\n"
             f"[dim]Activity ({limit_str}):[/dim] {stats['heatmap']}"
         )

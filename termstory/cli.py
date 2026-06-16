@@ -279,6 +279,8 @@ def show_insights():
         f"Total Commands : {stats['total_commands']}",
         f"Total Projects : {stats['total_projects']}",
         f"Coding Streak  : {stats['streak']} days",
+        f"Vampire Index  : {stats['vampire_index']}%",
+        f"RPG Class      : {stats['rpg_class']}",
         "",
         "Activity Patterns",
         "────────────────────────────────────────",
@@ -1336,6 +1338,81 @@ def main(
     if ctx.invoked_subcommand is None:
         # No subcommand, fallback to today's report
         show_ui()
+
+
+@app.command("rpg-class")
+def show_rpg_class():
+    """Assign and display your daily RPG class alter ego based on command patterns"""
+    db_path = get_db_path()
+    db = Database(db_path)
+    safe_init_db(db)
+    
+    run_ingestion(db)
+    
+    from termstory.insights import analyze_all
+    stats = analyze_all(db)
+    rpg_info = stats.get("rpg_info", {})
+    
+    # Retrieve all commands to pass to AI if enabled
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT command FROM commands")
+    commands = [r[0] for r in cursor.fetchall()]
+    conn.close()
+    
+    # AI biography generation if enabled
+    bio = None
+    from termstory.config import load_config
+    config = load_config()
+    ai_enabled = config.get("ai_enabled", False)
+    provider = config.get("ai_provider", "disabled")
+    
+    if ai_enabled and provider != "disabled":
+        from termstory.ai import generate_rpg_bio
+        api_key = config.get(f"providers.{provider}.api_key", config.get(f"{provider}_api_key", ""))
+        api_base_url = config.get(f"providers.{provider}.api_base_url", config.get(f"{provider}_api_base_url", ""))
+        model_name = config.get(f"providers.{provider}.model_name", config.get(f"{provider}_model_name", ""))
+        
+        if not api_base_url:
+            if provider == "groq":
+                api_base_url = "https://api.groq.com/openai/v1"
+            elif provider == "openai":
+                api_base_url = "https://api.openai.com/v1"
+            elif provider == "ollama":
+                api_base_url = "http://localhost:11434/v1"
+                
+        console.print("[bold yellow]Querying LLM to generate your custom RPG developer biography...[/]")
+        bio = generate_rpg_bio(
+            rpg_info.get("class_name", "Terminal Nomad"),
+            commands,
+            api_key=api_key,
+            api_base_url=api_base_url,
+            model_name=model_name,
+            provider=provider
+        )
+        
+    from termstory.formatter import format_rpg_class
+    output = format_rpg_class(rpg_info, bio)
+    console.print(Text.from_ansi(output))
+
+
+@app.command("vampire-index")
+def show_vampire_index():
+    """Calculate and display your Vampire Coder Index (late-night coding intensity)"""
+    db_path = get_db_path()
+    db = Database(db_path)
+    safe_init_db(db)
+    
+    run_ingestion(db)
+    
+    from termstory.insights import analyze_all
+    stats = analyze_all(db)
+    metrics = stats.get("vampire_metrics", {})
+    
+    from termstory.formatter import format_vampire_index
+    output = format_vampire_index(metrics)
+    console.print(Text.from_ansi(output))
+
 
 def main_entry():
     intercept_sys_argv()

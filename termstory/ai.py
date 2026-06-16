@@ -783,4 +783,45 @@ def predict_bugs_from_sessions(
     )
 
 
+def generate_rpg_bio(
+    rpg_class: str,
+    commands: List[str],
+    api_key: str,
+    api_base_url: str,
+    model_name: str,
+    provider: str,
+    timeout: Optional[float] = None
+) -> Optional[str]:
+    """Query LLM to generate a brief developer biography and customized ASCII crest based on the assigned RPG class."""
+    if provider == "disabled":
+        return None
+
+    # Sanitise commands
+    sanitized_cmds, is_blacklisted = sanitize_session_commands(commands)
+    if is_blacklisted:
+        commands_summary = "Security/Authentication Operations"
+    else:
+        commands_summary = "\n".join(f"  - {cmd}" for cmd in sanitized_cmds[:15])
+
+    prompt = (
+        "You are the 'TermStory RPG Class Biographer', a developer memory engine sub-module.\n"
+        f"The developer has been assigned the RPG Class: '{rpg_class}' based on their command pattern.\n\n"
+        "Here are some recent commands they ran:\n"
+        f"{commands_summary}\n\n"
+        "YOUR CORE GOALS:\n"
+        "1. Write a witty, humorous, brief biography (3-4 sentences) describing their quest as a developer of this class.\n"
+        "2. Generate a custom, small ASCII-art crest or badge (under 8 lines, under 40 chars wide) representing their class.\n"
+        "3. Output a clean, high-density, CLI-styled console block using ASCII symbols. Do not use markdown formatting, bold text, or conversational preamble.\n\n"
+        "Output format: Return ONLY the raw ASCII crest and biography."
+    )
+
+    from termstory.config import load_config
+    config = load_config()
+    effective_timeout = timeout if timeout is not None else config.get("request_timeout_seconds", 30.0)
+    return _send_llm_request(
+        prompt, api_key, api_base_url, model_name, provider,
+        max_tokens=1500, timeout=effective_timeout
+    )
+
+
 

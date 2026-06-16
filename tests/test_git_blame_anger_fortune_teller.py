@@ -219,3 +219,40 @@ def test_cli_commands(tmp_path, monkeypatch):
     assert result_fortune.exit_code == 0
     assert "Predictive Bug Fortune Teller" in result_fortune.stdout
     assert "Project Alpha" in result_fortune.stdout
+
+
+def test_rpg_class_vampire_index_cli_and_formatters(tmp_path, monkeypatch):
+    monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2026-06-16 12:00:00")
+    db_file = tmp_path / "test_cli_rpg.db"
+    monkeypatch.setattr("termstory.cli.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.config.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.cli.get_history_files", lambda: [])
+    
+    db = Database(str(db_file))
+    db.init_db()
+    
+    # Session
+    now = int(datetime(2026, 6, 16, 12, 0, 0).timestamp())
+    p = Project(id=1, name="Project Alpha", path="~/alpha", first_seen=now, last_seen=now, session_count=1, total_time=1)
+    
+    cmds = [
+        Command(id=1, timestamp=now, command="git commit -m 'feat: main'", exit_code=0, session_id=1, project_id=1),
+        Command(id=2, timestamp=now + 5, command="git push", exit_code=0, session_id=1, project_id=1),
+    ]
+    s = Session(id=1, start_time=now, end_time=now + 100, duration_seconds=100, project_id=1, commands=cmds)
+    db.save_data([p], [s], cmds)
+    
+    runner = CliRunner()
+    
+    # Test rpg-class subcommand
+    result_rpg = runner.invoke(app, ["rpg-class"])
+    assert result_rpg.exit_code == 0
+    assert "Daily RPG Class Assigner" in result_rpg.stdout
+    assert "Git Paladin" in result_rpg.stdout
+    
+    # Test vampire-index subcommand
+    result_vamp = runner.invoke(app, ["vampire-index"])
+    assert result_vamp.exit_code == 0
+    assert "The Vampire Coder Index" in result_vamp.stdout
+    assert "Vampire Index : 0.0%" in result_vamp.stdout
+

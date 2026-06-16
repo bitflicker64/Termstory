@@ -1,7 +1,7 @@
 from datetime import datetime
 from collections import defaultdict
-from typing import List, Tuple, Dict
-from termstory.models import Session, Project, format_duration
+from typing import List, Tuple, Dict, Any
+from termstory.models import Session, Project, Command, format_duration
 from termstory.formatter import classify_command, DISPLAY_NAMES
 
 def calculate_time_distribution(sessions: List[Session], projects: List[Project]) -> List[Tuple[str, float, int]]:
@@ -235,20 +235,45 @@ def analyze_all(db=None) -> Dict:
             FROM sessions s
         """)
         session_rows = cursor.fetchall()
+
+        cursor.execute("SELECT id, timestamp, command, exit_code, session_id, project_id FROM commands")
+        cmd_rows = cursor.fetchall()
+        cmds_by_session = defaultdict(list)
+        for c_id, ts, cmd_text, exit_code, s_id, p_id in cmd_rows:
+            cmds_by_session[s_id].append(Command(id=c_id, timestamp=ts, command=cmd_text, exit_code=exit_code, session_id=s_id, project_id=p_id))
+            
+        cursor.execute("SELECT hash, timestamp, message, cleaned_message, project_id FROM commits")
+        commit_rows = cursor.fetchall()
+        commits_by_project = defaultdict(list)
+        for hash_val, ts, msg, clean_msg, p_id in commit_rows:
+            commits_by_project[p_id].append({
+                "hash": hash_val,
+                "timestamp": ts,
+                "message": msg,
+                "cleaned_message": clean_msg
+            })
     finally:
         conn.close()
         
     sessions = []
     for row in session_rows:
         s_id, start, end, duration, p_id, is_legacy = row
+        s_cmds = cmds_by_session.get(s_id, [])
+        s_commits = []
+        if p_id is not None:
+            p_commits = commits_by_project.get(p_id, [])
+            for c in p_commits:
+                if start - 300 <= c["timestamp"] <= (end + 600 if end is not None else start + 3600):
+                    s_commits.append(c)
+                    
         sessions.append(Session(
             id=s_id,
             start_time=start,
             end_time=end,
             duration_seconds=duration,
             project_id=p_id,
-            commands=[],
-            commits=[],
+            commands=s_cmds,
+            commits=s_commits,
             is_legacy=bool(is_legacy)
         ))
         
@@ -285,6 +310,9 @@ def analyze_all(db=None) -> Dict:
         
     sorted_projects = sorted(project_durations.items(), key=lambda x: x[1], reverse=True)
     
+    vampire_metrics = get_vampire_metrics(sessions)
+    rpg_info = assign_rpg_class(sessions)
+    
     return {
         "total_sessions": total_sessions,
         "total_commands": total_commands,
@@ -292,7 +320,11 @@ def analyze_all(db=None) -> Dict:
         "most_active_day": most_active_day,
         "most_active_time": most_active_time,
         "most_used_projects": sorted_projects,
-        "streak": streak
+        "streak": streak,
+        "vampire_index": vampire_metrics["vampire_index"],
+        "vampire_metrics": vampire_metrics,
+        "rpg_class": rpg_info["class_name"],
+        "rpg_info": rpg_info
     }
 
 
@@ -388,5 +420,130 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
         return chaotic_sessions
     finally:
         conn.close()
+
+
+def calculate_vampire_coder_index(sessions: List[Session]) -> float:
+    """Calculate the percentage of commands and commits executed between midnight and 5:00 AM."""
+    total_count = 0
+    vampire_count = 0
+    for s in sessions:
+        for cmd in s.commands:
+            total_count += 1
+            dt = datetime.fromtimestamp(cmd.timestamp)
+            if 0 <= dt.hour < 5:
+                vampire_count += 1
+        for commit in s.commits:
+            total_count += 1
+            ts = commit.get("timestamp")
+            if ts:
+                dt = datetime.fromtimestamp(ts)
+                if 0 <= dt.hour < 5:
+                    vampire_count += 1
+    if total_count == 0:
+        return 0.0
+    return round((vampire_count / total_count) * 100, 1)
+
+
+def get_vampire_metrics(sessions: List[Session]) -> Dict[str, Any]:
+    """Calculate detailed Vampire Coder Index metrics."""
+    total_commands = 0
+    vampire_commands = 0
+    total_commits = 0
+    vampire_commits = 0
+    for s in sessions:
+        for cmd in s.commands:
+            total_commands += 1
+            dt = datetime.fromtimestamp(cmd.timestamp)
+            if 0 <= dt.hour < 5:
+                vampire_commands += 1
+        for commit in s.commits:
+            total_commits += 1
+            ts = commit.get("timestamp")
+            if ts:
+                dt = datetime.fromtimestamp(ts)
+                if 0 <= dt.hour < 5:
+                    vampire_commits += 1
+    total = total_commands + total_commits
+    vampire = vampire_commands + vampire_commits
+    index = round((vampire / total) * 100, 1) if total > 0 else 0.0
+    return {
+        "vampire_index": index,
+        "vampire_commands": vampire_commands,
+        "total_commands": total_commands,
+        "vampire_commits": vampire_commits,
+        "total_commits": total_commits,
+    }
+
+
+def assign_rpg_class(sessions: List[Session]) -> Dict[str, Any]:
+    """Assign a daily RPG class based on command usage patterns."""
+    counts = {
+        "Regex Sorcerer": 0,
+        "Docker Demolitionist": 0,
+        "Git Paladin": 0,
+        "Frontend Bard": 0,
+        "Python Alchemist": 0,
+        "Database Necromancer": 0,
+        "Systems Ranger": 0,
+    }
+    
+    total_commands = 0
+    for s in sessions:
+        for cmd in s.commands:
+            total_commands += 1
+            cmd_text = cmd.command.strip()
+            lower_cmd = cmd_text.lower()
+            
+            # Check for Regex Sorcerer: pipe or grep, awk, sed
+            if "|" in cmd_text or any(x in lower_cmd.split() for x in ["grep", "awk", "sed"]):
+                counts["Regex Sorcerer"] += 1
+            # Check for Docker Demolitionist: docker, docker-compose, podman
+            elif any(x in lower_cmd.split() for x in ["docker", "docker-compose", "podman"]):
+                counts["Docker Demolitionist"] += 1
+            # Check for Git Paladin: git, gh
+            elif any(x in lower_cmd.split() for x in ["git", "gh"]):
+                counts["Git Paladin"] += 1
+            # Check for Frontend Bard: npm, yarn, pnpm, npx
+            elif any(x in lower_cmd.split() for x in ["npm", "yarn", "pnpm", "npx"]):
+                counts["Frontend Bard"] += 1
+            # Check for Python Alchemist: python, python3, pytest, poetry, pip
+            elif any(x in lower_cmd.split() for x in ["python", "python3", "pytest", "poetry", "pip"]):
+                counts["Python Alchemist"] += 1
+            # Check for Database Necromancer: sqlite3, psql, mysql, mongo, prisma, sql
+            elif any(x in lower_cmd.split() for x in ["sqlite3", "psql", "mysql", "mongo", "prisma", "sql"]):
+                counts["Database Necromancer"] += 1
+            # Check for Systems Ranger: make, cmake, gcc, clang, cargo, rustc, go
+            elif any(x in lower_cmd.split() for x in ["make", "cmake", "gcc", "clang", "cargo", "rustc", "go"]):
+                counts["Systems Ranger"] += 1
+
+    # Find the dominant class
+    dominant_class = "Terminal Nomad"
+    max_count = 0
+    
+    for cls, count in counts.items():
+        if count > max_count:
+            max_count = count
+            dominant_class = cls
+            
+    # Default descriptions/titles
+    descriptions = {
+        "Regex Sorcerer": "You spend your days piping streams and filtering logs. Magic is real, and it's written in regex.",
+        "Docker Demolitionist": "Containers rise and fall at your command. You compose environments and smash dependencies.",
+        "Git Paladin": "A defender of the commit history, keeping branches clean and merging with honor.",
+        "Frontend Bard": "Weaving HTML, CSS, and JS into modern masterpieces. NPM packages are your spells.",
+        "Python Alchemist": "Transmuting simple scripts into elegant solutions, one list comprehension at a time.",
+        "Database Necromancer": "Summoning schemas and querying the ancient tables of databases.",
+        "Systems Ranger": "Tracking low-level build processes and hunting compile-time warnings.",
+        "Terminal Nomad": "Wandering through directories and running miscellaneous commands."
+    }
+    
+    return {
+        "class_name": dominant_class,
+        "description": descriptions.get(dominant_class, ""),
+        "max_count": max_count,
+        "total_commands": total_commands,
+        "counts": counts
+    }
+
 
 
