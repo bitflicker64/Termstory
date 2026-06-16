@@ -1516,11 +1516,12 @@ def format_profile_output(db, limit: int = 10) -> str:
 
 def format_anger_translation(translation: str) -> str:
     """Format the raw LLM output of anger translation into a clean developer-focused layout."""
+    from rich.markup import escape
     output_lines = [
-        "😡 [bold red]Git-Blame Anger Translator[/bold red]",
-        "[dim]────────────────────────────────────────────────────────────────────────────────[/]",
-        translation.strip(),
-        "[dim]────────────────────────────────────────────────────────────────────────────────[/]"
+        "[bold red]Git-Blame Anger Translator[/bold red]",
+        "[dim]───────────────────────────────────────────────────────────────[/]",
+        escape(translation.strip()),
+        "[dim]───────────────────────────────────────────────────────────────[/]"
     ]
     return render_to_string(Text.from_markup("\n".join(output_lines)))
 
@@ -1575,12 +1576,13 @@ def format_anger_translation_heuristics(commit_data: List[Dict]) -> str:
 
 
 def format_bug_predictions(predictions: str) -> str:
-    """Format the raw LLM output of bug predictions into a clean developer-focused layout."""
+    """Format the raw LLM output of bug fortune predictions into a clean developer-focused layout."""
+    from rich.markup import escape
     output_lines = [
-        "🔮 [bold magenta]Predictive Bug Fortune Teller[/bold magenta]",
-        "[dim]────────────────────────────────────────────────────────────────────────────────[/]",
-        predictions.strip(),
-        "[dim]────────────────────────────────────────────────────────────────────────────────[/]"
+        "[bold yellow]Bug Fortune Teller[/bold yellow]",
+        "[dim]───────────────────────────────────────────────────────────────[/]",
+        escape(predictions.strip()),
+        "[dim]───────────────────────────────────────────────────────────────[/]"
     ]
     return render_to_string(Text.from_markup("\n".join(output_lines)))
 
