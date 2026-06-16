@@ -78,4 +78,4 @@
 * **Batch 5 — AI-Driven Git Translation & Predictive Bug Fortunes**: ✅ Completed
 * **Batch 6 — RPG Classes & Vampire Coder Metrics**: ✅ Completed
 * **Batch 7 — Project Necromancy & Rage-Quit Signatures**: ✅ Completed
-* **Batch 8 — Cyberpunk TUI/UX Polish**: 📋 Planned
+* **Batch 8 — Cyberpunk TUI/UX Polish**: ✅ MERGED (PR #19)
