@@ -53,3 +53,49 @@ def format_date_range(start_ts: int, end_ts: int) -> str:
             return f"{start_dt.strftime('%B %d')} - {end_dt.strftime('%d, %Y')}"
         return f"{start_dt.strftime('%B %d')} - {end_dt.strftime('%B %d, %Y')}"
     return f"{start_dt.strftime('%B %d, %Y')} - {end_dt.strftime('%B %d, %Y')}"
+
+def parse_date_range_helper(date_range_str: str) -> Tuple[int, int]:
+    """Parse a date range string into (start_timestamp, end_timestamp) using get_current_time()."""
+    now = get_current_time()
+    dr = date_range_str.strip().lower()
+    
+    if dr == "today":
+        start = datetime.combine(now.date(), time.min)
+        end = datetime.combine(now.date(), time.max)
+        return int(start.timestamp()), int(end.timestamp())
+        
+    elif dr == "yesterday":
+        yesterday = now - timedelta(days=1)
+        start = datetime.combine(yesterday.date(), time.min)
+        end = datetime.combine(yesterday.date(), time.max)
+        return int(start.timestamp()), int(end.timestamp())
+        
+    elif dr.endswith("days"):
+        try:
+            days = int(dr[:-4])
+            start = datetime.combine((now - timedelta(days=days)).date(), time.min)
+            end = datetime.combine(now.date(), time.max)
+            return int(start.timestamp()), int(end.timestamp())
+        except ValueError:
+            pass
+            
+    elif ":" in dr:
+        parts = dr.split(":", 1)
+        try:
+            start_dt = date_parser.parse(parts[0].strip())
+            end_dt = date_parser.parse(parts[1].strip())
+            start = datetime.combine(start_dt.date(), time.min)
+            end = datetime.combine(end_dt.date(), time.max)
+            return int(start.timestamp()), int(end.timestamp())
+        except Exception as e:
+            raise ValueError(f"Invalid date range format: {e}")
+            
+    # Try parsing as a single date
+    try:
+        dt = date_parser.parse(dr)
+        start = datetime.combine(dt.date(), time.min)
+        end = datetime.combine(dt.date(), time.max)
+        return int(start.timestamp()), int(end.timestamp())
+    except Exception:
+        raise ValueError(f"Unknown date range format '{date_range_str}'")
+

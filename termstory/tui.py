@@ -367,7 +367,7 @@ class HelpScreen(ModalScreen[None]):
                 "  [cyan]/[/cyan]        : Search sessions\n"
                 "  [cyan]o[/cyan]        : Configure AI Settings\n"
                 "  [cyan]d[/cyan]        : Play Cyberpunk Matrix Defrag animation\n"
-                "  [cyan]g[/cyan]        : Play Ghost Typer playback of selected commands\n"
+                "  [cyan]p[/cyan]        : Play Ghost Typer playback of selected commands\n"
                 "  [cyan]c[/cyan]        : Copy selected text to clipboard\n"
                 "  [cyan]q[/cyan] / [cyan]Esc[/cyan]  : Quit app / clear search\n\n"
                 "[bold]Canvas Scrolling[/bold]\n"
@@ -1250,7 +1250,7 @@ class DetailsCanvas(VerticalScroll):
                         audit_text = parts[0].strip()
                         verdict_text = parts[1].strip()
                         
-                    exec_widgets.append(NarrativeText(audit_text, parse_markup=False))
+                    exec_widgets.append(NarrativeText(escape(audit_text), parse_markup=True))
                     
                     if verdict_text:
                         v_lines = ["=" * 64]
@@ -1361,7 +1361,7 @@ class DetailsCanvas(VerticalScroll):
             else:
                 cached_story = self.app.db.get_macro_summary(date_str)
                 if cached_story:
-                    narrative_widgets.append(NarrativeText(cached_story, parse_markup=False))
+                    narrative_widgets.append(NarrativeText(escape(cached_story), parse_markup=True))
                     
                     # Add a Regenerate button for the chronicle
                     btn_regen = Button("⟳ Regenerate Chronicle", id=f"btn-exec-{date_str}-date")
@@ -1528,10 +1528,10 @@ class DetailsCanvas(VerticalScroll):
         ai_widgets = [Static("[bold yellow]Session Summary Story[/bold yellow]")]
         if getattr(session, "is_generating_story", False):
             if session.ai_summary:
-                ai_widgets.append(NarrativeText(strip_ansi(session.ai_summary), prefix="✨ ", suffix="\n", parse_markup=False))
+                ai_widgets.append(NarrativeText(escape(strip_ansi(session.ai_summary)), prefix="✨ ", suffix="\n", parse_markup=True))
             ai_widgets.append(Static("⏳ [italic yellow]Thinking...[/italic yellow]\n"))
         elif session.ai_summary:
-            ai_widgets.append(NarrativeText(strip_ansi(session.ai_summary), prefix="✨ ", suffix="\n", parse_markup=False))
+            ai_widgets.append(NarrativeText(escape(strip_ansi(session.ai_summary)), prefix="✨ ", suffix="\n", parse_markup=True))
             if ai_enabled and provider != "disabled" and not getattr(session, "recent_generation", False):
                 btn = Button("⟳ Regenerate", id=f"btn-gen-session-{session.id}")
                 btn.classes = "gen-story-btn small-btn"
@@ -1796,7 +1796,7 @@ class TermStoryWorkspace(App):
         Binding("question_mark", "show_help", "Help", show=True, key_display="?"),
         Binding("o", "show_onboarding", "Configure AI", show=True, key_display="o"),
         Binding("d", "play_defrag", "Defrag Matrix", show=True, key_display="d"),
-        Binding("g", "play_ghost_playback", "Ghost Playback", show=True, key_display="g"),
+        Binding("p", "play_ghost_playback", "Ghost Playback", show=True, key_display="p"),
         Binding("ctrl+shift+h", "reset_termstory", "Reset App", show=True, key_display="ctrl+shift+h"),
 
         Binding("ctrl+down", "scroll_canvas_down", "", show=False),

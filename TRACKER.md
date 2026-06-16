@@ -9,6 +9,7 @@
   * **Flaky Slowloris Tests**: Modified `tests/stress/test_slowloris.py` and `tests/stress/test_slowloris_tui.py` to bind to dynamic, OS-allocated ports (via port `0`), resolving socket conflicts and "Address already in use" OS errors.
 
 ## Completed
+* **Ghost Typer Playback & Web Export (Batch 10)**: Add interactive chronicle playback with `p` keybinding in TUI, `--template` and `--date-range` flags for HTML exports, calendar heatmap filtering in web templates, and escaped LLM outputs.
 * **TUI Dashboard (`termstory ui`)**: Text-based user interface with stats header, streak trackers, command volume heatmap, and details canvas.
 * **CLI Command Suite**:
   * `termstory today`: timeline summary per project.
@@ -80,3 +81,5 @@
 * **Batch 7 — Project Necromancy & Rage-Quit Signatures**: ✅ Completed
 * **Batch 8 — Cyberpunk TUI/UX Polish**: ✅ MERGED (PR #19)
 * **Batch 9 — Local RAG Search / Semantic Deep-Dive**: ✅ Completed
+* **Batch 10 — Ghost Typer Playback & Web Export improvements**: ✅ Completed
+

@@ -129,13 +129,38 @@ def test_cli_web_subcommand(tmp_path, monkeypatch):
     # Mock run_ingestion to avoid attempting to parse real shells
     monkeypatch.setattr("termstory.cli.run_ingestion", lambda db: None)
     
-    # Mock generate_and_open_report
-    called_with_db = []
-    monkeypatch.setattr("termstory.web.generate_and_open_report", lambda db: called_with_db.append(db))
+    # Mock generate_and_open_report to take kwargs
+    called_args = []
+    monkeypatch.setattr(
+        "termstory.web.generate_and_open_report",
+        lambda db, **kwargs: called_args.append((db, kwargs))
+    )
     
     runner = CliRunner()
-    result = runner.invoke(app, ["web"])
+    result = runner.invoke(app, ["web", "--template", "retro", "--date-range", "today"])
     
     assert result.exit_code == 0
-    assert len(called_with_db) == 1
-    assert isinstance(called_with_db[0], Database)
+    assert len(called_args) == 1
+    db_arg, kwargs = called_args[0]
+    assert isinstance(db_arg, Database)
+    assert kwargs["template"] == "retro"
+    assert kwargs["start_ts"] is not None
+    assert kwargs["end_ts"] is not None
+
+def test_parse_date_range_helper():
+    from termstory.date_utils import parse_date_range_helper
+    
+    # Test relative ranges
+    start_today, end_today = parse_date_range_helper("today")
+    assert start_today < end_today
+    
+    start_yesterday, end_yesterday = parse_date_range_helper("yesterday")
+    assert start_yesterday < end_yesterday
+    
+    start_7d, end_7d = parse_date_range_helper("7days")
+    assert start_7d < end_7d
+    
+    # Test absolute range
+    start_custom, end_custom = parse_date_range_helper("2026-06-01:2026-06-15")
+    assert start_custom < end_custom
+

@@ -1,12 +1,17 @@
 import os
 import json
 import webbrowser
+from typing import Optional
 from termstory.insights import analyze_all
 from termstory.formatter import _is_noise_command
 from termstory.database import Database
 
-def get_web_data(db: Database) -> dict:
-    """Gather stats, project list, timeline, and AI highlights from the database."""
+
+def get_web_data(db: Database, start_ts: Optional[int] = None, end_ts: Optional[int] = None) -> dict:
+    """Gather stats, project list, timeline, and AI highlights from the database, filtering by date range if provided."""
+    import time
+    from datetime import datetime, timedelta
+    
     # 1. Base Stats
     stats = analyze_all(db)
     
@@ -32,10 +37,27 @@ def get_web_data(db: Database) -> dict:
     # Sort projects by total time descending
     projects_data.sort(key=lambda x: x["total_time"], reverse=True)
 
-    # 3. Recent Sessions (last 30 sessions)
+    # 3. Filtered Sessions
     conn = db.get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id FROM sessions ORDER BY start_time DESC LIMIT 30")
+    
+    query = "SELECT id FROM sessions"
+    params = []
+    conditions = []
+    if start_ts is not None:
+        conditions.append("start_time >= ?")
+        params.append(start_ts)
+    if end_ts is not None:
+        conditions.append("start_time <= ?")
+        params.append(end_ts)
+        
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY start_time DESC LIMIT 1000"
+    else:
+        query += " ORDER BY start_time DESC LIMIT 30"
+        
+    cursor.execute(query, params)
     session_ids = [row[0] for row in cursor.fetchall()]
     conn.close()
 
@@ -81,17 +103,34 @@ def get_web_data(db: Database) -> dict:
             "is_legacy": s.is_legacy
         })
 
+    # Override total KPI stats if range is specified
+    if start_ts is not None or end_ts is not None:
+        stats["total_sessions"] = len(sessions_data)
+        stats["total_commands"] = sum(len(s.commands) for s in sessions)
+        stats["total_projects"] = len(set(s.project_id for s in sessions if s.project_id is not None))
+
     # 4. AI Summary Highlights
     ai_sessions = [s for s in sessions_data if s["ai_summary"]]
     if len(ai_sessions) < 15:
-        # Fetch more from DB if we don't have enough in the last 30
+        # Fetch more from DB if we don't have enough in the filtered set
         conn = db.get_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id FROM sessions 
-            WHERE ai_summary IS NOT NULL AND ai_summary != '' 
-            ORDER BY start_time DESC LIMIT 15
-        """)
+        
+        # Build query for general AI highlights
+        query_ai = "SELECT id FROM sessions WHERE ai_summary IS NOT NULL AND ai_summary != ''"
+        params_ai = []
+        conditions_ai = []
+        if start_ts is not None:
+            conditions_ai.append("start_time >= ?")
+            params_ai.append(start_ts)
+        if end_ts is not None:
+            conditions_ai.append("start_time <= ?")
+            params_ai.append(end_ts)
+        if conditions_ai:
+            query_ai += " AND " + " AND ".join(conditions_ai)
+        query_ai += " ORDER BY start_time DESC LIMIT 15"
+        
+        cursor.execute(query_ai, params_ai)
         extra_ids = [row[0] for row in cursor.fetchall()]
         conn.close()
 
@@ -120,18 +159,203 @@ def get_web_data(db: Database) -> dict:
     ai_sessions.sort(key=lambda x: x["start_time"], reverse=True)
     highlights_data = ai_sessions[:15]
 
+    # 5. Calculate daily activity for the last 90 days for the heatmap
+    now_dt = datetime.now()
+    ninety_days_ago_ts = int(time.time() - 90 * 86400)
+    
+    daily_activity = {}
+    for i in range(90):
+        d = now_dt - timedelta(days=i)
+        ds = d.strftime("%Y-%m-%d")
+        daily_activity[ds] = {"commands": 0, "sessions": 0}
+        
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT timestamp FROM commands WHERE timestamp >= ?", (ninety_days_ago_ts,))
+        cmd_ts_rows = cursor.fetchall()
+        for (ts,) in cmd_ts_rows:
+            try:
+                ds = datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+                if ds in daily_activity:
+                    daily_activity[ds]["commands"] += 1
+            except Exception:
+                pass
+                
+        cursor.execute("SELECT start_time FROM sessions WHERE start_time >= ?", (ninety_days_ago_ts,))
+        sess_ts_rows = cursor.fetchall()
+        for (ts,) in sess_ts_rows:
+            try:
+                ds = datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+                if ds in daily_activity:
+                    daily_activity[ds]["sessions"] += 1
+            except Exception:
+                pass
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
     return {
         "stats": stats,
         "projects": projects_data,
         "sessions": sessions_data,
-        "highlights": highlights_data
+        "highlights": highlights_data,
+        "daily_activity": daily_activity
     }
 
-def generate_and_open_report(db: Database) -> None:
+def generate_and_open_report(
+    db: Database,
+    template: Optional[str] = None,
+    start_ts: Optional[int] = None,
+    end_ts: Optional[int] = None
+) -> None:
     """Generate the HTML report, save it to ~/.termstory/report.html, and open it in the default browser."""
-    data = get_web_data(db)
+    data = get_web_data(db, start_ts=start_ts, end_ts=end_ts)
     
-    html_template = f"""<!DOCTYPE html>
+    # Check if a custom template file path is provided and exists
+    if template and os.path.isfile(template):
+        with open(template, "r", encoding="utf-8") as f:
+            custom_template_content = f.read()
+        if "{{report_data}}" in custom_template_content:
+            html_content = custom_template_content.replace("{{report_data}}", json.dumps(data))
+        elif "const reportData = " in custom_template_content:
+            import re
+            html_content = re.sub(
+                r"const reportData\s*=\s*.*?;",
+                f"const reportData = {json.dumps(data)};",
+                custom_template_content
+            )
+        else:
+            html_content = custom_template_content.replace(
+                "</head>",
+                f"<script>const reportData = {json.dumps(data)};</script></head>"
+            )
+    else:
+        # Resolve predefined theme variations
+        theme = template or "default"
+        css_variables = {
+            "default": """
+                --bg-color: #0b0d10;
+                --panel-bg: rgba(20, 24, 30, 0.7);
+                --panel-border: rgba(255, 255, 255, 0.05);
+                --text-primary: #f0f3f6;
+                --text-secondary: #8b949e;
+                --accent-color: #58a6ff;
+                --accent-glow: rgba(88, 166, 255, 0.15);
+                --success-color: #3fb950;
+                --success-glow: rgba(63, 185, 80, 0.15);
+                --warning-color: #d29922;
+                --error-color: #f85149;
+                --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+                --font-title: 'Outfit', sans-serif;
+            """,
+            "dark": """
+                --bg-color: #0d1117;
+                --panel-bg: #161b22;
+                --panel-border: #30363d;
+                --text-primary: #c9d1d9;
+                --text-secondary: #8b949e;
+                --accent-color: #58a6ff;
+                --accent-glow: rgba(88, 166, 255, 0.2);
+                --success-color: #238636;
+                --success-glow: rgba(35, 134, 54, 0.2);
+                --warning-color: #d29922;
+                --error-color: #da3633;
+                --font-sans: 'Inter', sans-serif;
+                --font-title: 'Outfit', sans-serif;
+            """,
+            "light": """
+                --bg-color: #f6f8fa;
+                --panel-bg: #ffffff;
+                --panel-border: rgba(27, 31, 35, 0.15);
+                --text-primary: #24292f;
+                --text-secondary: #57606a;
+                --accent-color: #0969da;
+                --accent-glow: rgba(9, 105, 218, 0.15);
+                --success-color: #1a7f37;
+                --success-glow: rgba(26, 127, 55, 0.15);
+                --warning-color: #9a6700;
+                --error-color: #cf222e;
+                --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+                --font-title: 'Outfit', sans-serif;
+            """,
+            "retro": """
+                --bg-color: #000000;
+                --panel-bg: #050505;
+                --panel-border: #00ff00;
+                --text-primary: #00ff00;
+                --text-secondary: #88ff88;
+                --accent-color: #00ff00;
+                --accent-glow: rgba(0, 255, 0, 0.2);
+                --success-color: #00ff00;
+                --success-glow: rgba(0, 255, 0, 0.2);
+                --warning-color: #ffff00;
+                --error-color: #ff0000;
+                --font-sans: 'Courier New', Courier, monospace;
+                --font-title: 'Courier New', Courier, monospace;
+            """
+        }
+        
+        body_style = {
+            "default": """
+                background-color: var(--bg-color);
+                color: var(--text-primary);
+                font-family: var(--font-sans);
+                margin: 0;
+                padding: 0;
+                min-height: 100vh;
+                background-image: 
+                    radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.1) 0px, transparent 50%),
+                    radial-gradient(at 100% 100%, rgba(219, 39, 119, 0.05) 0px, transparent 50%),
+                    radial-gradient(at 50% 0%, rgba(56, 189, 248, 0.05) 0px, transparent 50%);
+                background-attachment: fixed;
+                -webkit-font-smoothing: antialiased;
+            """,
+            "dark": """
+                background-color: var(--bg-color);
+                color: var(--text-primary);
+                font-family: var(--font-sans);
+                margin: 0;
+                padding: 0;
+                min-height: 100vh;
+                background-image: none;
+                -webkit-font-smoothing: antialiased;
+            """,
+            "light": """
+                background-color: var(--bg-color);
+                color: var(--text-primary);
+                font-family: var(--font-sans);
+                margin: 0;
+                padding: 0;
+                min-height: 100vh;
+                background-image: 
+                    radial-gradient(at 0% 0%, rgba(9, 105, 218, 0.05) 0px, transparent 50%),
+                    radial-gradient(at 100% 100%, rgba(26, 127, 55, 0.03) 0px, transparent 50%);
+                background-attachment: fixed;
+                -webkit-font-smoothing: antialiased;
+            """,
+            "retro": """
+                background-color: var(--bg-color);
+                color: var(--text-primary);
+                font-family: var(--font-sans);
+                margin: 0;
+                padding: 0;
+                min-height: 100vh;
+                background-image: none;
+                border: 2px solid #00ff00;
+                box-sizing: border-box;
+            """
+        }
+        
+        selected_theme = theme.lower()
+        if selected_theme not in css_variables:
+            selected_theme = "default"
+            
+        theme_vars = css_variables[selected_theme]
+        selected_body = body_style[selected_theme]
+
+        html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -142,34 +366,11 @@ def generate_and_open_report(db: Database) -> None:
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
     <style>
         :root {{
-            --bg-color: #0b0d10;
-            --panel-bg: rgba(20, 24, 30, 0.7);
-            --panel-border: rgba(255, 255, 255, 0.05);
-            --text-primary: #f0f3f6;
-            --text-secondary: #8b949e;
-            --accent-color: #58a6ff;
-            --accent-glow: rgba(88, 166, 255, 0.15);
-            --success-color: #3fb950;
-            --success-glow: rgba(63, 185, 80, 0.15);
-            --warning-color: #d29922;
-            --error-color: #f85149;
-            --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-            --font-title: 'Outfit', sans-serif;
+            {theme_vars}
         }}
 
         body {{
-            background-color: var(--bg-color);
-            color: var(--text-primary);
-            font-family: var(--font-sans);
-            margin: 0;
-            padding: 0;
-            min-height: 100vh;
-            background-image: 
-                radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.1) 0px, transparent 50%),
-                radial-gradient(at 100% 100%, rgba(219, 39, 119, 0.05) 0px, transparent 50%),
-                radial-gradient(at 50% 0%, rgba(56, 189, 248, 0.05) 0px, transparent 50%);
-            background-attachment: fixed;
-            -webkit-font-smoothing: antialiased;
+            {selected_body}
         }}
 
         /* Scrollbar */
@@ -208,7 +409,7 @@ def generate_and_open_report(db: Database) -> None:
             font-size: 2.2rem;
             font-weight: 800;
             margin: 0;
-            background: linear-gradient(135deg, #fff 30%, #58a6ff 100%);
+            background: linear-gradient(135deg, #fff 30%, var(--accent-color) 100%);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             display: flex;
@@ -236,6 +437,29 @@ def generate_and_open_report(db: Database) -> None:
             border-color: rgba(88, 166, 255, 0.2);
         }}
 
+        /* Heatmap Styles */
+        .heatmap-cell {{
+            width: 12px;
+            height: 12px;
+            border-radius: 2px;
+            cursor: pointer;
+            transition: transform 0.1s ease;
+        }}
+        .heatmap-cell:hover {{
+            transform: scale(1.3);
+            z-index: 10;
+            outline: 1px solid var(--text-primary);
+        }}
+        .heatmap-cell.selected {{
+            outline: 2px solid var(--accent-color);
+            transform: scale(1.1);
+        }}
+        .level-0 {{ background-color: var(--panel-border); opacity: 0.3; }}
+        .level-1 {{ background-color: var(--accent-color); opacity: 0.25; }}
+        .level-2 {{ background-color: var(--accent-color); opacity: 0.5; }}
+        .level-3 {{ background-color: var(--accent-color); opacity: 0.75; }}
+        .level-4 {{ background-color: var(--accent-color); opacity: 1.0; }}
+
         /* KPI grid */
         .kpi-grid {{
             display: grid;
@@ -261,7 +485,7 @@ def generate_and_open_report(db: Database) -> None:
             font-size: 2.2rem;
             font-weight: 800;
             margin-top: 8px;
-            color: #fff;
+            color: var(--text-primary);
         }}
         .kpi-label {{
             color: var(--text-secondary);
@@ -290,7 +514,7 @@ def generate_and_open_report(db: Database) -> None:
             }}
         }}
 
-        /* Active Projects card style */
+        /* Projects */
         .project-row {{
             display: flex;
             align-items: center;
@@ -303,133 +527,122 @@ def generate_and_open_report(db: Database) -> None:
         }}
         .project-info {{
             flex: 1;
-            margin-right: 16px;
         }}
-        .project-name-wrapper {{
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }}
-        .project-badge {{
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            display: inline-block;
-        }}
-        .project-name {{
+        .project-name-text {{
             font-weight: 600;
             color: #fff;
+            margin-bottom: 4px;
         }}
-        .project-path {{
+        .project-path-text {{
             font-size: 0.75rem;
             color: var(--text-secondary);
-            margin-top: 2px;
             word-break: break-all;
         }}
         .project-stats {{
             text-align: right;
-            flex-shrink: 0;
+            margin-left: 20px;
         }}
-        .project-time {{
-            font-weight: 700;
+        .project-duration-text {{
+            font-weight: 600;
             color: var(--accent-color);
         }}
-        .project-sessions {{
-            font-size: 0.8rem;
+        .project-sessions-text {{
+            font-size: 0.75rem;
             color: var(--text-secondary);
-        }}
-        .project-bar-container {{
-            width: 100%;
-            height: 4px;
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 2px;
-            margin-top: 6px;
-            overflow: hidden;
-        }}
-        .project-bar {{
-            height: 100%;
-            border-radius: 2px;
+            margin-top: 2px;
         }}
 
-        /* AI highlights feed */
-        .highlight-card {{
-            border-left: 3px solid var(--accent-color);
-            padding-left: 16px;
-            margin-bottom: 20px;
+        /* Highlights */
+        .highlight-item {{
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+        }}
+        .highlight-item:last-child {{
+            margin-bottom: 0;
+            padding-bottom: 0;
+            border-bottom: none;
         }}
         .highlight-header {{
             display: flex;
             justify-content: space-between;
-            font-size: 0.8rem;
-            color: var(--text-secondary);
-            margin-bottom: 6px;
+            align-items: center;
+            margin-bottom: 8px;
         }}
-        .highlight-project {{
-            font-weight: 600;
+        .highlight-project-pill {{
+            font-size: 0.75rem;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 4px;
             color: #fff;
+        }}
+        .highlight-date {{
+            font-size: 0.75rem;
+            color: var(--text-secondary);
         }}
         .highlight-body {{
             font-size: 0.9rem;
             line-height: 1.5;
             color: var(--text-primary);
-            white-space: pre-wrap;
         }}
 
-        /* Search bar style */
+        /* Search input & Toggle */
         .search-container {{
             display: flex;
             gap: 12px;
             margin-bottom: 24px;
-            align-items: center;
         }}
         .search-input {{
             flex: 1;
-            background: rgba(255, 255, 255, 0.04);
+            background: rgba(0, 0, 0, 0.2);
             border: 1px solid var(--panel-border);
             border-radius: 8px;
-            padding: 12px 16px;
-            color: #fff;
+            padding: 10px 16px;
+            color: var(--text-primary);
             font-family: var(--font-sans);
-            font-size: 0.95rem;
-            transition: border-color 0.2s, box-shadow 0.2s;
+            font-size: 0.9rem;
+            outline: none;
+            transition: border-color 0.2s ease;
         }}
         .search-input:focus {{
-            outline: none;
             border-color: var(--accent-color);
-            box-shadow: 0 0 0 3px var(--accent-glow);
         }}
         .filter-btn {{
-            background: rgba(255, 255, 255, 0.04);
+            background: rgba(255, 255, 255, 0.03);
             border: 1px solid var(--panel-border);
-            color: var(--text-secondary);
             border-radius: 8px;
-            padding: 12px 16px;
+            padding: 0 16px;
+            color: var(--text-primary);
+            font-family: var(--font-sans);
+            font-size: 0.85rem;
             cursor: pointer;
-            font-weight: 500;
-            font-size: 0.9rem;
-            transition: all 0.2s;
+            transition: all 0.2s ease;
             white-space: nowrap;
         }}
-        .filter-btn.active {{
-            background: var(--accent-color);
+        .filter-btn:hover {{
+            background: rgba(255, 255, 255, 0.06);
             border-color: var(--accent-color);
-            color: #000;
-            font-weight: 600;
+        }}
+        .filter-btn.active {{
+            background: var(--accent-glow);
+            border-color: var(--accent-color);
+            color: var(--accent-color);
         }}
 
-        /* Timeline style */
+        /* Timeline structure */
         .timeline {{
             position: relative;
-            padding-left: 32px;
+            padding-left: 24px;
+            margin-left: 8px;
         }}
         .timeline::before {{
             content: '';
             position: absolute;
-            top: 8px;
-            bottom: 8px;
-            left: 11px;
+            top: 0;
+            bottom: 0;
+            left: 0;
             width: 2px;
-            background: rgba(255, 255, 255, 0.05);
+            background: var(--panel-border);
         }}
         .timeline-item {{
             position: relative;
@@ -440,18 +653,11 @@ def generate_and_open_report(db: Database) -> None:
         }}
         .timeline-dot {{
             position: absolute;
-            left: -32px;
-            top: 6px;
+            left: -29px;
+            top: 18px;
             width: 10px;
             height: 10px;
             border-radius: 50%;
-            background: var(--accent-color);
-            border: 4px solid var(--bg-color);
-            box-shadow: 0 0 0 4px rgba(88, 166, 255, 0.2);
-            transition: transform 0.2s;
-        }}
-        .timeline-item:hover .timeline-dot {{
-            transform: scale(1.3);
         }}
         .session-card {{
             padding: 20px;
@@ -459,50 +665,49 @@ def generate_and_open_report(db: Database) -> None:
         .session-header {{
             display: flex;
             justify-content: space-between;
-            align-items: flex-start;
-            margin-bottom: 12px;
+            align-items: center;
             flex-wrap: wrap;
-            gap: 8px;
+            gap: 10px;
+            margin-bottom: 12px;
         }}
         .session-meta-left {{
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 12px;
             flex-wrap: wrap;
         }}
         .session-project-pill {{
-            padding: 4px 10px;
-            border-radius: 12px;
             font-size: 0.75rem;
             font-weight: 700;
+            padding: 3px 10px;
+            border-radius: 4px;
             color: #fff;
         }}
         .session-time-range {{
-            font-size: 0.85rem;
+            font-size: 0.8rem;
             color: var(--text-secondary);
         }}
         .session-duration {{
-            font-size: 0.9rem;
+            font-family: var(--font-title);
+            font-size: 1.1rem;
             font-weight: 700;
-            color: #fff;
-            background: rgba(255, 255, 255, 0.05);
-            padding: 4px 10px;
-            border-radius: 6px;
+            color: var(--accent-color);
         }}
 
-        /* Commits inside session */
+        /* Commits in Session */
         .session-commits {{
-            margin: 12px 0;
-            padding: 10px 14px;
-            background: rgba(0, 0, 0, 0.2);
+            background: rgba(0, 0, 0, 0.15);
             border-radius: 8px;
-            border-left: 2px solid var(--success-color);
+            padding: 12px;
+            margin-top: 12px;
+            font-size: 0.85rem;
+            border: 1px solid rgba(255, 255, 255, 0.02);
         }}
         .commit-row {{
-            font-family: var(--font-sans);
-            font-size: 0.85rem;
+            display: flex;
+            gap: 12px;
             margin-bottom: 6px;
-            color: var(--text-primary);
+            line-height: 1.4;
         }}
         .commit-row:last-child {{
             margin-bottom: 0;
@@ -510,55 +715,67 @@ def generate_and_open_report(db: Database) -> None:
         .commit-hash {{
             font-family: monospace;
             color: var(--success-color);
-            margin-right: 6px;
+            font-weight: bold;
         }}
 
-        /* Commands inside session */
+        /* Commands List */
         .commands-toggle {{
             background: none;
             border: none;
-            color: var(--accent-color);
-            font-size: 0.85rem;
+            color: var(--text-secondary);
+            font-family: var(--font-sans);
+            font-size: 0.8rem;
             font-weight: 600;
             cursor: pointer;
             padding: 0;
+            margin-top: 12px;
             display: flex;
             align-items: center;
             gap: 4px;
-            margin-top: 10px;
+            outline: none;
         }}
         .commands-toggle:hover {{
-            text-decoration: underline;
+            color: var(--text-primary);
+        }}
+        .commands-toggle svg {{
+            transition: transform 0.2s ease;
+        }}
+        .commands-toggle.open svg {{
+            transform: rotate(180deg);
         }}
         .commands-list {{
-            display: none;
-            margin-top: 10px;
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.2s ease-out;
+            margin-top: 8px;
             background: rgba(0, 0, 0, 0.25);
             border-radius: 8px;
-            padding: 12px;
-            max-height: 250px;
-            overflow-y: auto;
-            border: 1px solid rgba(255, 255, 255, 0.03);
-        }}
-        .commands-list.open {{
-            display: block;
-        }}
-        .command-item {{
             font-family: monospace;
             font-size: 0.8rem;
-            padding: 6px 0;
+            display: flex;
+            flex-direction: column;
+        }}
+        .commands-list.open {{
+            max-height: 400px;
+            overflow-y: auto;
+            border: 1px solid rgba(255, 255, 255, 0.02);
+        }}
+        .command-item {{
+            padding: 8px 12px;
             border-bottom: 1px solid rgba(255, 255, 255, 0.02);
-            color: #c9d1d9;
+            color: #d1d5db;
             word-break: break-all;
+            white-space: pre-wrap;
         }}
         .command-item:last-child {{
             border-bottom: none;
         }}
         .command-item.error {{
             color: var(--error-color);
+            border-left: 2px solid var(--error-color);
         }}
         .command-item.legacy {{
-            color: #8b949e;
+            color: var(--text-secondary);
             font-style: italic;
         }}
     </style>
@@ -592,6 +809,26 @@ def generate_and_open_report(db: Database) -> None:
             <div class="panel kpi-card">
                 <div class="kpi-label">Coding Streak</div>
                 <div class="kpi-value" id="kpi-streak">-</div>
+            </div>
+        </div>
+
+        <!-- Heatmap Section -->
+        <div class="panel" style="margin-bottom: 24px; padding: 20px;">
+            <h3 style="font-family: var(--font-title); font-size: 1.1rem; margin-top: 0; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+                <svg style="width: 18px; height: 18px; color: var(--accent-color)" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                Activity Heatmap (Last 90 Days)
+            </h3>
+            <div id="heatmap-grid" style="display: grid; grid-template-rows: repeat(7, 12px); grid-auto-flow: column; grid-auto-columns: 12px; gap: 3px; overflow-x: auto; padding-bottom: 10px;"></div>
+            <div class="heatmap-legend" style="display: flex; align-items: center; font-size: 0.75rem; color: var(--text-secondary); margin-top: 10px; gap: 6px;">
+                <span>Less</span>
+                <div class="legend-cell level-0" style="width: 12px; height: 12px; border-radius: 2px;"></div>
+                <div class="legend-cell level-1" style="width: 12px; height: 12px; border-radius: 2px;"></div>
+                <div class="legend-cell level-2" style="width: 12px; height: 12px; border-radius: 2px;"></div>
+                <div class="legend-cell level-3" style="width: 12px; height: 12px; border-radius: 2px;"></div>
+                <div class="legend-cell level-4" style="width: 12px; height: 12px; border-radius: 2px;"></div>
+                <span>More</span>
+                <span id="heatmap-filter-info" style="margin-left: 15px; font-weight: bold; color: var(--accent-color);"></span>
+                <button id="reset-date-filter" class="filter-btn" style="margin-left: 10px; display: none; padding: 2px 8px; font-size: 0.7rem;">Reset Date Filter</button>
             </div>
         </div>
         
@@ -634,6 +871,7 @@ def generate_and_open_report(db: Database) -> None:
         const reportData = {json.dumps(data)};
         let showNoise = false;
         let searchQuery = "";
+        let selectedDateFilter = null;
 
         function getProjectColor(name) {{
             let hash = 0;
@@ -648,21 +886,31 @@ def generate_and_open_report(db: Database) -> None:
             if (seconds <= 0) return "0s";
             if (seconds < 60) return `${{seconds}}s`;
             const hours = Math.floor(seconds / 3600);
-            const minutes = Math.floor((seconds % 3600) / 60);
-            const parts = [];
-            if (hours > 0) parts.push(`${{hours}}h`);
-            if (minutes > 0 || !parts.length) parts.push(`${{minutes}}m`);
-            return parts.join(" ");
+            const mins = Math.floor((seconds % 3600) / 60);
+            const secs = seconds % 60;
+            if (hours > 0) {{
+                return `${{hours}}h ${{mins}}m`;
+            }}
+            return `${{mins}}m ${{secs}}s`;
         }}
 
         function formatDate(timestamp) {{
-            const d = new Date(timestamp * 1000);
-            return d.toLocaleDateString(undefined, {{ month: 'short', day: 'numeric', year: 'numeric' }});
+            const date = new Date(timestamp * 1000);
+            return date.toLocaleDateString(undefined, {{ month: 'short', day: 'numeric', year: 'numeric' }});
         }}
 
         function formatTime(timestamp) {{
-            const d = new Date(timestamp * 1000);
-            return d.toLocaleTimeString(undefined, {{ hour: '2-digit', minute: '2-digit' }});
+            const date = new Date(timestamp * 1000);
+            return date.toLocaleTimeString(undefined, {{ hour: '2-digit', minute: '2-digit' }});
+        }}
+
+        function escapeHtml(str) {{
+            return str
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
         }}
 
         function renderProjects() {{
@@ -670,32 +918,22 @@ def generate_and_open_report(db: Database) -> None:
             container.innerHTML = "";
             
             if (reportData.projects.length === 0) {{
-                container.innerHTML = `<div style="color: var(--text-secondary); font-size: 0.9rem;">No active projects recorded.</div>`;
+                container.innerHTML = `<div style="color: var(--text-secondary); text-align: center; padding: 20px 0;">No active projects recorded.</div>`;
                 return;
             }}
             
-            const totalTime = reportData.projects.reduce((acc, p) => acc + p.total_time, 0);
-            
             reportData.projects.forEach(p => {{
                 const color = getProjectColor(p.name);
-                const pct = totalTime > 0 ? (p.total_time / totalTime * 100).toFixed(1) : 0;
-                
                 const row = document.createElement('div');
                 row.className = 'project-row';
                 row.innerHTML = `
                     <div class="project-info">
-                        <div class="project-name-wrapper">
-                            <span class="project-badge" style="background-color: ${{color}}"></span>
-                            <span class="project-name">${{p.name}}</span>
-                        </div>
-                        <div class="project-path">${{p.path || ''}}</div>
-                        <div class="project-bar-container">
-                            <div class="project-bar" style="width: ${{pct}}%; background-color: ${{color}}"></div>
-                        </div>
+                        <div class="project-name-text" style="color: ${{color}}">${{p.name}}</div>
+                        <div class="project-path-text">${{p.path}}</div>
                     </div>
                     <div class="project-stats">
-                        <div class="project-time">${{formatDuration(p.total_time)}}</div>
-                        <div class="project-sessions">${{p.session_count}} sessions (${{pct}}%)</div>
+                        <div class="project-duration-text">${{formatDuration(p.total_time)}}</div>
+                        <div class="project-sessions-text">${{p.session_count}} sessions</div>
                     </div>
                 `;
                 container.appendChild(row);
@@ -707,33 +945,36 @@ def generate_and_open_report(db: Database) -> None:
             container.innerHTML = "";
             
             if (reportData.highlights.length === 0) {{
-                container.innerHTML = `<div style="color: var(--text-secondary); font-size: 0.9rem;">No AI summaries generated yet. Run some sessions and enable AI to see highlights!</div>`;
+                container.innerHTML = `<div style="color: var(--text-secondary); text-align: center; padding: 20px 0;">No AI summary highlights available.</div>`;
                 return;
             }}
             
             reportData.highlights.forEach(h => {{
-                const card = document.createElement('div');
-                card.className = 'highlight-card';
-                card.style.borderLeftColor = getProjectColor(h.project_name);
-                card.innerHTML = `
+                const color = getProjectColor(h.project_name);
+                const item = document.createElement('div');
+                item.className = 'highlight-item';
+                item.innerHTML = `
                     <div class="highlight-header">
-                        <span class="highlight-project">${{h.project_name}}</span>
-                        <span>${{formatDate(h.start_time)}}</span>
+                        <span class="highlight-project-pill" style="background-color: ${{color}}">${{h.project_name}}</span>
+                        <span class="highlight-date">${{formatDate(h.start_time)}}</span>
                     </div>
                     <div class="highlight-body">${{h.ai_summary}}</div>
                 `;
-                container.appendChild(card);
+                container.appendChild(item);
             }});
         }}
 
-        function escapeHtml(str) {{
-            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
-        }}
-
-        function toggleCommands(id) {{
-            const el = document.getElementById(`commands-list-${{id}}`);
-            if (el) {{
-                el.classList.toggle('open');
+        function toggleCommands(sessionId) {{
+            const el = document.getElementById(`commands-list-${{sessionId}}`);
+            const btn = el.previousElementSibling;
+            
+            el.classList.toggle('open');
+            btn.classList.toggle('open');
+            
+            if (el.classList.contains('open')) {{
+                el.style.maxHeight = el.scrollHeight + "px";
+            }} else {{
+                el.style.maxHeight = 0;
             }}
         }}
 
@@ -748,7 +989,13 @@ def generate_and_open_report(db: Database) -> None:
                     s.commands.some(c => c.command.toLowerCase().includes(searchQuery.toLowerCase())) ||
                     s.commits.some(c => c.message.toLowerCase().includes(searchQuery.toLowerCase()));
                     
-                return matchesSearch;
+                let matchesDate = true;
+                if (selectedDateFilter) {{
+                    const sDate = new Date(s.start_time * 1000).toISOString().split('T')[0];
+                    matchesDate = (sDate === selectedDateFilter);
+                }}
+                
+                return matchesSearch && matchesDate;
             }});
             
             if (filtered.length === 0) {{
@@ -795,13 +1042,8 @@ def generate_and_open_report(db: Database) -> None:
                     `;
                 }}
                 
-                let summaryHtml = "";
-                if (s.ai_summary) {{
-                    summaryHtml = `<div class="highlight-body" style="margin-top: 8px; font-style: italic;">${{s.ai_summary}}</div>`;
-                }}
-                
                 item.innerHTML = `
-                    <span class="timeline-dot" style="background-color: ${{color}}; box-shadow: 0 0 0 4px ${{color}}33"></span>
+                    <div class="timeline-dot" style="background-color: ${{color}}"></div>
                     <div class="panel session-card">
                         <div class="session-header">
                             <div class="session-meta-left">
@@ -810,12 +1052,58 @@ def generate_and_open_report(db: Database) -> None:
                             </div>
                             <span class="session-duration">${{formatDuration(s.duration_seconds)}}</span>
                         </div>
-                        ${{summaryHtml}}
+                        ${{s.ai_summary ? `<div class="highlight-body" style="font-style: italic; margin-bottom: 12px;">${{s.ai_summary}}</div>` : ''}}
                         ${{commitsHtml}}
                         ${{commandsHtml}}
                     </div>
                 `;
                 container.appendChild(item);
+            }});
+        }}
+
+        function renderHeatmap() {{
+            const grid = document.getElementById('heatmap-grid');
+            grid.innerHTML = "";
+            const dailyAct = reportData.daily_activity || {{}};
+            const dates = Object.keys(dailyAct).sort();
+            
+            dates.forEach(dateStr => {{
+                const act = dailyAct[dateStr];
+                const cmdCount = act.commands;
+                const sCount = act.sessions;
+                
+                let level = 0;
+                if (cmdCount > 0) {{
+                    if (cmdCount <= 5) level = 1;
+                    else if (cmdCount <= 15) level = 2;
+                    else if (cmdCount <= 30) level = 3;
+                    else level = 4;
+                }}
+                
+                const cell = document.createElement('div');
+                cell.className = `heatmap-cell level-${{level}}`;
+                if (selectedDateFilter === dateStr) cell.classList.add('selected');
+                cell.title = `${{dateStr}}: ${{cmdCount}} commands, ${{sCount}} sessions`;
+                cell.dataset.date = dateStr;
+                
+                cell.addEventListener('click', () => {{
+                    if (selectedDateFilter === dateStr) {{
+                        selectedDateFilter = null;
+                        document.getElementById('reset-date-filter').style.display = 'none';
+                        document.getElementById('heatmap-filter-info').textContent = "";
+                    }} else {{
+                        const prev = grid.querySelector('.heatmap-cell.selected');
+                        if (prev) prev.classList.remove('selected');
+                        
+                        selectedDateFilter = dateStr;
+                        cell.classList.add('selected');
+                        document.getElementById('reset-date-filter').style.display = 'inline-block';
+                        document.getElementById('heatmap-filter-info').textContent = `Filtering by: ${{dateStr}}`;
+                    }}
+                    renderTimeline();
+                }});
+                
+                grid.appendChild(cell);
             }});
         }}
 
@@ -849,19 +1137,31 @@ def generate_and_open_report(db: Database) -> None:
                 renderTimeline();
             }});
             
+            document.getElementById('reset-date-filter').addEventListener('click', () => {{
+                const grid = document.getElementById('heatmap-grid');
+                const prev = grid.querySelector('.heatmap-cell.selected');
+                if (prev) prev.classList.remove('selected');
+                selectedDateFilter = null;
+                document.getElementById('reset-date-filter').style.display = 'none';
+                document.getElementById('heatmap-filter-info').textContent = "";
+                renderTimeline();
+            }});
+            
             renderProjects();
             renderHighlights();
+            renderHeatmap();
             renderTimeline();
         }});
     </script>
 </body>
 </html>
 """
-    
+
+
     report_path = os.path.expanduser("~/.termstory/report.html")
     os.makedirs(os.path.dirname(report_path), exist_ok=True)
     with open(report_path, "w", encoding="utf-8") as f:
-        f.write(html_template)
+        f.write(html_content)
         
     print(f"Web report saved to: {report_path}")
     webbrowser.open(f"file://{os.path.abspath(report_path)}")

@@ -448,7 +448,10 @@ def show_tags(
 
 
 @app.command("web")
-def show_web():
+def show_web(
+    template: Optional[str] = typer.Option(None, "--template", help="Template name or custom HTML template file path"),
+    date_range: Optional[str] = typer.Option(None, "--date-range", help="Date range filter (e.g. today, yesterday, 7days, 30days, YYYY-MM-DD:YYYY-MM-DD)"),
+):
     """Generate and open a beautiful HTML report of your work statistics"""
     db_path = get_db_path()
     db = Database(db_path)
@@ -456,9 +459,18 @@ def show_web():
     
     run_ingestion(db)
     
+    start_ts = None
+    end_ts = None
+    if date_range:
+        from termstory.date_utils import parse_date_range_helper
+        try:
+            start_ts, end_ts = parse_date_range_helper(date_range)
+        except ValueError as e:
+            Console(stderr=True).print(f"[bold red]Error: {e}[/bold red]")
+            raise typer.Exit(code=1)
+            
     from termstory.web import generate_and_open_report
-    generate_and_open_report(db)
-
+    generate_and_open_report(db, template=template, start_ts=start_ts, end_ts=end_ts)
 
 
 @app.command("ask")
@@ -493,7 +505,9 @@ def ask_cmd(
             console.print("[bold red]Failed to generate an answer.[/bold red]")
         raise typer.Exit(code=1)
         
-    console.print(answer)
+    from rich.markup import escape
+    console.print(escape(answer))
+
 
 
 @app.command("predict")
