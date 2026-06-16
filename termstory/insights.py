@@ -370,7 +370,7 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
                         FROM commits
                         WHERE project_id = ? AND timestamp >= ? AND timestamp <= ?
                         ORDER BY timestamp ASC
-                    """, (p_id, start - 300, end + 600))
+                    """, (p_id, start - 300, end + 600 if end is not None else start + 3600))
                     commits = [r[0] for r in cursor.fetchall()]
 
                 chaotic_sessions.append({

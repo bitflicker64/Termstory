@@ -559,11 +559,12 @@ def anger_translator(
         commit_data = []
         for hash_val, ts, msg, clean_msg, p_id in commit_rows:
             cursor.execute("""
-                SELECT command, exit_code
-                FROM commands
-                WHERE timestamp >= ? AND timestamp < ? AND exit_code != 0
-                ORDER BY timestamp DESC
-            """, (ts - 1800, ts))
+                SELECT cmd.command, cmd.exit_code
+                FROM commands cmd
+                JOIN sessions s ON cmd.session_id = s.id
+                WHERE cmd.timestamp >= ? AND cmd.timestamp < ? AND cmd.exit_code != 0 AND s.project_id = ?
+                ORDER BY cmd.timestamp DESC
+            """, (ts - 1800, ts, p_id))
             err_rows = cursor.fetchall()
             
             preceding_errors = [r[0] for r in err_rows]
@@ -596,7 +597,7 @@ def anger_translator(
         
         if not api_base_url:
             if provider == "groq":
-                api_base_url = "https://api.groq.com/openapi/v1"
+                api_base_url = "https://api.groq.com/openai/v1"
             elif provider == "openai":
                 api_base_url = "https://api.openai.com/v1"
             elif provider == "ollama":
@@ -655,7 +656,7 @@ def fortune_teller(
         
         if not api_base_url:
             if provider == "groq":
-                api_base_url = "https://api.groq.com/openapi/v1"
+                api_base_url = "https://api.groq.com/openai/v1"
             elif provider == "openai":
                 api_base_url = "https://api.openai.com/v1"
             elif provider == "ollama":
