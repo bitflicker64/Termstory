@@ -212,24 +212,25 @@ def generate_and_open_report(
 ) -> None:
     """Generate the HTML report, save it to ~/.termstory/report.html, and open it in the default browser."""
     data = get_web_data(db, start_ts=start_ts, end_ts=end_ts)
+    safe_data_str = json.dumps(data).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     
     # Check if a custom template file path is provided and exists
     if template and os.path.isfile(template):
         with open(template, "r", encoding="utf-8") as f:
             custom_template_content = f.read()
         if "{{report_data}}" in custom_template_content:
-            html_content = custom_template_content.replace("{{report_data}}", json.dumps(data))
+            html_content = custom_template_content.replace("{{report_data}}", safe_data_str)
         elif "const reportData = " in custom_template_content:
             import re
             html_content = re.sub(
                 r"const reportData\s*=\s*.*?;",
-                f"const reportData = {json.dumps(data)};",
+                f"const reportData = {safe_data_str};",
                 custom_template_content
             )
         else:
             html_content = custom_template_content.replace(
                 "</head>",
-                f"<script>const reportData = {json.dumps(data)};</script></head>"
+                f"<script>const reportData = {safe_data_str};</script></head>"
             )
     else:
         # Resolve predefined theme variations
@@ -868,7 +869,7 @@ def generate_and_open_report(
     </div>
 
     <script>
-        const reportData = {json.dumps(data)};
+        const reportData = {safe_data_str};
         let showNoise = false;
         let searchQuery = "";
         let selectedDateFilter = null;
@@ -905,7 +906,8 @@ def generate_and_open_report(
         }}
 
         function escapeHtml(str) {{
-            return str
+            if (str === null || str === undefined) return "";
+            return String(str)
                 .replace(/&/g, "&amp;")
                 .replace(/</g, "&lt;")
                 .replace(/>/g, "&gt;")
@@ -928,8 +930,8 @@ def generate_and_open_report(
                 row.className = 'project-row';
                 row.innerHTML = `
                     <div class="project-info">
-                        <div class="project-name-text" style="color: ${{color}}">${{p.name}}</div>
-                        <div class="project-path-text">${{p.path}}</div>
+                        <div class="project-name-text" style="color: ${{color}}">${{escapeHtml(p.name)}}</div>
+                        <div class="project-path-text">${{escapeHtml(p.path)}}</div>
                     </div>
                     <div class="project-stats">
                         <div class="project-duration-text">${{formatDuration(p.total_time)}}</div>
@@ -955,10 +957,10 @@ def generate_and_open_report(
                 item.className = 'highlight-item';
                 item.innerHTML = `
                     <div class="highlight-header">
-                        <span class="highlight-project-pill" style="background-color: ${{color}}">${{h.project_name}}</span>
+                        <span class="highlight-project-pill" style="background-color: ${{color}}">${{escapeHtml(h.project_name)}}</span>
                         <span class="highlight-date">${{formatDate(h.start_time)}}</span>
                     </div>
-                    <div class="highlight-body">${{h.ai_summary}}</div>
+                    <div class="highlight-body">${{escapeHtml(h.ai_summary)}}</div>
                 `;
                 container.appendChild(item);
             }});
@@ -1016,8 +1018,8 @@ def generate_and_open_report(
                         <div class="session-commits">
                             ${{s.commits.map(c => `
                                 <div class="commit-row">
-                                    <span class="commit-hash">${{c.hash.substring(0, 7)}}</span>
-                                    <span>${{c.cleaned_message || c.message}}</span>
+                                    <span class="commit-hash">${{escapeHtml(c.hash.substring(0, 7))}}</span>
+                                    <span>${{escapeHtml(c.cleaned_message || c.message)}}</span>
                                 </div>
                             `).join('')}}
                         </div>
@@ -1047,12 +1049,12 @@ def generate_and_open_report(
                     <div class="panel session-card">
                         <div class="session-header">
                             <div class="session-meta-left">
-                                <span class="session-project-pill" style="background-color: ${{color}}">${{s.project_name}}</span>
+                                <span class="session-project-pill" style="background-color: ${{color}}">${{escapeHtml(s.project_name)}}</span>
                                 <span class="session-time-range">${{formatDate(s.start_time)}} at ${{formatTime(s.start_time)}} - ${{formatTime(s.end_time)}}</span>
                             </div>
                             <span class="session-duration">${{formatDuration(s.duration_seconds)}}</span>
                         </div>
-                        ${{s.ai_summary ? `<div class="highlight-body" style="font-style: italic; margin-bottom: 12px;">${{s.ai_summary}}</div>` : ''}}
+                        ${{s.ai_summary ? `<div class="highlight-body" style="font-style: italic; margin-bottom: 12px;">${{escapeHtml(s.ai_summary)}}</div>` : ''}}
                         ${{commitsHtml}}
                         ${{commandsHtml}}
                     </div>

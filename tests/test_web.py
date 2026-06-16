@@ -164,3 +164,36 @@ def test_parse_date_range_helper():
     start_custom, end_custom = parse_date_range_helper("2026-06-01:2026-06-15")
     assert start_custom < end_custom
 
+
+def test_escaping_of_json_script_tags(tmp_path, monkeypatch):
+    db_file = tmp_path / "escaping.db"
+    db = Database(str(db_file))
+    db.init_db()
+    
+    now = int(datetime(2026, 6, 14, 12, 0, 0).timestamp())
+    p1 = Project(id=1, name="<script>alert(1)</script>", path="&some_path", first_seen=now, last_seen=now, session_count=1, total_time=120)
+    cmd1 = Command(timestamp=now, command="git commit", exit_code=0, session_id=1, project_id=1)
+    s1 = Session(id=1, start_time=now, end_time=now + 120, duration_seconds=120, project_id=1, commands=[cmd1], ai_summary="<script>alert('ai')</script>")
+    
+    db.save_data([p1], [s1], [cmd1])
+    db.save_session_ai_summary(s1.id, "<script>alert('ai')</script>")
+    
+    report_dir = tmp_path / ".termstory"
+    report_file = report_dir / "report.html"
+    monkeypatch.setattr("os.path.expanduser", lambda path: str(report_dir / "report.html") if "report.html" in path else str(report_dir))
+    monkeypatch.setattr("webbrowser.open", lambda url: None)
+    
+    generate_and_open_report(db)
+    
+    with open(report_file, "r", encoding="utf-8") as f:
+        html = f.read()
+        
+    # The literal script tags of the page structure should be present
+    assert "<script>" in html
+    
+    # The script tags in the JSON data should be safely escaped as unicode escape sequences
+    assert "</script><script>" not in html
+    assert "\\u003cscript\\u003ealert(1)\\u003c/script\\u003e" in html
+    assert "\\u003cscript\\u003ealert('ai')\\u003c/script\\u003e" in html
+    assert "\\u0026some_path" in html
+
