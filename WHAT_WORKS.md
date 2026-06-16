@@ -1,107 +1,103 @@
 # TermStory Batch Dispatch — What Works
 
-## THE WORKING PATTERN
+## THE PATTERN (proven across 30+ test runs)
 
-**Prerequisites:**
-1. User has tmux session "0" running in their interactive terminal
-2. `~/.gemini/antigravity-cli/settings.json` has permissions configured (see below)
-3. Prompt file exists at `.batch-<N>-prompt.txt` in repo root
+```
+Hermes writes prompt → dispatch to tmux → agy codes + tests + commits → Hermes pushes + PRs → Greptile reviews → Hermes merges
+```
 
-**Pre-config settings (already set):**
-```json
+| Step | Who | Works? |
+|------|-----|--------|
+| Write prompt file | Hermes | ✅ |
+| agy code changes | tmux session 0 | ✅ |
+| agy runs tests | tmux session 0 | ✅ |
+| agy commits | tmux session 0 | ✅ (times out on complex tasks) |
+| git push | Hermes terminal | ✅ |
+| gh pr create | Hermes terminal | ✅ |
+| Greptile review | Auto (webhook) | ✅ |
+| gh pr merge | Hermes terminal | ✅ |
+
+## agy WORKS when:
+
+1. **Model: Gemini 3.5 Flash (High)** — fast, no permission spam
+2. **Brain cleared** — `rm -rf ~/.gemini/antigravity-cli/brain/* ~/.gemini/antigravity-cli/history.jsonl`
+3. **Flag: `--add-dir "/path"`** — forces correct workspace
+4. **Flag: `--print-timeout 1800s`** — 30 min
+5. **Settings: `permissionMode: "always-proceed"`** — no popups
+6. **Single-line prompts** — no newlines (shell `dquote>` bug)
+7. **Prompt starts with `cd /path`** — explicit working dir
+8. **Subagents work** with GH token in prompt
+9. **GH token in prompt**: `echo "ghp_xxx" | gh auth login --with-token`
+10. **Clean tmux**: C-c + clear before each dispatch
+
+## agy DOESN'T WORK when:
+
+- Model is GPT-OSS 120B (too slow, permission spam)
+- Brain has stale workspace data from old sessions
+- Multi-line prompts with newlines (shell `dquote>` artifacts)
+- Running from Hermes terminal directly (no Keychain for OAuth)
+- Timeout < 600s for multi-file tasks
+- Push/PR steps at end (always times out before those)
+- `--dangerously-skip-permissions` alone (needs `permissionMode` too)
+
+## Full Workflow (from scratch):
+
+```bash
+# 1. Clear brain (fixes stale workspace)
+rm -rf ~/.gemini/antigravity-cli/brain/* ~/.gemini/antigravity-cli/history.jsonl
+
+# 2. Ensure settings.json has correct model + permissions
+cat > ~/.gemini/antigravity-cli/settings.json << 'END'
 {
   "enableTelemetry": false,
-  "model": "GPT-OSS 120B (Medium)",
-  "permissions": {
-    "allow": [
-      "command(git)", "command(python3)", "command(pytest)",
-      "write_file", "edit_file"
-    ]
-  }
+  "model": "Gemini 3.5 Flash (High)",
+  "permissionMode": "always-proceed",
+  "permissions": { "allow": ["command(git)","command(python3)","command(pytest)","write_file","edit_file","read_file"] },
+  "allowNonWorkspaceAccess": true
 }
-```
+END
 
-**Command to dispatch from Hermes (works):**
-```bash
-/Users/himanshuverma/.hermes/profiles/agy-work/skills/antigravity-cli/scripts/run-batch.sh <batch-number> <timeout>
-```
-
-Wrapper script (already installed):
-```bash
-#!/bin/bash
-set -e
-BATCH="${1:-1}"
-TIMEOUT="${2:-1800s}"
-AGY="/Users/himanshuverma/.local/bin/agy"
-WORKDIR="/Users/himanshuverma/personal/termstory"
-PROMPT_FILE="$WORKDIR/.batch-${BATCH}-prompt.txt"
-OUTPUT_FILE="$WORKDIR/.batch-${BATCH}-output.txt"
-MARKER="/tmp/agy-batch-${BATCH}-done"
-
-[ -f "$PROMPT_FILE" ] || { echo "ERROR: Prompt file not found: $PROMPT_FILE"; exit 1; }
-
-PROMPT_CONTENT="$(cat "$PROMPT_FILE")"
-rm -f "$MARKER"
-
+# 3. Clean tmux
 tmux send-keys -t 0 C-c
 sleep 2
-tmux send-keys -t 0 "cd $WORKDIR" Enter
-sleep 1
-tmux send-keys -t 0 "$AGY --print \"$PROMPT_CONTENT\" --dangerously-skip-permissions --print-timeout $TIMEOUT > $OUTPUT_FILE 2>&1; touch $MARKER" Enter
+tmux send-keys -t 0 'clear' Enter
 
-echo "Batch $BATCH dispatched to tmux session 0"
+# 4. Write prompt file in repo
+# Single line only! No newlines.
 
-while [ ! -f "$MARKER" ]; do sleep 15; done
+# 5. Dispatch to tmux
+run-batch.sh N 1800s
 
-echo "BATCH $BATCH COMPLETE"
-tail -50 "$OUTPUT_FILE" 2>/dev/null || true
+# 6. After agy commits, complete workflow:
+cd ~/personal/termstory
+git push origin feat/batch-N
+gh pr create --base main --head feat/batch-N --fill
+gh pr comment N --body "@greptileai review"
+sleep 120
+gh pr view N --json comments --jq 'last | .body' | grep -oE '[0-9]/5'
+# if >= 4: gh pr merge N --squash --delete-branch
 ```
 
-## PROVEN RESULTS (from this session)
+## Prompt format (proven single-line):
 
-| Test | Prompt Size | Result |
-|------|-------------|--------|
-| `say hi in 3 words` | 1 line | "Hey there friend" |
-| Multi-line batch-test (branch/commit) | 15 lines | Created `feat/batch-test`, wrote `release.yml`, committed |
-
-## PROMPT FILE FORMAT
-
-Must be at `.batch-<batch_number>-prompt.txt` in repo root.
-
-Working example (15 lines that was committed):
 ```
-EXECUTE ONLY. NO subagents.
-
-You are at /Users/himanshuverma/personal/termstory.
-
-TASKS:
-1. PyPI release workflow
-   - Create .github/workflows/release.yml (tag->PyPI, SHA-pinned)
-   - Run: python3 -m build --check
-
-WORKFLOW:
-1. git checkout main && git pull && git checkout -b feat/batch-test
-2. Do tasks. Tests after each.
-3. git add -A && git commit -m "feat: test"
-4. git push origin feat/batch-test
-5. gh pr create --fill
-
-RULES:
-- NO subagents
-- NO multi_replace on large files
+EXECUTE ONLY. NO subagents. cd /Users/himanshuverma/personal/termstory. git checkout main && git pull. git checkout -b feat/batch-N. [TASK]. Run pytest tests/ -v. git add -A && git commit -m "feat: ...". git push origin feat/batch-N. gh pr create --base main --head feat/batch-N --fill.
 ```
 
-## KNOWN LIMITATIONS
+## With subagents + GH token (proven working):
 
-- Hermes terminal CANNOT run agy directly (no Keychain for OAuth)
-- tmux session MUST be pre-existing from user's login shell
-- Multi-line prompts >15 lines may need to be tested first
-- If tmux session is filled with stale text, Ctrl+C 3x + clear before running
-- gh auth via keyring works in tmux session 0 (`gh auth status` shows logged in)
+```
+EXECUTE ONLY. Use define_subagent for each task. cd /Users/himanshuverma/personal/termstory. git checkout main && git pull. git checkout -b feat/batch-N. echo "ghp_xxx" | gh auth login --with-token. [TASK]. Run tests. git add -A && git commit -m "feat: ...". git push. gh pr create --fill. Print result after each step.
+```
 
-## NEXT STEPS FOR BATCH 4+ BATCHES
+## Git auth in Hermes terminal:
 
-1. Write `.batch-<N>-prompt.txt` in repo root
-2. Run: `run-batch.sh <N> 1800s`
-3. agy will execute tasks, create branch, commit, push, create PR
-4. Greptile review (auto-triggered) — merge if score >= 4
+```bash
+echo "YOUR_PAT" | gh auth login --with-token
+```
+
+## Greptile score check:
+
+```bash
+gh pr view N --json comments --jq '[.comments[] | select(.author.login=="greptile-apps")] | last | .body' | grep -oE '[0-9]/5'
+```
