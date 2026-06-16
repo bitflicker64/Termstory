@@ -60,6 +60,7 @@ def _make_db(sessions_spec: list) -> str:
             path TEXT UNIQUE,
             first_seen INTEGER,
             last_seen INTEGER,
+            project_context TEXT,
             created_at INTEGER DEFAULT (strftime('%s', 'now'))
         )
     """)
@@ -456,3 +457,30 @@ class TestFormatPredictOutput:
         ])
         out = format_predict_output(result)
         assert "termstory predict" in out
+
+
+class TestPredictorDaysFilter:
+    def test_days_filter_excludes_older_sessions(self):
+        now = datetime.now()
+        specs = [
+            # Session 1: 5 days ago (should be included if days=7)
+            {"start": now - timedelta(days=5), "project": "ProjectA", "duration": 3600, "commands": ["python run.py"]},
+            # Session 2: 10 days ago (should be excluded if days=7)
+            {"start": now - timedelta(days=10), "project": "ProjectB", "duration": 3600, "commands": ["git status"]},
+        ]
+        db_path = _make_db(specs)
+        try:
+            p = Predictor(db_path)
+            # With days=7, only ProjectA should be analyzed
+            res = p.predict(now=now, days=7)
+            projects = [x["project_name"] for x in res["top_projects"]]
+            assert "ProjectA" in projects
+            assert "ProjectB" not in projects
+            
+            # With days=15, both should be analyzed
+            res_all = p.predict(now=now, days=15)
+            projects_all = [x["project_name"] for x in res_all["top_projects"]]
+            assert "ProjectA" in projects_all
+            assert "ProjectB" in projects_all
+        finally:
+            os.unlink(db_path)

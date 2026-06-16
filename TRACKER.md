@@ -45,11 +45,9 @@
   * **Overall Wrapped View**: "All-Time / Timeline Wrapped" dashboard telemetry and AI Roast/Audit generator.
   * **White Glove Setup**: Automatic detection of missing Zsh timestamps and interactive prompt to enable `EXTENDED_HISTORY`.
 * **CI/CD Workflow**: GitHub Actions running `pytest` across Python 3.9–3.12 and automated PyPI releases.
+* **Project-Specific AI Contexts (Batch 11)**: Added `termstory project context` CLI subcommand for context setting and viewing, wired `project_context` from database to AI prompts in `ai.py` for `generate_ai_summary` and `generate_executive_review`, enhanced `termstory predict` with `--json` and `--days`, and escaped all LLM outputs.
 
 ## In Progress
-* **Project-Specific AI Contexts (Partially Implemented)**:
-  * The database schema (`project_context` column) and data structure (`project_context` field) exist.
-  * *Active Work*: Wiring `project_context` from database to AI prompts in `ai.py`. Creating configuration CLI subcommand and TUI options.
 * **Batch 4 Git Workflow Resolution**:
   * Completing the final Git merge and branch cleanup (`feat/batch-4-v4`).
 

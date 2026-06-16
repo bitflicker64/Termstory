@@ -248,17 +248,56 @@ def show_today(
 
 @app.command("project")
 def show_project(
-    name: str = typer.Argument(..., help="Name or path of the project")
+    name: str = typer.Argument(..., help="Name or path of the project, or 'context' to manage project context"),
+    arg2: Optional[str] = typer.Argument(None, help="Project name (required if first argument is 'context')"),
+    arg3: Optional[str] = typer.Argument(None, help="Context description to set (if setting context)"),
+    show: bool = typer.Option(False, "--show", help="Show the current project context")
 ):
-    """Show detailed history for a specific project"""
+    """Show detailed history for a specific project, or manage project context"""
     db_path = get_db_path()
     db = Database(db_path)
     safe_init_db(db)
     
     run_ingestion(db)
     
+    if name.lower() == "context":
+        if not arg2:
+            Console(stderr=True).print(
+                "[bold red]Error: Missing project name.[/]\n"
+                "Usage:\n"
+                "  termstory project context <name> \"description\" (to set)\n"
+                "  termstory project context <name> --show (to view)"
+            )
+            raise typer.Exit(code=1)
+            
+        projects = db.get_all_projects_with_stats()
+        target = None
+        for p in projects:
+            if arg2.lower() in p.name.lower() or (p.path and arg2.lower() in p.path.lower()):
+                target = p
+                break
+                
+        if not target:
+            Console(stderr=True).print(f"[bold red]Error: Could not find project matching '{arg2}'[/]")
+            raise typer.Exit(code=1)
+            
+        if show:
+            context_val = target.project_context or ""
+            console.print(context_val)
+        else:
+            if not arg3:
+                Console(stderr=True).print(
+                    "[bold red]Error: Missing context description.[/]\n"
+                    "Usage:\n"
+                    "  termstory project context <name> \"description\""
+                )
+                raise typer.Exit(code=1)
+            db.update_project_context(target.id, arg3)
+            console.print(f"[bold green]✅ Context updated for project '{target.name}':[/] {arg3}")
+        return
+
+    # Normal project display flow
     projects = db.get_all_projects_with_stats()
-    
     target = None
     for p in projects:
         if name.lower() in p.name.lower() or (p.path and name.lower() in p.path.lower()):
@@ -514,6 +553,7 @@ def ask_cmd(
 def predict_cmd(
     top: int = typer.Option(3, "--top", help="Number of top project predictions to show"),
     json_out: bool = typer.Option(False, "--json", help="Output predictions as JSON"),
+    days: Optional[int] = typer.Option(None, "--days", help="Number of days of history to analyze"),
 ):
     """Predict what you will likely work on next (Pre-Cognitive Workspace)"""
     db_path = get_db_path()
@@ -525,7 +565,7 @@ def predict_cmd(
     from termstory.predict import Predictor, format_predict_output
 
     predictor = Predictor(db_path)
-    result = predictor.predict(top_n=top)
+    result = predictor.predict(top_n=top, days=days)
 
     if json_out:
         import json

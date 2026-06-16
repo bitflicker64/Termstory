@@ -95,7 +95,7 @@ class Predictor:
     # Data loading
     # ------------------------------------------------------------------
 
-    def _load_sessions(self) -> List[Dict]:
+    def _load_sessions(self, cutoff_time: Optional[int] = None) -> List[Dict]:
         """
         Load all non-legacy sessions with their project names, commands, and
         session boundaries directly from SQLite — no ORM overhead.
@@ -104,8 +104,7 @@ class Predictor:
         try:
             cursor = conn.cursor()
 
-            # Fetch all non-legacy sessions joined to their project
-            cursor.execute("""
+            query = """
                 SELECT
                     s.id,
                     s.start_time,
@@ -116,8 +115,14 @@ class Predictor:
                     p.path AS project_path
                 FROM sessions s
                 LEFT JOIN projects p ON s.project_id = p.id
-                ORDER BY s.start_time ASC
-            """)
+            """
+            params = []
+            if cutoff_time is not None:
+                query += " WHERE s.start_time >= ?"
+                params.append(cutoff_time)
+            query += " ORDER BY s.start_time ASC"
+
+            cursor.execute(query, params)
             session_rows = cursor.fetchall()
 
             sessions = []
@@ -280,6 +285,7 @@ class Predictor:
         self,
         top_n: int = 3,
         now: Optional[datetime] = None,
+        days: Optional[int] = None,
     ) -> Dict:
         """
         Run the prediction pipeline and return structured results.
@@ -306,7 +312,11 @@ class Predictor:
         if now is None:
             now = datetime.now()
 
-        sessions = self._load_sessions()
+        cutoff_time = None
+        if days is not None:
+            cutoff_time = int((now - timedelta(days=days)).timestamp())
+
+        sessions = self._load_sessions(cutoff_time=cutoff_time)
 
         if not sessions:
             return {

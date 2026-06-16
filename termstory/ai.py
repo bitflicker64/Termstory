@@ -32,6 +32,38 @@ def clear_last_ai_error() -> None:
     if hasattr(_local_ai_state, "last_error"):
         delattr(_local_ai_state, "last_error")
 
+def _get_project_context_from_db(project_name: str) -> Optional[str]:
+    try:
+        from termstory.config import get_db_path
+        from termstory.database import Database
+        db_path = get_db_path()
+        db = Database(db_path)
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT project_context FROM projects WHERE name = ?", (project_name,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return row[0]
+    except Exception:
+        pass
+    return None
+
+def _get_all_active_project_contexts() -> List[tuple]:
+    try:
+        from termstory.config import get_db_path
+        from termstory.database import Database
+        db_path = get_db_path()
+        db = Database(db_path)
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT name, project_context FROM projects WHERE project_context IS NOT NULL AND project_context != ''")
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+    except Exception:
+        return []
+
 def _is_current_worker_cancelled() -> bool:
     try:
         from textual.worker import get_current_worker, NoActiveWorker
@@ -227,7 +259,10 @@ def _send_llm_request(
         with _circuit_breaker_lock:
             _circuit_breaker_failures = 0
             
-        return result_box[0] if result_box else None
+        if result_box:
+            from rich.markup import escape
+            return escape(result_box[0])
+        return None
 
     return None
 
@@ -268,6 +303,11 @@ def generate_ai_summary(
         unique_commits = sorted(list(set(commits)))
         commits_block = "\nGit Commit Messages:\n" + "\n".join(f"- {c}" for c in unique_commits)
         
+    context_str = ""
+    db_context = _get_project_context_from_db(project_name)
+    if db_context:
+        context_str = f"Project Context: {db_context}\n"
+
     prompt = (
         "Translate the developer's raw shell commands and Git commits into a high-density, CLI-styled terminal log of their work session.\n\n"
         "YOUR CORE GOAL:\n"
@@ -291,6 +331,7 @@ def generate_ai_summary(
         "3. Keep each line extremely concise, informative, and technical.\n\n"
         "Input Data to Summarize:\n"
         f"Project: {project_name}\n"
+        f"{context_str}"
         "Commands Executed:\n"
         f"{commands_block}\n"
         f"{commits_block}\n\n"
@@ -321,6 +362,11 @@ def generate_timeframe_summary(
     from termstory.formatter import get_operator_handle
     github_username = get_operator_handle()
     
+    contexts = _get_all_active_project_contexts()
+    contexts_block = ""
+    if contexts:
+        contexts_block = "Active Project Contexts:\n" + "\n".join(f"- Project: {name}\n  Context: {ctx}" for name, ctx in contexts) + "\n\n"
+
     prompt = (
         "Write a highly-personalized, modern engineering review of the developer's work over this entire period based on their commits, session summaries, and tooling stats.\n\n"
         "You are the master narrator for termstory, a developer memory engine. "
@@ -383,6 +429,7 @@ def generate_timeframe_summary(
         "5. Output must fit in a single terminal screen/grid view cleanly.\n\n"
         f"Developer Work Log Context:\n"
         f"OPERATOR: {github_username}\n"
+        f"{contexts_block}"
         f"{stats_summary}\n\n"
         "Output format: Return ONLY the raw, polished console card block. No markdown formatting, no conversational filler, and no surrounding quotes."
     )
@@ -393,6 +440,25 @@ def generate_timeframe_summary(
     return _send_llm_request(
         prompt, api_key, api_base_url, model_name, provider,
         max_tokens=1500, timeout=effective_timeout
+    )
+
+
+def generate_executive_review(
+    stats_summary: str,
+    api_key: str,
+    api_base_url: str,
+    model_name: str,
+    provider: str,
+    timeout: Optional[float] = None
+) -> Optional[str]:
+    """Query LLM to generate a professional action-oriented summary of a timeframe (executive review)."""
+    return generate_timeframe_summary(
+        stats_summary=stats_summary,
+        api_key=api_key,
+        api_base_url=api_base_url,
+        model_name=model_name,
+        provider=provider,
+        timeout=timeout
     )
 
 

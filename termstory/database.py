@@ -163,6 +163,12 @@ class Database:
                 except sqlite3.OperationalError as e:
                     if "duplicate column name" not in str(e).lower():
                         raise
+                # Add project_context column to projects
+                try:
+                    cursor.execute("ALTER TABLE projects ADD COLUMN project_context TEXT;")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e).lower():
+                        raise
                 # Create macro_summaries table if not exists
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS macro_summaries (
@@ -1002,7 +1008,8 @@ class Database:
             cursor.execute("""
                 SELECT p.id, p.name, p.path, p.first_seen, p.last_seen,
                        COUNT(s.id) AS session_count,
-                       SUM(s.duration_seconds) AS total_time
+                       SUM(s.duration_seconds) AS total_time,
+                       p.project_context
                 FROM projects p
                 LEFT JOIN sessions s ON p.id = s.project_id
                 GROUP BY p.id
@@ -1011,7 +1018,7 @@ class Database:
             rows = cursor.fetchall()
             projects = []
             for row in rows:
-                p_id, name, path, first, last, s_count, t_time = row
+                p_id, name, path, first, last, s_count, t_time, context = row
                 projects.append(Project(
                     id=p_id,
                     name=name,
@@ -1019,11 +1026,26 @@ class Database:
                     first_seen=first,
                     last_seen=last,
                     session_count=s_count or 0,
-                    total_time=t_time or 0
+                    total_time=t_time or 0,
+                    project_context=context
                 ))
         finally:
             conn.close()
         return projects
+
+    def update_project_context(self, project_id: int, context: Optional[str]) -> None:
+        """Update the project context for a given project ID"""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE projects
+                SET project_context = ?
+                WHERE id = ?
+            """, (context, project_id))
+            conn.commit()
+        finally:
+            conn.close()
 
     def search_projects(self, query: str) -> List[Project]:
         """Fuzzy search projects by name or path using case-insensitive LIKE matches"""
@@ -1034,7 +1056,8 @@ class Database:
             cursor.execute("""
                 SELECT p.id, p.name, p.path, p.first_seen, p.last_seen,
                        COUNT(s.id) AS session_count,
-                       SUM(s.duration_seconds) AS total_time
+                       SUM(s.duration_seconds) AS total_time,
+                       p.project_context
                 FROM projects p
                 LEFT JOIN sessions s ON p.id = s.project_id
                 WHERE p.name LIKE ? OR p.path LIKE ?
@@ -1044,7 +1067,7 @@ class Database:
             rows = cursor.fetchall()
             projects = []
             for row in rows:
-                p_id, name, path, first, last, s_count, t_time = row
+                p_id, name, path, first, last, s_count, t_time, context = row
                 projects.append(Project(
                     id=p_id,
                     name=name,
@@ -1052,7 +1075,8 @@ class Database:
                     first_seen=first,
                     last_seen=last,
                     session_count=s_count or 0,
-                    total_time=t_time or 0
+                    total_time=t_time or 0,
+                    project_context=context
                 ))
             
             # Sort results: exact name matches first, then prefix matches, then substring matches, then path matches

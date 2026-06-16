@@ -423,6 +423,47 @@ def test_ai_retry_logic(monkeypatch):
     assert res == "Success on 3rd attempt"
 
 
+def test_ai_escaping(monkeypatch):
+    def mock_urlopen(req, timeout=None):
+        resp_payload = {
+            "choices": [{"message": {"content": "[red] tag\n├─ 🔨 Built: feature"}}]
+        }
+        return MockResponse(json.dumps(resp_payload).encode("utf-8"))
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+    
+    from termstory.ai import generate_ai_summary
+    res = generate_ai_summary(
+        ["pytest tests/"],
+        "test-key",
+        "https://api.groq.com/openai/v1",
+        "llama3",
+        "groq"
+    )
+    assert r"\[red]" in res
+
+
+def test_generate_executive_review_alias(monkeypatch):
+    called = []
+    def mock_urlopen(req, timeout=None):
+        called.append(req)
+        resp_payload = {
+            "choices": [{"message": {"content": "Executive review output."}}]
+        }
+        return MockResponse(json.dumps(resp_payload).encode("utf-8"))
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+    
+    from termstory.ai import generate_executive_review
+    res = generate_executive_review(
+        stats_summary="Stats",
+        api_key="test-key",
+        api_base_url="https://api.openai.com/v1",
+        model_name="gpt-4o",
+        provider="openai"
+    )
+    assert len(called) == 1
+    assert res == "Executive review output."
+
+
 
 
 
