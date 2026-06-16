@@ -25,11 +25,18 @@ echo "=== batch-finish: $BRANCH ==="
 echo "[1/6] Pushing branch..."
 git push origin "$BRANCH" 2>&1
 
-# 2. Create PR
-echo "[2/6] Creating PR..."
-PR_URL=$(gh pr create --base main --head "$BRANCH" --fill 2>&1)
-PR_NUM=$(echo "$PR_URL" | grep -oE '[0-9]+$')
-echo "PR #$PR_NUM: $PR_URL"
+# 2. Create PR if not exists, otherwise update
+EXISTING_PR=$(gh pr list --state open --head "$BRANCH" --json number --jq '.[0].number' 2>/dev/null || echo "")
+if [ -n "$EXISTING_PR" ]; then
+  PR_NUM="$EXISTING_PR"
+  echo "[2/6] Using existing PR #$PR_NUM"
+  PR_URL="https://github.com/$REPO/pull/$PR_NUM"
+else
+  echo "[2/6] Creating PR..."
+  PR_URL=$(gh pr create --base main --head "$BRANCH" --fill 2>&1)
+  PR_NUM=$(echo "$PR_URL" | grep -oE '[0-9]+$')
+  echo "PR #$PR_NUM: $PR_URL"
+fi
 
 # 3. Trigger Greptile
 echo "[3/6] Triggering Greptile review..."
@@ -65,9 +72,7 @@ else
   echo "Score < 4. NOT merging. Check Greptile feedback:"
   echo "$COMMENT" | grep -A5 "Confidence"
   echo ""
-  echo "Fix issues, then run:"
-  echo "  git add -A && git commit -m \"fix: address greptile feedback\""
-  echo "  batch-finish $BRANCH"
+  echo "Issues found. Fix them, push, and re-run batch-finish."
   echo ""
   echo "PR: $PR_URL"
   exit 1

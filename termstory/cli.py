@@ -569,12 +569,16 @@ def anger_translator(
             
             preceding_errors = [r[0] for r in err_rows]
             
+            # Add sanitizer for privacy
+            from termstory.sanitizer import sanitize_session_commands
+            sanitized_errors, _ = sanitize_session_commands(preceding_errors)
+    
             commit_data.append({
                 "hash": hash_val,
                 "timestamp": ts,
                 "message": msg,
                 "cleaned_message": clean_msg,
-                "preceding_errors": preceding_errors
+                "preceding_errors": sanitized_errors
             })
             
     finally:
