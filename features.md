@@ -52,11 +52,23 @@ One-shot subcommand that launches `agy -p` from within TermStory, bridging your 
 
 ---
 
-## 🔧 Shipped in v0.4.0
+## 🔧 Shipped in v0.6.0
 
 - ✅ **`termstory agy` subcommand**: Bridges TermStory to `agy -p` for instant AI pair-programming.
 - ✅ **`termstory ask` subcommand**: Search and Q&A over history with TF-IDF and LLMs.
 - ✅ **`termstory optimize` (VACUUM)**: Reclaims SQLite disk space via `VACUUM`.
 - ✅ **`termstory --version` flag**: Reports current version from `__version__`.
-- ✅ **TUI status bar version + last ingestion**: StatsHeader now shows `v0.4.0` and `Synced: <date>`.
+- ✅ **TUI status bar version + last ingestion**: StatsHeader now shows `v0.6.0` and `Synced: <date>`.
 - ✅ **GitHub Actions CI**: Automated test pipeline on every push via `.github/workflows/ci.yml`.
+- ✅ **RPG Class Alter Ego (`termstory rpg-class`)**: Assigns daily RPG classes with LLM biographies.
+- ✅ **Vampire Coder Index (`termstory vampire-index`)**: Late-night terminal activity metric.
+- ✅ **Project Necromancer Score (`termstory necromancer`)**: Track resurrection rate of dormant repositories.
+- ✅ **Rage-Quit Signatures (`termstory rage-quit`)**: Final command signature before inactivity.
+- ✅ **Anger Translator (`termstory anger-translator`)**: Translate frustrating errors/commits to funny roasts.
+- ✅ **Predictive Bug Fortunes (`termstory fortune-teller`)**: Forecast Monday bugs from late-night sessions.
+- ✅ **TUI Cyberpunk Aesthetics**: Matrix falling code ingestion, heatmap pulses, streak glitches.
+- ✅ **Ghost Typer Playback**: Interactive playbacks for daily chronicles in TUI.
+- ✅ **Local RAG Search (`termstory search --semantic`)**: Hybrid BM25/semantic history search.
+- ✅ **Project Contexts (`termstory project context`)**: Feed custom goals/descriptions into AI prompts.
+- ✅ **MCP Snapshots (`termstory replay --mcp`)**: Capture and display active IDE, Git, and shell states.
+- ✅ **Database Profiler (`termstory profile`)**: Query execution profiling and N+1 query prevention.

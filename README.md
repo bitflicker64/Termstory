@@ -105,7 +105,7 @@ termstory/
 ├── README.md                    # This document
 ├── DATA_PRIVACY.md              # LLM data handling policy
 ├── termstory/
-│   ├── __init__.py              # Version: 0.2.14
+│   ├── __init__.py              # Version: 0.6.0
 │   ├── __main__.py              # python3 -m termstory entry point
 │   ├── cli.py                   # Typer CLI — all commands & ingestion entry point
 │   ├── tui.py                   # Textual TUI dashboard & all widgets
@@ -703,6 +703,39 @@ Auto-classify and tag sessions (`deploy`, `debug`, `setup`, `test`, `docs`) base
 - `termstory tags debug`
 - `termstory tags --rebuild`
 
+### 🗄️ Archive (`termstory archive`)
+Archive older sessions, commands, commits, and summaries (older than N days) into a separate archive database file to keep the active database lean.
+- `termstory archive --days 90`
+
+### 💾 Backup & Restore (`termstory backup` / `termstory restore`)
+Create timestamped database backups or restore your database from a backup file in case of corruption or data migration.
+- `termstory backup`
+- `termstory restore /path/to/backup.db`
+
+### 📅 Timeline (`termstory timeline`)
+Render a high-density ASCII visual activity chart and timeline of command distributions over the recent days.
+- `termstory timeline`
+- `termstory timeline --days 30`
+
+### 📓 Notebook (`termstory notebook`)
+Export your terminal sessions as a clean, chronological Markdown journal/notebook grouped by day, optionally filtered by project or date range.
+- `termstory notebook`
+- `termstory notebook --project myapp --since 7`
+
+### ⏰ Reminders (`termstory remind`)
+Schedule, list, and manage reminders linked to specific sessions (e.g. reminding yourself of a task in a few days).
+- `termstory remind "follow up on bug fix" --days 2`
+- `termstory remind --list`
+- `termstory remind --complete 1`
+
+### ⚙️ Reset (`termstory reset`)
+Reset all TermStory state, clear the SQLite database, and wipe the configuration file back to clean defaults.
+- `termstory reset`
+
+### 🔍 Observability Relay (`termstory obs`)
+Toggle observability settings (such as Nemo relay / DeepWiki settings) for Hermes via local `.env` and `config.yaml` updates.
+- `termstory obs`
+
 ---
 
 ## 15. CLI Reference
@@ -851,10 +884,38 @@ termstory 2026-05-15                 # Specific date
 termstory --date 2026-05-15 week     # Week containing that date
 ```
 
-### Maintenance
+### Database, Archiving & Maintenance
 
 ```bash
 termstory optimize                   # Vacuum SQLite database and rebuild indexes
+termstory archive                    # Archive sessions older than 90 days
+termstory archive --days 30          # Archive sessions older than 30 days
+termstory backup                     # Create a timestamped backup of the database
+termstory restore /path/to/backup.db # Restore database from a backup file
+termstory reset                      # Reset all TermStory state and database
+```
+
+### Timeline & Notebook
+
+```bash
+termstory timeline                   # Render ASCII activity timeline over 30 days
+termstory timeline --days 60         # Render ASCII timeline over 60 days
+termstory notebook                   # Export history sessions as Markdown journal
+termstory notebook --project myapp   # Export journal for specific project
+```
+
+### Reminders
+
+```bash
+termstory remind "refactor auth"     # Add a reminder
+termstory remind --list              # List active/pending reminders
+termstory remind --complete 2        # Mark reminder #2 as completed
+```
+
+### Observability
+
+```bash
+termstory obs                        # Toggle DeepWiki observability relay for Hermes
 ```
 
 ---
@@ -910,7 +971,7 @@ Key configuration parameters:
 python3 -m pytest tests/ -v
 ```
 
-**v0.2.9 results: 155 passed, 1 skipped, 0 failures**
+**v0.6.0 results: 377 passed, 0 failures**
 
 | Test File | What it covers |
 |---|---|
@@ -921,10 +982,15 @@ python3 -m pytest tests/ -v
 | `test_git_integration.py` | `git log` subprocess mocking, commit message cleaning |
 | `test_database.py` / `test_database_queries.py` | WAL config, schema init, CRUD, dedup migration, date range queries |
 | `test_sanitizer.py` | Blacklist short-circuit, credential redaction, FQDN exclusion |
-| `test_ai.py` | urllib payload construction, keyless mode, timeout, prompt templates |
+| `test_ai.py` / `test_ai_error_surfacing.py` | urllib payload construction, keyless mode, timeout, prompt templates, error surfacing |
 | `test_tui.py` | Textual widget lifecycle, onboarding flow, search, wrapped view, clipboard |
 | `test_formatter_rich.py` | CLI output layout and Rich markup |
 | `test_integration.py` | End-to-end ingestion → DB → render |
+| `test_archive.py` / `test_backup.py` | Database archiving, backup, and restore verification |
+| `test_predict.py` / `test_search.py` | Pre-cognitive workspace prediction and advanced hybrid search filtering |
+| `test_git_blame_anger_fortune_teller.py` | Anger translation and predictive bug forecasting logic |
+| `test_mcp_snapshot.py` | MCP time-machine workspace snapshots |
+| `test_expert_concurrency.py` / `test_stress.py` | Heavy concurrent database reads/writes, slowloris TUI simulated tests |
 
 ---
 

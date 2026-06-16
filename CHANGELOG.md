@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Advanced Search Subcommand (`termstory search`)**: Added multi-filter capability to search sessions, commands, and commits by date range (`--since`, `--until`), project (`--project`), and tags (`--tag`/`-t`), using the newly introduced `termstory/search.py` module.
 - **Detailed Command Documentation**: Expanded `README.md` with dedicated documentation sections explaining the inner workings, parameters, and examples for all advanced CLI subcommands (`ask`, `predict`, `replay`, `insights`, `web`, `export`, `stats`, `tags`).
-- **Roadmap Updates**: Shifted completed technical milestones (SQLite FTS5, Concurrency tests, agy, predict, replay, CI, search) into the "Shipped" section in `ROADMAP.md`.
+- **Roadmap Updates**: Shifted completed technical milestones (SQLite FTS5, Concurrency tests, agy, predict, replay, CI, search) into the completed milestones in `TRACKER.md`.
 
 ### Changed
 - **Version Bump**: Promoted version to `0.5.0` across `__init__.py`, `setup.py`, and `pyproject.toml`.

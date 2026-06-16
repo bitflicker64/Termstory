@@ -4,7 +4,7 @@
 **agy does everything. Hermes does nothing except write prompts and run agy-cycle.**
 
 ## Hermes (me) — only these actions:
-1. Write .batch-N-prompt.txt (single-line prompt describing the feature)
+1. Define the batch prompt (single-line prompt describing the feature to build)
 2. Run: `agy-cycle N` (background, notify_on_complete=true)
 3. Wait for ping — ZERO tokens until notification
 4. On ping: check output, report to user

@@ -3,7 +3,7 @@
 ## THE PATTERN (30+ runs, proven across 5 batches)
 
 ```
-1. Write single-line prompt → .batch-N-prompt.txt
+1. Define single-line batch prompt
 2. run-batch.sh N 1800s          (agy does code + tests + commit)
 3. git push origin feat/batch-N   (Hermes, 5s)
 4. gh pr create --fill            (Hermes, 2s)

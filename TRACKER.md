@@ -4,10 +4,11 @@
 * **Current Version**: `0.6.0` (released on June 17, 2026)
 * **Latest Release Details**:
   * **Unified Subcommand Documentation**: Aligned `README.md` and CLI documentation with all recently added subcommands (`rpg-class`, `vampire-index`, `necromancer`, `rage-quit`, `profile`, `fortune-teller`, `anger-translator`, `search --semantic`, `project context`, and `predict`).
-  * **Repository Housekeeping**: Completed checking off all batch statuses (batches 5-11) in `PLAN.md` and `TASKS.md` to cleanly close out recent feature expansions.
+  * **Repository Housekeeping**: Completed checking off all batch statuses (batches 5-11) in the tracking system to cleanly close out recent feature expansions.
   * **Version Promotion**: Promoted version to `0.6.0` across the package core files.
 
 ## Completed
+* **Documentation Updates & Refinement (Batch 13p3)**: Updated README.md with all current CLI commands, updated CHANGELOG.md for v0.6.0, updated WHAT_WORKS.md, WORKFLOW.md, DATA_PRIVACY.md, features.md, and issues.md to ensure all references to removed planning files are cleaned up, and documented batch 13p3 completion.
 * **Developer Memory Engine Documentation Overhaul (Batch 13p2)**: Conducted repository-wide code and module analysis of all modules and tests in the repository. Generated a highly comprehensive and detailed `agents.md` mapping core features, class hierarchies, database schemas, test methodologies, and data flow.
 * **MCP Time-Machine Snapshots (Batch 13)**: Create `mcp_snapshot.py` to capture active IDE state, Git status, and active terminal working directory. Store snapshots in `mcp_snapshots` SQLite table. Add `termstory replay --mcp <session_id>` CLI subcommand and custom formatters to display captured snapshots.
 * **Documentation & Technical Debt Cleanup (Batch 12)**: Align README.md with all new subcommands, update plans/tasks/tracker tracking systems.
@@ -76,3 +77,4 @@
 * **Batch 12 — Technical Debt & Cleanup**: ✅ Completed (v0.6.0 Release Prep)
 * **Batch 13 — MCP Time-Machine Snapshots**: ✅ Completed
 * **Batch 13p2 — Developer Memory Engine Documentation Overhaul**: ✅ Completed
+* **Batch 13p3 — Documentation Updates & Refinement**: ✅ Completed
