@@ -165,9 +165,13 @@ def _send_llm_request(
             e = error_box[0]
             # Identify if error is a timeout
             is_timeout = False
-            if isinstance(e, socket.timeout) or isinstance(e, TimeoutError):
+            if isinstance(e, socket.timeout) or isinstance(e, TimeoutError) or "timed out" in str(e).lower():
                 is_timeout = True
-            elif isinstance(e, urllib.error.URLError) and isinstance(e.reason, socket.timeout):
+            elif isinstance(e, urllib.error.URLError) and hasattr(e, "reason") and (
+                isinstance(e.reason, socket.timeout) or
+                isinstance(e.reason, TimeoutError) or
+                "timed out" in str(e.reason).lower()
+            ):
                 is_timeout = True
                 
             if is_timeout:

@@ -1771,6 +1771,83 @@ def format_vampire_index(metrics: Dict[str, Any]) -> str:
     return render_to_string(Text.from_markup("\n".join(output_lines).strip()))
 
 
+def format_necromancer_score(necromancer_info: Dict[str, Any]) -> str:
+    """Format the Project Necromancer Score into a clean CLI dashboard."""
+    from rich.markup import escape
+    from datetime import datetime
+    
+    score = necromancer_info.get("score", 0)
+    resurrections = necromancer_info.get("resurrections", [])
+    
+    output_lines = [
+        "🧟‍♂️ [bold magenta]Project Necromancer Score[/bold magenta]",
+        "[dim]────────────────────────────────────────────────────────────────────────────────[/]",
+        f"Necromancer Score: [bold yellow]{score}[/bold yellow] resurrection(s)",
+        "",
+    ]
+    
+    if resurrections:
+        output_lines.append("📜 [bold]Resurrection Log (Projects dead for 6+ months):[/bold]")
+        for r in resurrections:
+            last_date = datetime.fromtimestamp(r["last_active"]).strftime("%Y-%m-%d")
+            res_date = datetime.fromtimestamp(r["resurrected_at"]).strftime("%Y-%m-%d")
+            p_name = escape(r["project_name"])
+            gap_days = r["gap_days"]
+            months = round(gap_days / 30.0, 1)
+            output_lines.append(
+                f"  • [bold cyan]{p_name}[/] was dead for [bold]{gap_days} days[/] (~{months} months)\n"
+                f"    [dim]Last Active: {last_date} | Resurrected: {res_date}[/]"
+            )
+    else:
+        output_lines.append("No projects have been resurrected after 6+ months of dormancy yet.")
+        
+    output_lines.append("[dim]────────────────────────────────────────────────────────────────────────────────[/]")
+    return render_to_string(Text.from_markup("\n".join(output_lines).strip()))
+
+
+def format_rage_quit_signatures(rage_quit_info: Dict[str, Any]) -> str:
+    """Format the Rage-Quit Signatures into a clean CLI summary."""
+    from rich.markup import escape
+    from datetime import datetime
+    
+    total = rage_quit_info.get("total_events", 0)
+    signatures = rage_quit_info.get("signatures", [])
+    events = rage_quit_info.get("events", [])
+    
+    output_lines = [
+        "😡 [bold red]Rage-Quit Signatures[/bold red]",
+        "[dim]────────────────────────────────────────────────────────────────────────────────[/]",
+        f"Total Rage-Quits Detected: [bold yellow]{total}[/bold yellow] (12h+ inactivity post-command)",
+        "",
+    ]
+    
+    if signatures:
+        output_lines.append("📊 [bold]Most Common Rage-Quit Commands:[/bold]")
+        for sig in signatures[:5]:
+            cmd = escape(sig["command"])
+            count = sig["count"]
+            output_lines.append(f"  • [bold cyan]{cmd}[/]: {count} time(s)")
+        output_lines.append("")
+        
+        output_lines.append("📜 [bold]Recent Rage-Quit Log:[/bold]")
+        sorted_events = sorted(events, key=lambda x: x["timestamp"], reverse=True)
+        for e in sorted_events[:5]:
+            date_str = datetime.fromtimestamp(e["timestamp"]).strftime("%Y-%m-%d %I:%M %p")
+            cmd = escape(e["command"])
+            hours = e["inactivity_hours"]
+            status = "[green]SUCCESS[/green]" if e["exit_code"] == 0 else f"[red]FAIL ({e['exit_code']})[/red]"
+            output_lines.append(
+                f"  • [bold]{date_str}[/] | {status}\n"
+                f"    Command: {cmd}\n"
+                f"    [dim]Followed by {hours} hours of inactivity[/]"
+            )
+    else:
+        output_lines.append("No rage-quit events detected.")
+        
+    output_lines.append("[dim]────────────────────────────────────────────────────────────────────────────────[/]")
+    return render_to_string(Text.from_markup("\n".join(output_lines).strip()))
+
+
 
 
 

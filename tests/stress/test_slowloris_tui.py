@@ -136,8 +136,8 @@ async def test_slowloris_tarpit(tmp_path, monkeypatch):
             
             # Wait for circuit breaker to trip
             await asyncio.sleep(1.0)
-            from termstory.ai import _circuit_breaker_failures
-            assert _circuit_breaker_failures > 0, "Circuit breaker should have registered failures from timeouts"
+            import termstory.ai
+            assert termstory.ai._circuit_breaker_failures > 0, "Circuit breaker should have registered failures from timeouts"
             
     finally:
         server.shutdown()

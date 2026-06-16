@@ -167,4 +167,81 @@ def test_assign_rpg_class():
     assert r2["class_name"] == "Docker Demolitionist"
 
 
+def test_calculate_project_necromancer_score():
+    from termstory.insights import calculate_project_necromancer_score
+    from termstory.formatter import format_necromancer_score
+    
+    p1 = Project(id=1, name="Project Alpha", path="~/alpha", first_seen=0, last_seen=0, session_count=1, total_time=1)
+    
+    # Gap of exactly 180 days: 180 * 24 * 3600 = 15552000 seconds
+    t1 = 1748870400
+    t2 = t1 + 180 * 24 * 3600 + 1000
+    
+    s1 = Session(id=1, start_time=t1, end_time=t1 + 1000, duration_seconds=1000, project_id=1)
+    s2 = Session(id=2, start_time=t2, end_time=t2 + 1000, duration_seconds=1000, project_id=1)
+    
+    # 180-day gap: should count as resurrection
+    info = calculate_project_necromancer_score([s1, s2], [p1])
+    assert info["score"] == 1
+    assert len(info["resurrections"]) == 1
+    assert info["resurrections"][0]["project_name"] == "Project Alpha"
+    assert info["resurrections"][0]["gap_days"] == 180
+    
+    # Test formatter
+    formatted = format_necromancer_score(info)
+    assert "Project Necromancer Score" in formatted
+    assert "Project Alpha" in formatted
+    assert "180 days" in formatted
+    
+    # Gap of 179 days: should not count
+    t3 = t1 + 179 * 24 * 3600
+    s3 = Session(id=3, start_time=t3, end_time=t3 + 1000, duration_seconds=1000, project_id=1)
+    info_short = calculate_project_necromancer_score([s1, s3], [p1])
+    assert info_short["score"] == 0
+    assert len(info_short["resurrections"]) == 0
+    
+    # Test formatter empty state
+    formatted_empty = format_necromancer_score(info_short)
+    assert "No projects have been resurrected" in formatted_empty
+
+
+def test_calculate_rage_quit_signatures():
+    from termstory.insights import calculate_rage_quit_signatures
+    from termstory.formatter import format_rage_quit_signatures
+    
+    # Gap of exactly 12 hours: 12 * 3600 = 43200 seconds
+    t1 = 1748870400
+    t2 = t1 + 12 * 3600 + 1000
+    
+    s1 = Session(id=1, start_time=t1, end_time=t1 + 1000, duration_seconds=1000, project_id=1, commands=[
+        Command(timestamp=t1 + 500, command="git commit -m 'wip'"),
+        Command(timestamp=t1 + 1000, command="make build", exit_code=1)
+    ])
+    s2 = Session(id=2, start_time=t2, end_time=t2 + 1000, duration_seconds=1000, project_id=1)
+    
+    info = calculate_rage_quit_signatures([s1, s2])
+    assert info["total_events"] == 1
+    assert len(info["signatures"]) == 1
+    assert info["signatures"][0]["command"] == "make build"
+    assert info["signatures"][0]["count"] == 1
+    
+    # Test formatter
+    formatted = format_rage_quit_signatures(info)
+    assert "Rage-Quit Signatures" in formatted
+    assert "make build" in formatted
+    assert "FAIL (1)" in formatted
+    
+    # Gap of 11 hours: should not count
+    t3 = t1 + 11 * 3600
+    s2_short = Session(id=2, start_time=t3, end_time=t3 + 1000, duration_seconds=1000, project_id=1)
+    info_short = calculate_rage_quit_signatures([s1, s2_short])
+    assert info_short["total_events"] == 0
+    assert len(info_short["signatures"]) == 0
+    
+    # Test formatter empty state
+    formatted_empty = format_rage_quit_signatures(info_short)
+    assert "No rage-quit events detected." in formatted_empty
+
+
+
 

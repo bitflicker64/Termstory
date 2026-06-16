@@ -13,7 +13,7 @@ from termstory.session import create_sessions
 from termstory.project import detect_projects
 from termstory.database import Database
 from termstory.date_utils import get_current_time, get_today_range
-from termstory.formatter import format_search_results, format_today_output, format_project_output, format_insights_output, format_stats_output, format_profile_output
+from termstory.formatter import format_search_results, format_today_output, format_project_output, format_insights_output, format_stats_output, format_profile_output, format_necromancer_score, format_rage_quit_signatures
 import sqlite3
 
 from rich.console import Console
@@ -1412,6 +1412,42 @@ def show_vampire_index():
     from termstory.formatter import format_vampire_index
     output = format_vampire_index(metrics)
     console.print(Text.from_ansi(output))
+
+
+@app.command("necromancer")
+def show_necromancer():
+    """Calculate and display your Project Necromancer Score (resurrected projects)"""
+    db_path = get_db_path()
+    db = Database(db_path)
+    safe_init_db(db)
+    
+    run_ingestion(db)
+    
+    from termstory.insights import analyze_all
+    stats = analyze_all(db)
+    necromancer_info = stats.get("necromancer_info", {"score": 0, "resurrections": []})
+    
+    output = format_necromancer_score(necromancer_info)
+    console.print(Text.from_ansi(output))
+
+
+@app.command("rage-quit")
+def show_rage_quit():
+    """Identify and display your Rage-Quit Signatures (final command before 12h+ inactivity)"""
+    db_path = get_db_path()
+    db = Database(db_path)
+    safe_init_db(db)
+    
+    run_ingestion(db)
+    
+    from termstory.insights import analyze_all
+    stats = analyze_all(db)
+    rage_quit_info = stats.get("rage_quit_info", {"signatures": [], "events": [], "total_events": 0})
+    
+    output = format_rage_quit_signatures(rage_quit_info)
+    console.print(Text.from_ansi(output))
+
+
 
 
 def main_entry():

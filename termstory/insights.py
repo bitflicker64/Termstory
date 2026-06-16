@@ -1,5 +1,5 @@
 from datetime import datetime
-from collections import defaultdict
+from collections import defaultdict, Counter
 from typing import List, Tuple, Dict, Any
 from termstory.models import Session, Project, Command, format_duration
 from termstory.formatter import classify_command, DISPLAY_NAMES
@@ -313,6 +313,10 @@ def analyze_all(db=None) -> Dict:
     vampire_metrics = get_vampire_metrics(sessions)
     rpg_info = assign_rpg_class(sessions)
     
+    projects = db.get_all_projects_with_stats()
+    necromancer_info = calculate_project_necromancer_score(sessions, projects)
+    rage_quit_info = calculate_rage_quit_signatures(sessions)
+    
     return {
         "total_sessions": total_sessions,
         "total_commands": total_commands,
@@ -324,7 +328,11 @@ def analyze_all(db=None) -> Dict:
         "vampire_index": vampire_metrics["vampire_index"],
         "vampire_metrics": vampire_metrics,
         "rpg_class": rpg_info["class_name"],
-        "rpg_info": rpg_info
+        "rpg_info": rpg_info,
+        "necromancer_score": necromancer_info["score"],
+        "necromancer_info": necromancer_info,
+        "rage_quit_signatures": rage_quit_info["signatures"],
+        "rage_quit_info": rage_quit_info
     }
 
 
@@ -545,6 +553,94 @@ def assign_rpg_class(sessions: List[Session]) -> Dict[str, Any]:
         "max_count": max_count,
         "total_commands": total_commands,
         "counts": counts
+    }
+
+
+def calculate_project_necromancer_score(sessions: List[Session], projects: List[Project]) -> Dict[str, Any]:
+    """Calculate the Project Necromancer Score.
+    A project is resurrected when a new session starts after 6+ months (180 days) of inactivity.
+    """
+    project_map = {p.id: p.name for p in projects if p.id is not None}
+    
+    proj_sessions = defaultdict(list)
+    for s in sessions:
+        proj_sessions[s.project_id].append(s)
+        
+    resurrections = []
+    total_score = 0
+    
+    # 6 months threshold: 180 days in seconds
+    threshold_seconds = 180 * 24 * 3600
+    
+    for pid, s_list in proj_sessions.items():
+        if not s_list:
+            continue
+        p_name = project_map.get(pid, "Other")
+        if p_name == "General / No Project" or not p_name:
+            p_name = "Other"
+            
+        sorted_s = sorted(s_list, key=lambda x: x.start_time)
+        
+        for i in range(len(sorted_s) - 1):
+            s_curr = sorted_s[i]
+            s_next = sorted_s[i+1]
+            
+            curr_end = s_curr.end_time if s_curr.end_time is not None else s_curr.start_time
+            gap = s_next.start_time - curr_end
+            
+            if gap >= threshold_seconds:
+                gap_days = int(gap / (24 * 3600))
+                resurrections.append({
+                    "project_id": pid,
+                    "project_name": p_name,
+                    "last_active": s_curr.start_time,
+                    "resurrected_at": s_next.start_time,
+                    "gap_days": gap_days
+                })
+                total_score += 1
+                
+    resurrections.sort(key=lambda x: x["resurrected_at"], reverse=True)
+    
+    return {
+        "score": total_score,
+        "resurrections": resurrections
+    }
+
+
+def calculate_rage_quit_signatures(sessions: List[Session]) -> Dict[str, Any]:
+    """Identify commands executed right before a period of 12+ hours of inactivity."""
+    if not sessions:
+        return {"signatures": [], "events": [], "total_events": 0}
+        
+    sorted_s = sorted(sessions, key=lambda x: x.start_time)
+    rage_quit_events = []
+    threshold_seconds = 12 * 3600
+    
+    for i in range(len(sorted_s) - 1):
+        s_curr = sorted_s[i]
+        s_next = sorted_s[i+1]
+        
+        curr_end = s_curr.end_time if s_curr.end_time is not None else s_curr.start_time
+        gap = s_next.start_time - curr_end
+        
+        if gap >= threshold_seconds and s_curr.commands:
+            last_cmd = s_curr.commands[-1]
+            gap_hours = round(gap / 3600.0, 1)
+            rage_quit_events.append({
+                "command": last_cmd.command,
+                "timestamp": last_cmd.timestamp,
+                "exit_code": last_cmd.exit_code,
+                "inactivity_hours": gap_hours,
+                "project_id": s_curr.project_id
+            })
+            
+    counts = Counter(e["command"] for e in rage_quit_events)
+    signatures = [{"command": cmd, "count": count} for cmd, count in counts.most_common()]
+    
+    return {
+        "signatures": signatures,
+        "events": rage_quit_events,
+        "total_events": len(rage_quit_events)
     }
 
 
