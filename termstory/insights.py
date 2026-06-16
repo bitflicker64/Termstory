@@ -314,8 +314,8 @@ def analyze_all(db=None) -> Dict:
     rpg_info = assign_rpg_class(sessions)
     
     projects = db.get_all_projects_with_stats()
-    necromancer_info = calculate_project_necromancer_score(sessions, projects)
-    rage_quit_info = calculate_rage_quit_signatures(sessions)
+    necromancer_info = calculate_project_necromancer_score(real_sessions, projects)
+    rage_quit_info = calculate_rage_quit_signatures(real_sessions)
     
     return {
         "total_sessions": total_sessions,
@@ -560,6 +560,7 @@ def calculate_project_necromancer_score(sessions: List[Session], projects: List[
     """Calculate the Project Necromancer Score.
     A project is resurrected when a new session starts after 6+ months (180 days) of inactivity.
     """
+    sessions = [s for s in sessions if not getattr(s, "is_legacy", False)]
     project_map = {p.id: p.name for p in projects if p.id is not None}
     
     proj_sessions = defaultdict(list)
@@ -593,7 +594,7 @@ def calculate_project_necromancer_score(sessions: List[Session], projects: List[
                 resurrections.append({
                     "project_id": pid,
                     "project_name": p_name,
-                    "last_active": s_curr.start_time,
+                    "last_active": curr_end,
                     "resurrected_at": s_next.start_time,
                     "gap_days": gap_days
                 })
@@ -609,6 +610,7 @@ def calculate_project_necromancer_score(sessions: List[Session], projects: List[
 
 def calculate_rage_quit_signatures(sessions: List[Session]) -> Dict[str, Any]:
     """Identify commands executed right before a period of 12+ hours of inactivity."""
+    sessions = [s for s in sessions if not getattr(s, "is_legacy", False)]
     if not sessions:
         return {"signatures": [], "events": [], "total_events": 0}
         

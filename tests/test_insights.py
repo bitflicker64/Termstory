@@ -186,6 +186,12 @@ def test_calculate_project_necromancer_score():
     assert len(info["resurrections"]) == 1
     assert info["resurrections"][0]["project_name"] == "Project Alpha"
     assert info["resurrections"][0]["gap_days"] == 180
+    assert info["resurrections"][0]["last_active"] == s1.end_time
+    
+    # Verify legacy sessions are ignored
+    s1_legacy = Session(id=1, start_time=t1, end_time=t1 + 1000, duration_seconds=1000, project_id=1, is_legacy=True)
+    info_legacy = calculate_project_necromancer_score([s1_legacy, s2], [p1])
+    assert info_legacy["score"] == 0
     
     # Test formatter
     formatted = format_necromancer_score(info)
@@ -224,6 +230,14 @@ def test_calculate_rage_quit_signatures():
     assert len(info["signatures"]) == 1
     assert info["signatures"][0]["command"] == "make build"
     assert info["signatures"][0]["count"] == 1
+    
+    # Verify legacy sessions are ignored
+    s1_legacy = Session(id=1, start_time=t1, end_time=t1 + 1000, duration_seconds=1000, project_id=1, commands=[
+        Command(timestamp=t1 + 500, command="git commit -m 'wip'"),
+        Command(timestamp=t1 + 1000, command="make build", exit_code=1)
+    ], is_legacy=True)
+    info_legacy = calculate_rage_quit_signatures([s1_legacy, s2])
+    assert info_legacy["total_events"] == 0
     
     # Test formatter
     formatted = format_rage_quit_signatures(info)
