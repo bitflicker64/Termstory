@@ -1250,7 +1250,7 @@ class DetailsCanvas(VerticalScroll):
                         audit_text = parts[0].strip()
                         verdict_text = parts[1].strip()
                         
-                    exec_widgets.append(NarrativeText(escape(audit_text), parse_markup=True))
+                    exec_widgets.append(NarrativeText(audit_text, parse_markup=False))
                     
                     if verdict_text:
                         v_lines = ["=" * 64]
@@ -1361,7 +1361,7 @@ class DetailsCanvas(VerticalScroll):
             else:
                 cached_story = self.app.db.get_macro_summary(date_str)
                 if cached_story:
-                    narrative_widgets.append(NarrativeText(escape(cached_story), parse_markup=True))
+                    narrative_widgets.append(NarrativeText(cached_story, parse_markup=False))
                     
                     # Add a Regenerate button for the chronicle
                     btn_regen = Button("⟳ Regenerate Chronicle", id=f"btn-exec-{date_str}-date")
@@ -1528,10 +1528,10 @@ class DetailsCanvas(VerticalScroll):
         ai_widgets = [Static("[bold yellow]Session Summary Story[/bold yellow]")]
         if getattr(session, "is_generating_story", False):
             if session.ai_summary:
-                ai_widgets.append(NarrativeText(escape(strip_ansi(session.ai_summary)), prefix="✨ ", suffix="\n", parse_markup=True))
+                ai_widgets.append(NarrativeText(strip_ansi(session.ai_summary), prefix="✨ ", suffix="\n", parse_markup=False))
             ai_widgets.append(Static("⏳ [italic yellow]Thinking...[/italic yellow]\n"))
         elif session.ai_summary:
-            ai_widgets.append(NarrativeText(escape(strip_ansi(session.ai_summary)), prefix="✨ ", suffix="\n", parse_markup=True))
+            ai_widgets.append(NarrativeText(strip_ansi(session.ai_summary), prefix="✨ ", suffix="\n", parse_markup=False))
             if ai_enabled and provider != "disabled" and not getattr(session, "recent_generation", False):
                 btn = Button("⟳ Regenerate", id=f"btn-gen-session-{session.id}")
                 btn.classes = "gen-story-btn small-btn"
@@ -1722,6 +1722,7 @@ class GhostTyperScreen(ModalScreen[None]):
         self.current_char_idx = 0
         self.lines = []
         self.typing_timer = None
+        self.current_typed_command = ""
         
     def compose(self) -> ComposeResult:
         yield Vertical(
@@ -1746,6 +1747,7 @@ class GhostTyperScreen(ModalScreen[None]):
             return
             
         self.current_char_idx = 0
+        self.current_typed_command = ""
         self.lines.append(f"[bold green]operator@termstory[/bold green]:[bold blue]~[/bold blue]$ ")
         self.update_console()
         self.typing_timer = self.set_interval(0.03, self.type_character)
@@ -1754,12 +1756,13 @@ class GhostTyperScreen(ModalScreen[None]):
         cmd = self.commands[self.current_cmd_idx]
         if self.current_char_idx < len(cmd):
             char = cmd[self.current_char_idx]
-            self.lines[-1] += char
+            self.current_typed_command += char
             self.current_char_idx += 1
             self.update_console()
         else:
             if self.typing_timer:
                 self.typing_timer.stop()
+            self.lines[-1] += escape(self.current_typed_command)
             self.lines.append("  [dim]... [SUCCESS][/dim]\n")
             self.current_cmd_idx += 1
             self.set_timer(0.3, self.start_typing_next_command)
@@ -1768,8 +1771,11 @@ class GhostTyperScreen(ModalScreen[None]):
         try:
             console_widget = self.query_one("#ghost-console")
             lines_to_show = list(self.lines)
-            if self.current_cmd_idx < len(self.commands) and self.current_char_idx < len(self.commands[self.current_cmd_idx]):
-                lines_to_show[-1] += "█"
+            if self.current_cmd_idx < len(self.commands):
+                current_line = lines_to_show[-1] + escape(self.current_typed_command)
+                if self.current_char_idx < len(self.commands[self.current_cmd_idx]):
+                    current_line += "█"
+                lines_to_show[-1] = current_line
             console_widget.update("\n".join(lines_to_show))
             self.query_one("#ghost-console-scroll").scroll_end(animate=False)
         except Exception:

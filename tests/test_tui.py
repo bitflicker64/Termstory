@@ -1175,3 +1175,16 @@ async def test_tui_batch_8_cyberpunk_animations(monkeypatch):
             assert app.pulse_phase == current_pulse + 1
 
 
+def test_ghost_typer_bracket_escaping():
+    from termstory.tui import GhostTyperScreen
+    screen = GhostTyperScreen(commands=["git commit -m '[fix] issue'"])
+    screen.set_timer = lambda duration, callback: None
+    screen.lines.append("operator@termstory:~$ ")
+    # Type until the command completes
+    while screen.current_cmd_idx == 0:
+        screen.type_character()
+    # Check that brackets were escaped in the command line
+    assert any("\\[fix]" in line for line in screen.lines)
+
+
+
