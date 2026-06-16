@@ -1428,5 +1428,91 @@ def format_stats_output(db) -> str:
     return render_to_string(Text.from_markup("\n".join(output_lines).strip()))
 
 
+def format_profile_output(db, limit: int = 10) -> str:
+    """Format the SQLite database query profiling results into a beautiful, high-density report."""
+    query_logs = getattr(db, "query_logs", [])
+    
+    if not query_logs:
+        return "[yellow]No database queries were captured during execution.[/]"
+        
+    # 1. Slowest Queries
+    slowest = sorted(query_logs, key=lambda x: x["duration"], reverse=True)[:limit]
+    
+    slow_table = Table(box=None, show_header=True, padding=(0, 2))
+    slow_table.add_column("Query", style="cyan", header_style="bold cyan")
+    slow_table.add_column("Duration", justify="right", style="green", header_style="bold green")
+    
+    for log in slowest:
+        clean_query = " ".join(log["sql"].strip().split())
+        if len(clean_query) > 80:
+            clean_query = clean_query[:77] + "..."
+        duration_ms = log["duration"] * 1000.0
+        slow_table.add_row(clean_query, f"{duration_ms:.2f} ms")
+        
+    # 2. Most Frequent Queries (N+1 patterns)
+    groups = defaultdict(list)
+    for log in query_logs:
+        normalized = " ".join(log["sql"].strip().split())
+        groups[normalized].append(log["duration"])
+        
+    frequent = []
+    for sql, durations in groups.items():
+        count = len(durations)
+        total_dur = sum(durations)
+        avg_dur = total_dur / count
+        frequent.append({
+            "sql": sql,
+            "count": count,
+            "total_duration": total_dur,
+            "avg_duration": avg_dur
+        })
+        
+    # Sort by count DESC, then total_duration DESC
+    frequent = sorted(frequent, key=lambda x: (x["count"], x["total_duration"]), reverse=True)[:limit]
+    
+    freq_table = Table(box=None, show_header=True, padding=(0, 2))
+    freq_table.add_column("Query Template", style="cyan", header_style="bold cyan")
+    freq_table.add_column("Count", justify="right", style="green", header_style="bold green")
+    freq_table.add_column("Total Time", justify="right", style="green", header_style="bold green")
+    freq_table.add_column("Avg Time", justify="right", style="green", header_style="bold green")
+    
+    for item in frequent:
+        clean_query = item["sql"]
+        if len(clean_query) > 80:
+            clean_query = clean_query[:77] + "..."
+        total_ms = item["total_duration"] * 1000.0
+        avg_ms = item["avg_duration"] * 1000.0
+        freq_table.add_row(
+            clean_query,
+            str(item["count"]),
+            f"{total_ms:.2f} ms",
+            f"{avg_ms:.2f} ms"
+        )
+        
+    output_lines = [
+        "⏱️  [bold]Database Query Profiler[/]",
+        f"Captured {len(query_logs)} database queries during operations.",
+        "",
+        "[bold cyan]Slowest Queries[/]",
+        "[dim]────────────────────────────────────────────────────────────────────────────────[/]",
+    ]
+    
+    slow_table_str = render_to_string(slow_table)
+    indented_slow = "\n".join("  " + line for line in slow_table_str.split("\n"))
+    output_lines.append(indented_slow)
+    
+    output_lines.extend([
+        "",
+        "[bold cyan]Most Frequent Queries (Potential N+1 Read Patterns)[/]",
+        "[dim]────────────────────────────────────────────────────────────────────────────────[/]",
+    ])
+    
+    freq_table_str = render_to_string(freq_table)
+    indented_freq = "\n".join("  " + line for line in freq_table_str.split("\n"))
+    output_lines.append(indented_freq)
+    
+    return render_to_string(Text.from_markup("\n".join(output_lines).strip()))
+
+
 
 

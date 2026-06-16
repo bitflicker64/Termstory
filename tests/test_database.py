@@ -271,4 +271,25 @@ def test_database_weekly_vacuum(tmp_path):
     conn.close()
 
 
+def test_database_profiler_logs_queries(tmp_path):
+    db_file = tmp_path / "test_profiler.db"
+    db = Database(str(db_file))
+    db.init_db()
+    
+    # We should have captured some queries during init_db()
+    assert len(db.query_logs) > 0
+    
+    # Let's run a custom query
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM projects")
+    conn.close()
+    
+    # The select query should be logged
+    queries = [log["sql"] for log in db.query_logs]
+    assert any("SELECT * FROM projects" in q for q in queries)
+    assert all(isinstance(log["duration"], float) for log in db.query_logs)
+
+
+
 

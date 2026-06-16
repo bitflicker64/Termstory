@@ -12,7 +12,34 @@ def safe_execute(cursor_or_conn, sql, *args, **kwargs):
 
 class SafeCursor(sqlite3.Cursor):
     def execute(self, sql, *args, **kwargs):
-        return safe_execute(self, sql, *args, **kwargs)
+        start_time = time.time()
+        try:
+            return safe_execute(self, sql, *args, **kwargs)
+        finally:
+            duration = time.time() - start_time
+            db = getattr(self.connection, "_db_instance", None)
+            if db is not None:
+                db.log_query(sql, duration)
+
+    def executemany(self, sql, seq_of_parameters, *args, **kwargs):
+        start_time = time.time()
+        try:
+            return sqlite3.Cursor.executemany(self, sql, seq_of_parameters, *args, **kwargs)
+        finally:
+            duration = time.time() - start_time
+            db = getattr(self.connection, "_db_instance", None)
+            if db is not None:
+                db.log_query(sql, duration)
+
+    def executescript(self, sql_script, *args, **kwargs):
+        start_time = time.time()
+        try:
+            return sqlite3.Cursor.executescript(self, sql_script, *args, **kwargs)
+        finally:
+            duration = time.time() - start_time
+            db = getattr(self.connection, "_db_instance", None)
+            if db is not None:
+                db.log_query(sql_script, duration)
 
 class SafeConnection(sqlite3.Connection):
     def cursor(self, cursor_factory=SafeCursor):
@@ -24,10 +51,18 @@ class SafeConnection(sqlite3.Connection):
 class Database:
     def __init__(self, db_path: str):
         self.db_path = db_path
+        self.query_logs = []
+
+    def log_query(self, sql: str, duration: float):
+        self.query_logs.append({
+            "sql": sql,
+            "duration": duration
+        })
         
     def get_connection(self) -> sqlite3.Connection:
         """Create and return a database connection with foreign key support enabled"""
         conn = sqlite3.connect(self.db_path, timeout=30.0, factory=SafeConnection)
+        conn._db_instance = self
         conn.execute("PRAGMA foreign_keys = ON;")
         return conn
         
