@@ -1,6 +1,6 @@
 # TermStory Developer Memory Engine — State & Context (agents.md)
 
-This file serves as the active development state, architectural roadmap, and design philosophy context for TermStory to ensure seamless pairing and handoffs.
+This file serves as the active development state, architectural roadmap, and design philosophy context for TermStory to ensure seamless pairing, verification, and handoffs.
 
 ---
 
@@ -17,207 +17,217 @@ TermStory is **not** a tracking tool, productivity auditor, or a generic manager
 
 ## 2. Technical Component Deep-Dive & Architecture
 
-### A. Parser Engine ([parser.py](file:///Users/himanshuverma/Projects/termstory/termstory/parser.py))
-Parses shell histories safely to extract Unix timestamps and clean command strings.
-* **Zsh Parser**: Extracts Zsh logs written in the extended history format: `: <timestamp>:<duration>;<command>`. Handles multiline commands marked with a trailing backslash `\`. Switches to **Legacy Fallback Mode** if extended history format is disabled/absent, or **Hybrid Mode** if both legacy and timestamped commands coexist.
-  - **Hybrid Mode**: Evaluates lines individually. Uses the oldest timestamped command's timestamp minus 1 minute as the `anchor_time` buffer for legacy commands. Skips malformed lines that do not match the expected pattern or start with a colon inside timestamped regions.
-  - **Timestamp Locking**: Queries the database on ingestion to retrieve a map of command strings to stored timestamps. Sequentially locks in/reuses synthetic timestamps for legacy commands on subsequent launches to prevent shifting history.
-* **Bash Parser**: Reads standard `.bash_history`. If `#<timestamp>` rows exist, it associates commands with their timestamps. If timestamps are missing, it spaces them backward and forward in 10-second intervals based on the file modification time (`mtime`).
-* **Fish & PowerShell**: Dynamically discovers active history file formats and reads timestamped blocks or falls back to legacy interpolation when headers are absent.
-* **Filtering Limits**: Filters out commands older than 5 years or with future timestamps to avoid database pollution.
+The codebase of TermStory is structured into logical sub-layers representing ingestion, database storage, analysis, formatting, terminal user interfaces, and optional AI features.
 
-### B. Session Builder ([session.py](file:///Users/himanshuverma/Projects/termstory/termstory/session.py))
-Chains chronological commands into sessions.
-* **Threshold**: Groups commands into a single session if the idle time between consecutive commands is under **30 minutes**.
-* **Attributes**: Computes session start time, end time, duration in seconds, and active commands.
-
-### C. Project Resolver ([project.py](file:///Users/himanshuverma/Projects/termstory/termstory/project.py))
-Maps directory paths to logical project names.
-* **VCS Root Detection**: Recursively scans parent directories looking for `.git`, `.hg`, or `.svn` root folders.
-* **Configuration Inspection**: Reads metadata from build configurations (`pom.xml`, `package.json`, `setup.py`, `Cargo.toml`, etc.) to extract clean project names.
-* **Normalization & Fallback**: Maps empty/general workspaces to `"Other"`. If a directory contains no VCS markers or configuration descriptors and does not lie inside a common project workspace folder (e.g. `~/Projects/`), it falls back to the user's home directory so its commands and sessions are cleanly grouped in `"Other"`.
-
-### D. Git Correlator ([git_integration.py](file:///Users/himanshuverma/Projects/termstory/termstory/git_integration.py))
-Enriches shell activity by fetching corresponding Git commits.
-* **Subprocess Spawning**: Runs local `git log` commands filtered by timestamp ranges corresponding to session start and end times.
-* **Cleaning Heuristics**: Strips conventional commit tags (e.g. `feat:`, `fix(tui):`), emojis, merge hashes, and branch pointers from commit messages to feed clean content to the database and AI prompts.
-
-### E. Database Layer ([database.py](file:///Users/himanshuverma/Projects/termstory/termstory/database.py))
-Manages SQLite storage under `~/.termstory/termstory.db`.
-* **WAL Mode & Concurrency**: Executes `PRAGMA journal_mode = WAL;` for non-blocking concurrent reads/writes. Uses a `30.0s` timeout in `sqlite3.connect` to support massive batch ingestions. Employs explicit `BEGIN IMMEDIATE` transactions during bulk data ingestion to eliminate SQLite Upgrade Deadlocks, and uses `INSERT OR IGNORE` to mitigate race conditions during concurrent UI reads.
-* **Resilience**: Initialization is wrapped in `safe_init_db` which features Corrupt DB fallback logic. If a `DatabaseError` is encountered, it seamlessly renames the corrupted database to a timestamped `.bak` file and initializes a fresh database to prevent application bricking.
-* **Index Strategy**: Optimizes search, TUI loads, and timeline scrolling via:
-  - `idx_commands_timestamp` on `commands(timestamp)`
-  - `idx_commands_session_id` on `commands(session_id)`
-  - `idx_sessions_start_time` on `sessions(start_time DESC)`
-  - `idx_sessions_project_id` on `sessions(project_id)`
-  - `idx_commits_timestamp` on `commits(timestamp DESC)`
-  - `idx_commits_project_id` on `commits(project_id)`
-* **Cache Architecture**: The `macro_summaries` table stores AI summaries for Months and Dates to bypass repeated API calls. Columns: `timeframe_id` (UNIQUE), `type` (`date`/`month`), `summary`, `created_at`.
-* **Session Summaries**: Stored directly in the `sessions.ai_summary` column.
-
-### F. Privacy Sanitizer ([sanitizer.py](file:///Users/himanshuverma/Projects/termstory/termstory/sanitizer.py))
-A local pipeline that redacts sensitive parameters prior to LLM submission.
-* **Blacklist Operations**: Drops sessions containing high-risk keywords (e.g., `vault login`, `aws configure`, `gh auth`, `create secret`) and returns `"Security/Authentication Operations"` directly.
-* **Credential Redaction**: Replaces parameters marked with flags (`--password`, `-p`, `--token`, `--api-key`) with `[REDACTED]`.
-* **IP / Host Masking**: Redacts IPv4/IPv6 addresses, URL hosts, and FQDNs. Skips common source/config extensions (like `.py`, `.json`, `.db`, `.sh`, `.yml`) to preserve file names.
-
-### G. Zero-Dependency AI Client ([ai.py](file:///Users/himanshuverma/Projects/termstory/termstory/ai.py))
-Interfaces with LLMs using Python's native `urllib.request`.
-* **Endpoint Normalization**: Strips trailing slashes from `api_base_url` and appends `/chat/completions` dynamically.
-* **Key Sanitization**: Skips building empty `Authorization` headers to ensure compatibility with local engines (e.g., Ollama).
-* **Timeout Protection**: Sets a 15.0s timeout to prevent thread blocks during TUI queries.
-
-### H. Legacy History Interpolation Engine ([timestamp_detective.py](file:///Users/himanshuverma/Projects/termstory/termstory/timestamp_detective.py))
-Handles Zsh and Bash histories that lack extended timestamps. Forensically recovers timestamps and fills gaps using anchor interpolation.
-* **Session-Preserving Burst Clustering**: Groups un-timestamped commands into chunks of 20. Interpolates chunks historically while keeping internal chunk commands precisely 10 seconds apart, ensuring they naturally fuse into coherent TermStory sessions.
-* **Circadian Monotonic Snapping**: Synthetic chunks are forced into a 9 AM - 6 PM weekday window. Weekend timestamps are snapped backwards to Friday afternoon. A monotonic tracker artificially offsets colliding chunks to prevent interleaved session destruction.
-* **30-Day Metric Buffer**: The synthetic timestamp window strictly ends 30 days prior to the history file's modification time. This creates an impenetrable buffer that guarantees legacy commands cannot pollute `termstory today`.
-* **UX Metric Exclusions**: Commands flagged as `is_legacy=True` are explicitly omitted from the TUI Heatmap, Streak counters, and Insights metrics to prevent the illusion of perfect, unbroken coding streaks.
-
-### I. Utilities ([date_utils.py](file:///Users/himanshuverma/Projects/termstory/termstory/date_utils.py) & [models.py](file:///Users/himanshuverma/Projects/termstory/termstory/models.py))
-* **date_utils.py**: Timezone boundary handling and human-readable timestamp formatting.
-* **models.py**: Core Python dataclasses representing Command, Session, Project, and Commit objects.
-
-### J. Analytics Engine ([insights.py](file:///Users/himanshuverma/Projects/termstory/termstory/insights.py))
-Calculates macro-telemetry like developer focus scores, overall time distribution across projects, and daily productivity density metrics.
-
----
-
-## 3. Command Redesign & Feature Status
-
-### 🔍 `termstory search`
-* **Status**: Implemented, tested, and pushed.
-* **Features**: Groups by project, collapses multiple daily sessions into a single line per day, prioritizes commits over commands, filters noise commands, maps General to Other, and searches AI-generated session summaries in addition to command text, project names, and git commits.
-* **Files**: [formatter.py](file:///Users/himanshuverma/Projects/termstory/termstory/formatter.py) (`format_search_results`, `_is_noise_command`, `_get_session_memory`, `_collapse_by_day`), [database.py](file:///Users/himanshuverma/Projects/termstory/termstory/database.py) (`search_sessions`).
-
-### 📋 `termstory today`
-* **Status**: Implemented, tested, and pushed.
-* **Features**: Clean bulleted timeline per project with project-level duration summaries, yesterday comparison support, and noise filtering.
-* **Files**: [formatter.py](file:///Users/himanshuverma/Projects/termstory/termstory/formatter.py) (`format_today_output`).
-
-### 📁 `termstory project`
-* **Status**: Implemented, tested, and pushed.
-* **Features**: Replaced cards with a clean, high-density, box-free list of dates and milestone accomplishments/memories per day.
-* **Files**: [formatter.py](file:///Users/himanshuverma/Projects/termstory/termstory/formatter.py) (`format_project_output`).
-
-### 💡 `termstory insights` / Highlights
-* **Status**: Implemented, tested, and pushed.
-* **Features**: Overhauled cards, empty charts, and focus score metrics into a compact, clean executive highlights list showing project active days, total duration, and main achievements.
-* **Files**: [formatter.py](file:///Users/himanshuverma/Projects/termstory/termstory/formatter.py) (`format_insights_output`, `_get_project_main_achievement`).
-
-### 💻 `termstory ui` (Textual TUI Dashboard)
-* **Status**: Fully implemented, refined, and verified.
-* **Layout Structure**:
-  - `StatsHeader` at the top showing active days, streaks, total duration, and a GitHub-style activity heatmap syncing with the timeline's active `days_limit` (defaults to 90 days).
-  - Main panel split 30% / 70% between the `HistoryTree` explorer (which hides the root node `Timeline Explorer` to maximize space) and the scrollable `DetailsCanvas`.
-  - Simple modal help overlay (`HelpScreen`) toggleable via `?`, dismissible with `Esc`/`q`/Close.
-  - Interactive onboarding popup screen (`OnboardingScreen`) triggered when no config is detected, supporting key shortcuts for Groq (`Ctrl+G`), OpenAI (`Ctrl+A`), Ollama (`Ctrl+L`), Custom (`Ctrl+C`), or Disable (`Ctrl+D`).
-* **Performance**: Utilizes `@work` async workers to fetch AI summaries on background threads. Implemented session date caching to eliminate rendering lags.
-* **Robust OS-Level Copying**: Overrides `copy_to_clipboard` to pipe copy commands directly to local OS utilities (`pbcopy`, `xclip`/`xsel`/`wl-copy`, `clip`) so that copy shortcut `c` writes selections directly to the host operating system's clipboard even when OSC 52 terminal sequences are disabled.
-* **Unified Global Search with Scope Escape**: Combined the TUI and CLI search logic on a single SQLite matching engine. TUI filters the pre-loaded 90-day timeline in real-time as you type, and escapes to an all-time deep history search on `Enter`. Pressing `Escape` or clearing the input immediately restores the normal timeline.
-* **Files**: [tui.py](file:///Users/himanshuverma/Projects/termstory/termstory/tui.py), [test_tui.py](file:///Users/himanshuverma/Projects/termstory/tests/test_tui.py), [cli.py](file:///Users/himanshuverma/Projects/termstory/termstory/cli.py).
-
-### 🎨 UI Refinement, Timeline Alignment & Rich Narrative Summaries
-* **Status**: Implemented, polished, and verified.
-* **Features**:
-  - **Dynamic Heatmap & Header Alignment**: Synced stats header labels (`Activity (Last N Days):`) and the command volume heatmap to match the timeline limit dynamically.
-  - **Narrative AI Prompt Redesign**: Updated prompts in [ai.py](file:///Users/himanshuverma/Projects/termstory/termstory/ai.py) to replace marketing paragraphs with high-density, CLI-styled console logs using ASCII tree branches (`├─`, `└─`) or tech bullets (`•`) detailing built targets, flow details, and outcome results in a clean, developer-focused structure.
-  - **Tree Explorer Cleanups**: Hid the redundant `"Timeline Explorer"` tree root node via constructor args, zeroed margins and tree padding, and centered the footer shortcuts.
-* **Files**: [tui.py](file:///Users/himanshuverma/Projects/termstory/termstory/tui.py), [ai.py](file:///Users/himanshuverma/Projects/termstory/termstory/ai.py), [test_tui.py](file:///Users/himanshuverma/Projects/termstory/tests/test_tui.py), [test_ai.py](file:///Users/himanshuverma/Projects/termstory/tests/test_ai.py).
-
-### 📖 Upgraded Daily AI System Prompt & TUI Chronicle Integration
-* **Status**: Fully implemented, integrated, and verified.
-* **Features**:
-  - **Narrative Daily Chronicle**: Embedded the upgraded "Story of You" system prompt in [ai.py](file:///Users/himanshuverma/Projects/termstory/termstory/ai.py) utilizing second-person narrative ("You"), dynamic GitHub handle resolution, inferred breaks, and ASCII connection formatting.
-  - **Activity Punch-Card**: Integrated a dynamic horizontal activity punch-card visual strip (`00:00 ░░░░░ 06:00 ... 23:59`) based on hourly command intensity counts.
-  - **TUI Integration**: Completely unified the Daily Chronicle inside `termstory ui`'s `DetailsCanvas` when date nodes are selected, maintaining standard session detail feeds at the bottom for full visibility and single-session interactions.
-* **Files**: [tui.py](file:///Users/himanshuverma/Projects/termstory/termstory/tui.py), [ai.py](file:///Users/himanshuverma/Projects/termstory/termstory/ai.py), [formatter.py](file:///Users/himanshuverma/Projects/termstory/termstory/formatter.py), [cli.py](file:///Users/himanshuverma/Projects/termstory/termstory/cli.py).
-
-### 🛡️ Empty State Safeguards & Stricter Project Resolution Fallback
-* **Status**: Fully implemented, integrated, and verified.
-* **Features**:
-  - **TUI Empty State Banner & Guards**: Handled empty shell histories by showing a welcoming troubleshooting/permission guide in `DetailsCanvas`, displaying a warning notification on mount, and guarding/disabling AI summary actions when 0 sessions are ingested.
-  - **Project Fallback Strictness**: Overhauled `find_project_root` in [project.py](file:///Users/himanshuverma/Projects/termstory/termstory/project.py) to return `home` (instead of the absolute folder path) when a folder is not inside standard project roots or paths, correctly mapping irrelevant folders (like `~/.ssh`, `~/Downloads`) to `"Other"`.
-* **Files**: [project.py](file:///Users/himanshuverma/Projects/termstory/termstory/project.py), [tui.py](file:///Users/himanshuverma/Projects/termstory/termstory/tui.py), [cli.py](file:///Users/himanshuverma/Projects/termstory/termstory/cli.py), [test_project.py](file:///Users/himanshuverma/Projects/termstory/tests/test_project.py), [test_tui.py](file:///Users/himanshuverma/Projects/termstory/tests/test_tui.py).
-
-### 📊 Unified Wrapped View for Overall Timeline
-* **Status**: Fully implemented, integrated, and verified.
-* **Features**:
-  - **Overall Wrapped View**: Modified the root `Timeline` tree node in `termstory ui` to show a beautiful, high-density, aggregated "All-Time / Timeline Wrapped" dashboard.
-  - **Comprehensive Telemetry**: Updated `get_month_wrapped_telemetry` to support `timeframe_id == "overall"`, which dynamically calculates additions, deletions, time sinks, and terminal diagnostics over all ingested history without date boundaries.
-  - **AI Chronicler Audit**: Integrated `generate_wrapped_summary` for the overall review, allowing the user to generate/regenerate an all-time perceptive roast/behavioral audit.
-* **Files**: [tui.py](file:///Users/himanshuverma/Projects/termstory/termstory/tui.py), [test_tui.py](file:///Users/himanshuverma/Projects/termstory/tests/test_tui.py).
-
-### ⚙️ Interactive Configuration Consent (White Glove Setup)
-* **Status**: Fully implemented, integrated, and verified.
-* **Features**:
-  - **Missing Timestamps Detection**: Parser detects if Zsh history lacks extended history prefixes and sets `TERMSTORY_MISSING_TIMESTAMPS` environment variable.
-  - **White Glove Onboarding Consent**: CLI show_ui command blocks startup to prompt users with missing timestamps to automatically append `setopt EXTENDED_HISTORY` to their `~/.zshrc`.
-  - **Safe Exit & Fallback**: Exits gracefully with clear restart instructions if user confirms (`Y`), or continues directly to the legacy TUI fallback if user declines (`N`).
-* **Files**: [cli.py](file:///Users/himanshuverma/Projects/termstory/termstory/cli.py), [parser.py](file:///Users/himanshuverma/Projects/termstory/termstory/parser.py), [test_cli_commands.py](file:///Users/himanshuverma/Projects/termstory/tests/test_cli_commands.py).
-
-### 🛡️ Advanced Concurrency, Thread-Safety & Resilience
-* **Status**: Fully implemented, integrated, and verified.
-* **Features**:
-  - **SQLite Upgrade Deadlocks**: Fixed database deadlocks and race conditions during concurrent pane reads by using explicit `BEGIN IMMEDIATE` transactions in `save_data` and widespread `INSERT OR IGNORE` queries. Added a `30.0s` connection timeout for massive batch ingestions.
-  - **Main-Thread Freezing Fixes**: Offloaded heavy UI operations and API calls to background threads using Textual's `@work(thread=True)` workers, eliminating TUI stutters.
-  - **Thread Starvation 2-Factor Guards**: Implemented `exclusive=True` on UI workers to prevent thread pool exhaustion from rapid user inputs. Added a secondary wall-clock threading timeout (`worker_thread.join(timeout + 1.0)`) and circuit breakers in `ai.py` on top of socket timeouts to ensure hung LLM processes cannot consume all threads.
-  - **Corrupt DB Fallback Logic**: Hardened `safe_init_db` in `cli.py` to automatically catch `sqlite3.DatabaseError`. If corruption is detected, it moves the corrupted database to a `.bak` file and transparently reinitializes a fresh database without bricking the application.
-  - **Schema Integrity**: Migrated the `UNIQUE` constraint in the `projects` table from `name` to `path` to prevent irreversible fusion of identically named project folders.
-  - **UI Philosophy Enforcement**: Reaffirmed the strict ban on `rich.panel.Panel` in favor of dense text separators to ensure the "density over decoration" philosophy remains intact.
-* **Files**: [database.py](file:///Users/himanshuverma/Projects/termstory/termstory/database.py), [tui.py](file:///Users/himanshuverma/Projects/termstory/termstory/tui.py), [cli.py](file:///Users/himanshuverma/Projects/termstory/termstory/cli.py), [ai.py](file:///Users/himanshuverma/Projects/termstory/termstory/ai.py), [formatter.py](file:///Users/himanshuverma/Projects/termstory/termstory/formatter.py).
-
-### ⚡ LIFO Debouncing & In-Flight AI Cancellation
-* **Status**: Fully implemented, integrated, and verified.
-* **Features**:
-  - **Cooperative Cancellation**: Centralized check via `_is_current_worker_cancelled()` in `_send_llm_request` that aborts slow API requests and immediately unblocks worker threads when a new request is triggered.
-  - **Thread Starvation Mitigation**: Periodic worker cancellation checks in telemetry calculations (`get_month_wrapped_telemetry`) and bulk generators (`bulk_generate_sessions_stories`) prevent CPU/thread starvation when navigating rapidly.
-  - **Clean State Recovery**: Safe handling of cancelled workers so session state flags are correctly restored without rendering partial UI states or triggering false fail notifications.
-* **Files**: [tui.py](file:///Users/himanshuverma/Projects/termstory/termstory/tui.py), [ai.py](file:///Users/himanshuverma/Projects/termstory/termstory/ai.py), [test_tui.py](file:///Users/himanshuverma/Projects/termstory/tests/test_tui.py).
-
-### 🛠️ Resolved Issues (June 2026 Invalidation Cycle)
-* **Status**: Fully resolved, tested, and verified.
-* **Resolved Issues**:
-  - **Multiplexer PROMPT_COMMAND injection (Zsh/Bash)**: Ensured both the Bash history multiline parser and the Zsh parser reset state cleanly when encountering terminal multiplexer boundary sequences (`_zellij`, `tmux`, `prompt_command`, `kitty +kitten`), preventing command corruption.
-  - **NFS/SMB symlink loop protection**: Wrapped `os.listdir` calls inside `find_project_root` with a strict `0.5s` daemon thread timeout. Implemented blacklist/whitelist path prefixes (`/mnt`, `/Volumes/smb`, and UNC `\\` paths) to automatically bypass network mounts without hanging.
-  - **Banish rich.panel.Panel**: Audited and confirmed total absence of `rich.panel.Panel` in `formatter.py` and `tui.py` in favor of dense terminal-native line characters.
-  - **Banish thick/tall borders**: Replaced all heavy TUI stylesheet border properties (`border: thick`, `border: tall`) with simpler alternatives like `solid` or `none` to conform with density guidelines.
-  - **Kitty +kitten state reset**: Confirmed presence of `kitty +kitten` check in both the Zsh and Bash multiline state reset boundary checkers.
-* **Files**: [parser.py](file:///Users/himanshuverma/Projects/termstory/termstory/parser.py), [project.py](file:///Users/himanshuverma/Projects/termstory/termstory/project.py), [tui.py](file:///Users/himanshuverma/Projects/termstory/termstory/tui.py), [formatter.py](file:///Users/himanshuverma/Projects/termstory/termstory/formatter.py), [test_parser.py](file:///Users/himanshuverma/Projects/termstory/tests/test_parser.py), [test_project.py](file:///Users/himanshuverma/Projects/termstory/tests/test_project.py).
-
----
-
-## 4. Running Verification
-
-Always verify changes using:
-```bash
-python3 -m pytest tests/
+```mermaid
+graph TD
+    A[Shell History Files] -->|parser.py| B[Parser Engine]
+    B -->|timestamp_detective.py| C[Timestamp Detective]
+    C -->|session.py| D[Session Builder]
+    D -->|project.py| E[Project Resolver]
+    E -->|tags.py| F[Session Tagging]
+    F -->|database.py| G[(SQLite Database)]
+    G -->|tui.py| H[Textual TUI Dashboard]
+    G -->|cli.py| I[Typer CLI interface]
+    G -->|web.py| J[HTML Report Web Page]
 ```
-And manually inspect outputs via:
-```bash
-python3 -m termstory.cli today
-python3 -m termstory.cli project termstory
-python3 -m termstory.cli insights
-python3 -m termstory.cli ui
+
+### Ingestion & Shell History Parsing
+* **[parser.py](file:///Users/himanshuverma/personal/termstory/termstory/parser.py)**: Parses shell histories safely to extract Unix timestamps and clean command strings.
+  * *Zsh Parser*: Parses extended format `: <timestamp>:<duration>;<command>`, switches to Hybrid Mode or Legacy Fallback when timestamps are missing. Filters out terminal multiplexer boundary sequences (`_zellij`, `tmux`, `prompt_command`, `kitty +kitten`) to avoid command corruption.
+  * *Bash Parser*: Reads `.bash_history` using `#<timestamp>` rows or modifies timestamps backwards by 10s step intervals.
+  * *Fish & PowerShell*: Discovers Fish blocks and PowerShell histories, reading timestamped commands.
+* **[timestamp_detective.py](file:///Users/himanshuverma/personal/termstory/termstory/timestamp_detective.py)**: forensic engine recovering timestamps for un-timestamped legacy shell entries.
+  * *Virtual CWD Tracker*: Tracks relative and absolute directories via shell navigation (`cd`, `pushd`, `popd`).
+  * *Forensic Detectors*: Queries git commit logs (`git commit -m`), inline date strings, file system creation times (`touch`, `mkdir`), package manager installations (`brew`, `pip`, `npm`, `cargo`, `gem`), and Docker builds (`docker build`).
+  * *Linear Interpolation*: Evenly spreads unresolvable commands between two recovered anchor timestamps.
+* **[session.py](file:///Users/himanshuverma/personal/termstory/termstory/session.py)**: Chains chronological commands into sessions. Groups commands where user idle time is less than 30 minutes.
+* **[project.py](file:///Users/himanshuverma/personal/termstory/termstory/project.py)**: Maps paths to logical project names via VCS roots (`.git`, `.hg`, `.svn`) or build descriptors (`pom.xml`, `package.json`, `Cargo.toml`). Implements NFS/SMB network loop protection using a `0.5s` daemon thread timeout.
+
+### Database & Storage Layer
+* **[database.py](file:///Users/himanshuverma/personal/termstory/termstory/database.py)**: Core storage layer. Enables WAL mode (`PRAGMA journal_mode = WAL;`) for concurrent execution, safe re-initialization if database corruption is detected, and SQLite FTS5 search index tables (`search_index`) for high-speed timeline matching.
+* **[backup.py](file:///Users/himanshuverma/personal/termstory/termstory/backup.py)**: Backs up and restores the SQLite database.
+* **[archive.py](file:///Users/himanshuverma/personal/termstory/termstory/archive.py)**: Archives older sessions, commands, commits, and summaries into a separate database file.
+
+### AI Integration & RAG Search
+* **[ai.py](file:///Users/himanshuverma/personal/termstory/termstory/ai.py)**: Zero-dependency Chat Completions wrapper utilizing `urllib.request`. Connects to Groq, OpenAI, or Ollama. Features LIFO worker cancellation, circuit breakers, socket timeouts, and thread safety.
+* **[rag.py](file:///Users/himanshuverma/personal/termstory/termstory/rag.py)**: Combines TF-IDF/BM25 and local sentence embeddings (via optional `sentence-transformers` and `numpy`) for semantic hybrid search scoring.
+* **[ask.py](file:///Users/himanshuverma/personal/termstory/termstory/ask.py)**: Prompts the LLM with matched RAG sessions to answer natural language questions about terminal history.
+
+### User Interface & Formatting
+* **[tui.py](file:///Users/himanshuverma/personal/termstory/termstory/tui.py)**: Textual TUI Dashboard. Implements non-blocking async workers (`@work(thread=True)`), double-buffering, clipboard integration (`pbcopy`, `xclip`, `wl-copy`, `clip`), matrix ingestion screens, and command playback ghost typing.
+* **[formatter.py](file:///Users/himanshuverma/personal/termstory/termstory/formatter.py)**: Renders Rich tables, GitHub-style activity heatmaps, daily punch-card visual strips, focus score bars, Vampire Coder Indexes, RPG character sheets, and profiling timelines.
+* **[timeline.py](file:///Users/himanshuverma/personal/termstory/termstory/timeline.py)**: ASCII visual activity bar charts.
+* **[replay.py](file:///Users/himanshuverma/personal/termstory/termstory/replay.py)**: Interactive CLI terminal command playback playback.
+* **[web.py](file:///Users/himanshuverma/personal/termstory/termstory/web.py)**: Renders statistics, heatmaps, and summaries to a responsive HTML report with customizable themes.
+
+### Telemetry & Diagnostics
+* **[insights.py](file:///Users/himanshuverma/personal/termstory/termstory/insights.py)**: Analytics engine parsing macro-telemetry (focus scores, Vampire index, Project Necromancer reactivation rates, and Rage-Quit signatures).
+* **[stats.py](file:///Users/himanshuverma/personal/termstory/termstory/stats.py)**: Heatmap distributions, daily peak hours, and project language detection.
+* **[tags.py](file:///Users/himanshuverma/personal/termstory/termstory/tags.py)**: Rule-based session categorization engine (`deploy`, `debug`, `setup`, `test`, `docs`).
+* **[mcp_snapshot.py](file:///Users/himanshuverma/personal/termstory/termstory/mcp_snapshot.py)**: Model Context Protocol workspace snapshots (IDE name, git branch, modified files).
+* **[reminder.py](file:///Users/himanshuverma/personal/termstory/termstory/reminder.py)**: JSON-based alert scheduling system.
+* **[hermes_obs.py](file:///Users/himanshuverma/personal/termstory/termstory/hermes_obs.py)**: Nemo relay observability settings for Hermes.
+
+---
+
+## 3. Class Hierarchy
+
+```mermaid
+classDiagram
+    class Command {
+        +int timestamp
+        +str command
+        +int exit_code
+        +int session_id
+        +int project_id
+        +bool is_legacy
+        +str recovery_source
+        +readable_time()
+    }
+
+    class Session {
+        +int id
+        +int start_time
+        +int end_time
+        +int duration_seconds
+        +int project_id
+        +list commands
+        +list commits
+        +str ai_summary
+        +bool is_legacy
+        +str tags
+        +duration_readable()
+        +date_str()
+    }
+
+    class Project {
+        +int id
+        +str name
+        +str path
+        +int first_seen
+        +int last_seen
+        +int session_count
+        +int total_time
+        +str project_context
+    }
+
+    class Database {
+        +get_connection()
+        +init_db()
+        +save_data()
+        +get_range_sessions()
+        +search_sessions()
+    }
+
+    class TimestampDetective {
+        +resolve_all()
+        -detect_git_commit()
+        -detect_file_stat()
+        -detect_package_manager()
+        -_interpolate()
+    }
+
+    class Predictor {
+        +predict()
+        -_compute_signals()
+        -_load_sessions()
+    }
+
+    class BM25 {
+        +get_score()
+    }
+
+    class TermStoryWorkspace {
+        +compose()
+        +on_mount()
+        +action_copy_selection()
+        +run_deep_search()
+    }
+
+    class DetailsCanvas {
+        +update_view_empty()
+        +render_wrapped_view()
+        +render_daily_chronicle_view()
+        +render_session_details()
+    }
+
+    class NavigationTree {
+        +populate()
+        +update_session_label()
+    }
+
+    class StatsHeader {
+        +update_stats()
+    }
+
+    Session "1" *-- "*" Command : contains
+    Project "1" *-- "*" Session : maps
+    Database --> Session : queries
+    Database --> Command : queries
+    Database --> Project : queries
+    TimestampDetective --> Command : recovers
+    Predictor --> Session : analyzes
+    BM25 --> Session : ranks
+    TermStoryWorkspace *-- StatsHeader : mounts
+    TermStoryWorkspace *-- NavigationTree : mounts
+    TermStoryWorkspace *-- DetailsCanvas : mounts
 ```
 
 ---
 
-## 5. Future Roadmap / R&D
+## 4. Test Structure & Verification
 
-The Expert Tester is currently validating 3 new concepts for the next phase of TermStory development:
+TermStory uses a comprehensive test suite in the **[tests/](file:///Users/himanshuverma/personal/termstory/tests)** directory to ensure concurrency safety, API reliability, TUI responsive resizing, and forensic accuracy.
 
-1. **SQLite FTS5 Integration**: Leveraging SQLite's Full-Text Search extension to dramatically speed up deep-history string matching and provide ranked search capabilities across sessions, commands, and AI summaries.
-2. **Concurrency Stress Tests & Massive History Simulations**: Hardening the test suite by synthesizing massive, multi-year history logs to simulate and prevent race conditions and lock-ups during worst-case ingestion scenarios.
-3. **Project-Specific AI Contexts**: Enriching LLM summaries by seeding prompt configurations with project-specific context descriptors, readmes, or language contexts to yield more accurate, tailored narratives per repository.
+### Core Test Categories
+1. **Parser & Detective Forensic Logic**:
+   * **[test_parser.py](file:///Users/himanshuverma/personal/termstory/tests/test_parser.py)**: Hybrid, Zsh, Bash, Fish, and PowerShell parsing tests. Asserts multiplexer reset commands are ignored.
+   * **[test_timestamp_detective.py](file:///Users/himanshuverma/personal/termstory/tests/test_timestamp_detective.py)**: Unit tests for package managers (npm, gem, pip, cargo), inline dates, and linear interpolation.
+   * **[test_quantum_leap.py](file:///Users/himanshuverma/personal/termstory/tests/test_quantum_leap.py)**: Robustness checks against temporal distortions.
+   * **[test_macos_history_parser.py](file:///Users/himanshuverma/personal/termstory/tests/test_macos_history_parser.py)** & **[test_macos_quirks.py](file:///Users/himanshuverma/personal/termstory/tests/test_macos_quirks.py)**: Platform-specific path resolving and quote handling.
+2. **Database Resilience & Concurrency**:
+   * **[test_database.py](file:///Users/himanshuverma/personal/termstory/tests/test_database.py)** & **[test_database_queries.py](file:///Users/himanshuverma/personal/termstory/tests/test_database_queries.py)**: Index validations, migration assertions, and query caching.
+   * **[test_fts5.py](file:///Users/himanshuverma/personal/termstory/tests/test_fts5.py)**: Full-Text Search indexing queries.
+   * **[test_stress.py](file:///Users/himanshuverma/personal/termstory/tests/test_stress.py)** & **[test_expert_concurrency.py](file:///Users/himanshuverma/personal/termstory/tests/test_expert_concurrency.py)**: Heavy multi-threaded reads/writes mimicking massive concurrent database access.
+   * **[test_corrupt_db.py](file:///Users/himanshuverma/personal/termstory/test_corrupt_db.py)**: Verifies the fallback rotation mechanism when encountering corrupt SQLite databases.
+3. **AI Prompting & Client Diagnostics**:
+   * **[test_ai.py](file:///Users/himanshuverma/personal/termstory/tests/test_ai.py)** & **[test_ai_error_surfacing.py](file:///Users/himanshuverma/personal/termstory/tests/test_ai_error_surfacing.py)**: Mocks chat completions endpoint. Validates escaping, timeout enforcement, command truncations, and circuit breakers.
+   * **[test_rag.py](file:///Users/himanshuverma/personal/termstory/tests/test_rag.py)** & **[test_ask.py](file:///Users/himanshuverma/personal/termstory/tests/test_ask.py)**: Hybrid searches, tokenizers, BM25 TF-IDF scoring, and natural language prompt generation.
+   * **[test_git_blame_anger_fortune_teller.py](file:///Users/himanshuverma/personal/termstory/tests/test_git_blame_anger_fortune_teller.py)**: Diagnostic validations for git translator and bug forecasting.
+4. **TUI Layout & Resizing**:
+   * **[test_tui.py](file:///Users/himanshuverma/personal/termstory/tests/test_tui.py)**: Textual app rendering, clipboard copying, and heatmaps.
+   * **[test_expert_resize.py](file:///Users/himanshuverma/personal/termstory/tests/test_expert_resize.py)**: Layout responsive assertions.
+   * **[test_expert_thread_starvation.py](file:///Users/himanshuverma/personal/termstory/tests/test_expert_thread_starvation.py)** & **[tests/stress/test_slowloris_tui.py](file:///Users/himanshuverma/personal/termstory/tests/stress/test_slowloris_tui.py)**: Simulates slow-responding network servers to verify that the UI worker queue debounces calls without locking TUI execution threads.
 
-### Futuristic Concepts & Long-Term Vision
+---
 
-1. **"REM Sleep" Context Consolidation**: Overnight meta-pattern fusing.
-2. **MCP (Model Context Protocol) Time-Machine Snapshots**: Semantic snapshots of external tools.
-3. **"Ghost-in-the-Shell" TUI Playback**: `termstory replay` interactive playback.
-4. **Pre-Cognitive Workspace**: Branch Prediction for Devs (e.g. Friday context loaded on Monday).
-5. **Semantic Deep-Dive via Local RAG**: Zero-Keyword Search using local embeddings.
+## 5. Main Data Flows
 
-*Note: For a more comprehensive overview of these long-term vision goals, see `ROADMAP.md`.*
+### Ingestion Lifecycle Flow
+When commands are ingested (via `termstory ui`, `today`, or explicitly via `run_ingestion`):
+1. **[cli.py:run_ingestion](file:///Users/himanshuverma/personal/termstory/termstory/cli.py#L77)** discovers history file paths using **[config.py:get_history_files](file:///Users/himanshuverma/personal/termstory/termstory/config.py#L31)**.
+2. **[parser.py:parse_all_histories](file:///Users/himanshuverma/personal/termstory/termstory/parser.py#L396)** parses raw lines, sorting them chronologically.
+3. If commands lack timestamps (Legacy mode), **[timestamp_detective.py:TimestampDetective](file:///Users/himanshuverma/personal/termstory/termstory/timestamp_detective.py#L76)** is instantiated to forensic-match and interpolate real timestamps.
+4. **[session.py:create_sessions](file:///Users/himanshuverma/personal/termstory/termstory/session.py#L4)** groups the list of parsed commands into discrete session blocks.
+5. **[project.py:detect_projects](file:///Users/himanshuverma/personal/termstory/termstory/project.py#L433)** resolves projects for each session based on VCS indicators, build configurations, and path sandwich heuristics.
+6. **[tags.py:auto_tag_all_sessions](file:///Users/himanshuverma/personal/termstory/termstory/tags.py#L105)** tags each session (`deploy`, `debug`, `setup`, `test`, `docs`).
+7. **[database.py:Database.save_data](file:///Users/himanshuverma/personal/termstory/termstory/database.py#L190)** records projects, sessions, commands, and git commits inside the SQLite database inside a safe database transaction.
+
+### Q&A / Search Data Flow
+1. User enters a query (via `termstory ask "<query>"` or TUI escape search).
+2. **[ask.py:search_ask](file:///Users/himanshuverma/personal/termstory/termstory/ask.py#L114)** retrieves candidate sessions using FTS5 match queries on the database.
+3. Sessions are scored and ranked via TF-IDF BM25 unigram/bigram matches.
+4. If semantic hybrid search is enabled (via `search --semantic`), **[rag.py:hybrid_search](file:///Users/himanshuverma/personal/termstory/termstory/rag.py#L108)** generates embeddings, computes cosine similarities, and fuses BM25 and semantic scores.
+5. Matches are formatted as a technical text prompt block in **[ask.py:generate_answer](file:///Users/himanshuverma/personal/termstory/termstory/ask.py#L254)**.
+6. **[ai.py:_send_llm_request](file:///Users/himanshuverma/personal/termstory/termstory/ai.py#L20)** queries Groq/OpenAI/Ollama and outputs the result.
+
+### Prediction Cadence Flow
+1. User runs `termstory predict`.
+2. **[predict.py:Predictor](file:///Users/himanshuverma/personal/termstory/termstory/predict.py#L76)** loads all non-legacy database sessions.
+3. Heuristics compute scores:
+   * *Recency*: Exponential decay weights based on session age.
+   * *Time Affinity*: Matches the current hour block to historical session times.
+   * *Day Cadence*: Matches the current weekday to project histories.
+   * *Interruption Boost*: Detects if a session was suspended (>12h inactivity) and weights that project for resumption.
+4. Top 3-5 workspace directories are printed via **[predict.py:format_predict_output](file:///Users/himanshuverma/personal/termstory/termstory/predict.py#L387)**, excluding noise commands.

@@ -8,6 +8,7 @@
   * **Version Promotion**: Promoted version to `0.6.0` across the package core files.
 
 ## Completed
+* **Developer Memory Engine Documentation Overhaul (Batch 13p2)**: Conducted repository-wide code and module analysis of all modules and tests in the repository. Generated a highly comprehensive and detailed `agents.md` mapping core features, class hierarchies, database schemas, test methodologies, and data flow.
 * **MCP Time-Machine Snapshots (Batch 13)**: Create `mcp_snapshot.py` to capture active IDE state, Git status, and active terminal working directory. Store snapshots in `mcp_snapshots` SQLite table. Add `termstory replay --mcp <session_id>` CLI subcommand and custom formatters to display captured snapshots.
 * **Documentation & Technical Debt Cleanup (Batch 12)**: Align README.md with all new subcommands, update plans/tasks/tracker tracking systems.
 * **Project-Specific AI Contexts (Batch 11)**: Added `termstory project context` CLI subcommand for context setting and viewing, wired `project_context` from database to AI prompts in `ai.py` for `generate_ai_summary` and `generate_executive_review`, enhanced `termstory predict` with `--json` and `--days`, and escaped all LLM outputs.
@@ -74,3 +75,4 @@
 * **Batch 11 — Project-Specific AI Contexts**: ✅ Completed
 * **Batch 12 — Technical Debt & Cleanup**: ✅ Completed (v0.6.0 Release Prep)
 * **Batch 13 — MCP Time-Machine Snapshots**: ✅ Completed
+* **Batch 13p2 — Developer Memory Engine Documentation Overhaul**: ✅ Completed
