@@ -150,6 +150,7 @@ def search_history(
     tag: Optional[List[str]] = typer.Option(None, "--tag", "-t", help="Filter matches by tag(s) (deploy, debug, setup, test, docs)"),
     limit: int = typer.Option(50, "--limit", help="Maximum number of search results to return"),
     detailed: bool = typer.Option(False, "--detailed", help="Show all commands and commits in matched sessions"),
+    semantic: bool = typer.Option(False, "--semantic", help="Perform local semantic/RAG hybrid search"),
 ):
     """Search across your work history (commits, commands, and projects) with advanced filters"""
     db_path = get_db_path()
@@ -184,15 +185,33 @@ def search_history(
                 raise typer.Exit(code=1)
             tag_list.append(t_clean)
             
-    from termstory.search import advanced_search
-    results = advanced_search(
-        db,
-        query=query,
-        project_filter=project,
-        since_ts=since_ts,
-        until_ts=until_ts,
-        tag_filters=tag_list
-    )
+    if semantic:
+        if not query:
+            Console(stderr=True).print("[bold red]Error: Semantic search requires a search query.[/bold red]")
+            raise typer.Exit(code=1)
+        try:
+            from termstory.rag import hybrid_search
+            results = hybrid_search(
+                db,
+                query=query,
+                project_filter=project,
+                since_ts=since_ts,
+                until_ts=until_ts,
+                tag_filters=tag_list
+            )
+        except ImportError as e:
+            Console(stderr=True).print(f"[bold red]Error: {str(e)}[/bold red]")
+            raise typer.Exit(code=1)
+    else:
+        from termstory.search import advanced_search
+        results = advanced_search(
+            db,
+            query=query,
+            project_filter=project,
+            since_ts=since_ts,
+            until_ts=until_ts,
+            tag_filters=tag_list
+        )
     
     # Limit results
     results = results[:limit]
