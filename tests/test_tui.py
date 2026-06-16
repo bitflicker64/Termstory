@@ -1102,3 +1102,76 @@ async def test_tui_worker_cancellation(monkeypatch):
             assert not getattr(app.sessions[0], "generation_failed", False)
 
 
+@pytest.mark.asyncio
+async def test_tui_batch_8_cyberpunk_animations(monkeypatch):
+    """Test the newly added Batch 8 features (Matrix Defrag, Ghost Typer, Heatmap Pulse)."""
+    import tempfile
+    import sqlite3
+    import asyncio
+    from termstory.database import Database
+    from termstory.models import Session, Project, Command
+    from termstory.tui import TermStoryWorkspace, MatrixDefragScreen, GhostTyperScreen
+    
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = os.path.join(tmp_dir, "test.db")
+        db = Database(db_path)
+        db.init_db()
+        
+        # Setup dummy data
+        p = Project(id=1, name="dummy", path="/dummy", first_seen=1000, last_seen=1100, session_count=1, total_time=100)
+        s = Session(id=1, start_time=1000, end_time=1010, duration_seconds=10, project_id=1)
+        c = Command(id=1, timestamp=1000, command="echo 'cyberpunk animation test'", session_id=1)
+        c.project_id = 1
+        s.commands = [c]
+        db.save_data([p], [s], [c])
+        
+        config = {
+            "active_provider": "disabled",
+            "has_seen_onboarding": True
+        }
+        app = TermStoryWorkspace(db=db, days_limit=30, config_override=config)
+        app.sessions = [s]
+        app.projects = [p]
+        
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            
+            # 1. Test Matrix Defrag animation trigger
+            await pilot.press("d")
+            await pilot.pause()
+            assert isinstance(app.screen, MatrixDefragScreen)
+            # Wait for animation to finish or manually dismiss
+            app.screen.dismiss()
+            await pilot.pause()
+            
+            # 2. Test Ghost Playback keybinding trigger
+            tree = app.query_one("#history-navigator")
+            
+            # Find the session node in the tree and select it
+            session_node = None
+            def traverse(node):
+                nonlocal session_node
+                if node.data and node.data.get("type") == "session":
+                    session_node = node
+                    return
+                for child in node.children:
+                    traverse(child)
+            traverse(tree.root)
+            
+            if session_node:
+                tree.select_node(session_node)
+                await pilot.pause()
+                
+                await pilot.press("g")
+                await pilot.pause()
+                assert isinstance(app.screen, GhostTyperScreen)
+                # Dismiss
+                app.screen.dismiss()
+                await pilot.pause()
+                
+            # 3. Test Heatmap Pulse animation increment
+            current_pulse = app.pulse_phase
+            app.step_heatmap_pulse()
+            assert app.pulse_phase == current_pulse + 1
+
+

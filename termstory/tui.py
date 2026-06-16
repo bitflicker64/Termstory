@@ -26,6 +26,7 @@ from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
 from textual.widgets import Footer, Tree, Static, Input, Button
 from textual.screen import ModalScreen
 from textual.binding import Binding
+from textual.markup import escape
 
 from termstory.models import Session, Project, format_duration
 from termstory.database import Database
@@ -101,8 +102,8 @@ def calculate_streak(sessions: List[Session]) -> int:
     return streak
 
 
-def generate_heatmap(sessions: List[Session], days_limit: int = 30) -> str:
-    """Generate a GitHub-like 30-day activity matrix representing command volume."""
+def generate_heatmap(sessions: List[Session], days_limit: int = 30, pulse_phase: int = 0) -> str:
+    """Generate a GitHub-like 30-day activity matrix representing command volume with pulse scan micro-animation."""
     now = get_current_time().date()
     day_counts = defaultdict(int)
     for s in sessions:
@@ -113,19 +114,36 @@ def generate_heatmap(sessions: List[Session], days_limit: int = 30) -> str:
     for i in range(days_limit - 1, -1, -1):
         target_date = now - timedelta(days=i)
         cmd_count = day_counts[target_date]
+        
+        # Scan-line wave animation moving left to right based on pulse_phase
+        dist = abs(((days_limit - 1) - i) - (pulse_phase % (days_limit + 5)))
+        is_pulse = dist < 3
+        
         if cmd_count == 0:
-            heatmap_blocks.append("[bright_black]░[/]")
+            if is_pulse:
+                heatmap_blocks.append("[green]░[/]")
+            else:
+                heatmap_blocks.append("[bright_black]░[/]")
         elif cmd_count < 5:
-            heatmap_blocks.append("[bright_black]▄[/]")
+            if is_pulse:
+                heatmap_blocks.append("[bold green]▄[/]")
+            else:
+                heatmap_blocks.append("[bright_black]▄[/]")
         elif cmd_count < 20:
-            heatmap_blocks.append("[green]■[/]")
+            if is_pulse:
+                heatmap_blocks.append("[bold green]■[/]")
+            else:
+                heatmap_blocks.append("[green]■[/]")
         else:
-            heatmap_blocks.append("[bold green]█[/]")
+            if is_pulse:
+                heatmap_blocks.append("[bold white]█[/]")
+            else:
+                heatmap_blocks.append("[bold green]█[/]")
             
     return " ".join(heatmap_blocks)
 
 
-def calculate_dashboard_stats(sessions: List[Session], projects: List[Project], days_limit: int = 30) -> Dict[str, Any]:
+def calculate_dashboard_stats(sessions: List[Session], projects: List[Project], days_limit: int = 30, pulse_phase: int = 0) -> Dict[str, Any]:
     """Calculate cumulative dashboard stats."""
     real_sessions = [s for s in sessions if not getattr(s, "is_legacy", False)]
     
@@ -137,7 +155,7 @@ def calculate_dashboard_stats(sessions: List[Session], projects: List[Project], 
     streak = calculate_streak(real_sessions)
     total_seconds = sum(s.duration_seconds for s in sessions)
     total_time_str = format_duration(total_seconds)
-    heatmap = generate_heatmap(real_sessions, days_limit=days_limit)
+    heatmap = generate_heatmap(real_sessions, days_limit=days_limit, pulse_phase=pulse_phase)
     
     # Derive last ingestion time from the most recently ended session
     last_ingestion_str = ""
@@ -348,6 +366,8 @@ class HelpScreen(ModalScreen[None]):
                 "  [cyan]?[/cyan]        : Show this help menu\n"
                 "  [cyan]/[/cyan]        : Search sessions\n"
                 "  [cyan]o[/cyan]        : Configure AI Settings\n"
+                "  [cyan]d[/cyan]        : Play Cyberpunk Matrix Defrag animation\n"
+                "  [cyan]g[/cyan]        : Play Ghost Typer playback of selected commands\n"
                 "  [cyan]c[/cyan]        : Copy selected text to clipboard\n"
                 "  [cyan]q[/cyan] / [cyan]Esc[/cyan]  : Quit app / clear search\n\n"
                 "[bold]Canvas Scrolling[/bold]\n"
@@ -734,7 +754,7 @@ class NavigationTree(Tree):
                                     )
                             else:
                                 memory = get_session_memory_str(s)
-                                session_label = f"✨ {memory} [dim]({start_str} - {end_str})[/]"
+                                session_label = f"✨ {escape(memory)} [dim]({start_str} - {end_str})[/]"
 
                             proj_node.add_leaf(
                                 session_label,
@@ -752,7 +772,7 @@ class NavigationTree(Tree):
                 label_str = str(node.label)
                 time_match = re.search(r'(\[dim\].*?\[/\])', label_str)
                 time_part = time_match.group(1) if time_match else ""
-                node.label = f"✨ {new_summary} {time_part}"
+                node.label = f"✨ {escape(new_summary)} {time_part}"
                 return True
             for child in node.children:
                 if traverse(child):
@@ -932,7 +952,7 @@ class DetailsCanvas(VerticalScroll):
             else:
                 cached_exec = self.app.db.get_macro_summary(timeframe_id)
                 if cached_exec:
-                    exec_widgets.append(Static(f"{cached_exec}\n"))
+                    exec_widgets.append(Static(f"{escape(cached_exec)}\n"))
                     try:
                         btn_regen = Button("⟳ Regenerate Timeframe Summary", id=f"btn-exec-{timeframe_id}-{timeframe_type}")
                         btn_regen.tooltip = "Re-run the AI summarizer for this period."
@@ -1006,10 +1026,10 @@ class DetailsCanvas(VerticalScroll):
                 # Show summary or generate button
                 if getattr(s, "is_generating_story", False):
                     if s.ai_summary:
-                        feed_widgets.append(Static(f"  └─ ✨ {strip_ansi(s.ai_summary)}"))
+                        feed_widgets.append(Static(f"  └─ ✨ {escape(strip_ansi(s.ai_summary))}"))
                     feed_widgets.append(Static("  └─ ⏳ [italic yellow]Thinking...[/italic yellow]\n"))
                 elif s.ai_summary:
-                    feed_widgets.append(Static(f"  └─ ✨ {strip_ansi(s.ai_summary)}"))
+                    feed_widgets.append(Static(f"  └─ ✨ {escape(strip_ansi(s.ai_summary))}"))
                     if ai_enabled and provider != "disabled" and not getattr(s, "recent_generation", False):
                         btn = Button("⟳ Regenerate", id=f"btn-gen-session-{s.id}")
                         btn.classes = "gen-story-btn small-btn"
@@ -1026,7 +1046,7 @@ class DetailsCanvas(VerticalScroll):
                     else:
                         # fallback to heuristic summary
                         heur = get_session_memory_str(s)
-                        feed_widgets.append(Static(f"  └─ {heur}\n"))
+                        feed_widgets.append(Static(f"  └─ {escape(heur)}\n"))
                         
             self.mount(Vertical(*feed_widgets, classes="feed-container"))
 
@@ -1230,7 +1250,7 @@ class DetailsCanvas(VerticalScroll):
                         audit_text = parts[0].strip()
                         verdict_text = parts[1].strip()
                         
-                    exec_widgets.append(NarrativeText(audit_text, parse_markup=False))
+                    exec_widgets.append(NarrativeText(escape(audit_text), parse_markup=True))
                     
                     if verdict_text:
                         v_lines = ["=" * 64]
@@ -1239,7 +1259,7 @@ class DetailsCanvas(VerticalScroll):
                         for line in verdict_wrapped:
                             v_lines.append(line)
                         v_lines.append("=" * 64)
-                        exec_widgets.append(Static("\n" + "\n".join(v_lines)))
+                        exec_widgets.append(Static("\n" + escape("\n".join(v_lines))))
                         
                     try:
                         btn_regen = Button("⟳ Regenerate Wrapped Audit", id=f"btn-exec-{timeframe_id}-{timeframe_type}")
@@ -1341,7 +1361,7 @@ class DetailsCanvas(VerticalScroll):
             else:
                 cached_story = self.app.db.get_macro_summary(date_str)
                 if cached_story:
-                    narrative_widgets.append(NarrativeText(cached_story, parse_markup=False))
+                    narrative_widgets.append(NarrativeText(escape(cached_story), parse_markup=True))
                     
                     # Add a Regenerate button for the chronicle
                     btn_regen = Button("⟳ Regenerate Chronicle", id=f"btn-exec-{date_str}-date")
@@ -1400,10 +1420,10 @@ class DetailsCanvas(VerticalScroll):
             # Show summary or generate button
             if getattr(s, "is_generating_story", False):
                 if s.ai_summary:
-                    feed_widgets.append(Static(f"  └─ ✨ {strip_ansi(s.ai_summary)}"))
+                    feed_widgets.append(Static(f"  └─ ✨ {escape(strip_ansi(s.ai_summary))}"))
                 feed_widgets.append(Static("  └─ ⏳ [italic yellow]Thinking...[/italic yellow]\n"))
             elif s.ai_summary:
-                feed_widgets.append(Static(f"  └─ ✨ {strip_ansi(s.ai_summary)}"))
+                feed_widgets.append(Static(f"  └─ ✨ {escape(strip_ansi(s.ai_summary))}"))
                 if ai_enabled and provider != "disabled" and not getattr(s, "recent_generation", False):
                     btn = Button("⟳ Regenerate", id=f"btn-gen-session-{s.id}")
                     btn.classes = "gen-story-btn small-btn"
@@ -1419,7 +1439,7 @@ class DetailsCanvas(VerticalScroll):
                     feed_widgets.append(row)
                 else:
                     heur = get_session_memory_str(s)
-                    feed_widgets.append(Static(f"  └─ {heur}\n"))
+                    feed_widgets.append(Static(f"  └─ {escape(heur)}\n"))
                     
         self.mount(Vertical(*feed_widgets, classes="feed-container"))
 
@@ -1508,17 +1528,17 @@ class DetailsCanvas(VerticalScroll):
         ai_widgets = [Static("[bold yellow]Session Summary Story[/bold yellow]")]
         if getattr(session, "is_generating_story", False):
             if session.ai_summary:
-                ai_widgets.append(NarrativeText(strip_ansi(session.ai_summary), prefix="✨ ", suffix="\n", parse_markup=True))
+                ai_widgets.append(NarrativeText(escape(strip_ansi(session.ai_summary)), prefix="✨ ", suffix="\n", parse_markup=True))
             ai_widgets.append(Static("⏳ [italic yellow]Thinking...[/italic yellow]\n"))
         elif session.ai_summary:
-            ai_widgets.append(NarrativeText(strip_ansi(session.ai_summary), prefix="✨ ", suffix="\n", parse_markup=True))
+            ai_widgets.append(NarrativeText(escape(strip_ansi(session.ai_summary)), prefix="✨ ", suffix="\n", parse_markup=True))
             if ai_enabled and provider != "disabled" and not getattr(session, "recent_generation", False):
                 btn = Button("⟳ Regenerate", id=f"btn-gen-session-{session.id}")
                 btn.classes = "gen-story-btn small-btn"
                 ai_widgets.append(btn)
         elif getattr(session, "generation_failed", False):
             ai_widgets.append(Static("[bold red]\\[ERR] AI summary unavailable. Displaying raw SQLite history.[/bold red]"))
-            ai_widgets.append(Static(f"{get_session_memory_str(session)}\n"))
+            ai_widgets.append(Static(f"{escape(get_session_memory_str(session))}\n"))
             btn = Button("⟳ Retry", id=f"btn-gen-session-{session.id}")
             btn.classes = "gen-story-btn small-btn"
             ai_widgets.append(btn)
@@ -1528,7 +1548,7 @@ class DetailsCanvas(VerticalScroll):
             ai_widgets.append(btn)
         else:
             ai_widgets.append(Static("[bold red]\\[ERR] AI summary unavailable. Displaying raw SQLite history.[/bold red]"))
-            ai_widgets.append(Static(f"{get_session_memory_str(session)}\n"))
+            ai_widgets.append(Static(f"{escape(get_session_memory_str(session))}\n"))
         
         self.mount(Vertical(*ai_widgets, classes="session-ai-container"))
         self.mount(Static("\n"))
@@ -1599,6 +1619,163 @@ class ResetConfirmScreen(ModalScreen):
     def action_cancel_reset(self) -> None:
         self.dismiss(False)
 
+
+class MatrixDefragScreen(ModalScreen[None]):
+    """Cyberpunk Matrix Defrag animation overlay."""
+    BINDINGS = [
+        Binding("escape", "dismiss", "Close", show=True),
+        Binding("q", "dismiss", "Close", show=True),
+    ]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.grid_width = 30
+        self.grid_height = 10
+        import random
+        self.grid = [random.choice([0, 1, 1, 1, 2]) for _ in range(self.grid_width * self.grid_height)]
+        self.current_index = 0
+        self.status_messages = [
+            "SCANNING DATABASE SECTORS...",
+            "CORRELATING SHELL COMMITS...",
+            "DEFRAGMENTING MEMORY CHAINS...",
+            "CLEANING NOISE HISTORIES...",
+            "DEFRAG COMPLETED successfully."
+        ]
+        self.msg_idx = 0
+        self.animation_timer = None
+
+    def compose(self) -> ComposeResult:
+        yield Vertical(
+            Static("💚 SYSTEM MATRIX DEFRAG 💚", id="defrag-title"),
+            Static("", id="defrag-grid"),
+            Static("", id="defrag-status"),
+            Static("[dim]Press ESC or Q to abort[/dim]", id="defrag-footer"),
+            id="defrag-panel"
+        )
+
+    def on_mount(self) -> None:
+        self.update_grid()
+        self.animation_timer = self.set_interval(0.05, self.step_animation)
+
+    def update_grid(self) -> None:
+        lines = []
+        for y in range(self.grid_height):
+            row_chars = []
+            for x in range(self.grid_width):
+                idx = y * self.grid_width + x
+                val = self.grid[idx]
+                if val == 0:
+                    row_chars.append("[dim grey37].[/]")
+                elif val == 1:
+                    row_chars.append("[cyan]▒[/]")
+                elif val == 2:
+                    row_chars.append("[bold green]█[/]")
+                else:
+                    row_chars.append("[bold white]■[/]")
+            lines.append(" ".join(row_chars))
+        
+        try:
+            self.query_one("#defrag-grid").update("\n".join(lines))
+            msg = self.status_messages[self.msg_idx]
+            progress = int((self.current_index / len(self.grid)) * 100)
+            self.query_one("#defrag-status").update(f"[bold green]>> {msg}[/bold green] [bold cyan]{progress}%[/bold cyan]")
+        except Exception:
+            pass
+
+    def step_animation(self) -> None:
+        import random
+        steps = random.randint(3, 8)
+        for _ in range(steps):
+            if self.current_index >= len(self.grid):
+                break
+            self.grid[self.current_index] = 3
+            self.current_index += 1
+            
+        for _ in range(3):
+            flicker_idx = random.randint(0, len(self.grid) - 1)
+            if flicker_idx > self.current_index:
+                self.grid[flicker_idx] = random.choice([0, 1, 2])
+
+        if self.current_index < len(self.grid):
+            if self.current_index % 50 == 0:
+                self.msg_idx = min(self.msg_idx + 1, len(self.status_messages) - 2)
+            self.update_grid()
+        else:
+            self.msg_idx = len(self.status_messages) - 1
+            self.update_grid()
+            if self.animation_timer:
+                self.animation_timer.stop()
+            self.set_timer(0.8, self.dismiss)
+
+
+class GhostTyperScreen(ModalScreen[None]):
+    """Cyberpunk Ghost Typer playback simulator."""
+    BINDINGS = [
+        Binding("escape", "dismiss", "Stop Playback", show=True),
+        Binding("q", "dismiss", "Stop Playback", show=True),
+    ]
+    
+    def __init__(self, commands: List[str], *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.commands = commands
+        self.current_cmd_idx = 0
+        self.current_char_idx = 0
+        self.lines = []
+        self.typing_timer = None
+        
+    def compose(self) -> ComposeResult:
+        yield Vertical(
+            Static("💀 GHOST PLAYBACK SHELL 💀", id="ghost-title"),
+            VerticalScroll(Static("", id="ghost-console"), id="ghost-console-scroll"),
+            Static("[dim]Press ESC or Q to stop playback[/dim]", id="ghost-footer"),
+            id="ghost-panel"
+        )
+        
+    def on_mount(self) -> None:
+        if not self.commands:
+            self.query_one("#ghost-console").update("No commands available for playback.")
+            self.set_timer(1.2, self.dismiss)
+            return
+        self.start_typing_next_command()
+        
+    def start_typing_next_command(self) -> None:
+        if self.current_cmd_idx >= len(self.commands):
+            self.lines.append("\n[bold green]>> PLAYBACK COMPLETE.[/bold green]")
+            self.update_console()
+            self.set_timer(1.0, self.dismiss)
+            return
+            
+        self.current_char_idx = 0
+        self.lines.append(f"[bold green]operator@termstory[/bold green]:[bold blue]~[/bold blue]$ ")
+        self.update_console()
+        self.typing_timer = self.set_interval(0.03, self.type_character)
+         
+    def type_character(self) -> None:
+        cmd = self.commands[self.current_cmd_idx]
+        if self.current_char_idx < len(cmd):
+            char = cmd[self.current_char_idx]
+            self.lines[-1] += char
+            self.current_char_idx += 1
+            self.update_console()
+        else:
+            if self.typing_timer:
+                self.typing_timer.stop()
+            self.lines.append("  [dim]... [SUCCESS][/dim]\n")
+            self.current_cmd_idx += 1
+            self.set_timer(0.3, self.start_typing_next_command)
+            
+    def update_console(self) -> None:
+        try:
+            console_widget = self.query_one("#ghost-console")
+            lines_to_show = list(self.lines)
+            if self.current_cmd_idx < len(self.commands) and self.current_char_idx < len(self.commands[self.current_cmd_idx]):
+                lines_to_show[-1] += "█"
+            console_widget.update("\n".join(lines_to_show))
+            self.query_one("#ghost-console-scroll").scroll_end(animate=False)
+        except Exception:
+            pass
+
+
 # ==========================================
 # 4. MAIN WORKSPACE APP
 # ==========================================
@@ -1612,6 +1789,8 @@ class TermStoryWorkspace(App):
         Binding("slash", "start_search", "Search", show=True, key_display="/"),
         Binding("question_mark", "show_help", "Help", show=True, key_display="?"),
         Binding("o", "show_onboarding", "Configure AI", show=True, key_display="o"),
+        Binding("d", "play_defrag", "Defrag Matrix", show=True, key_display="d"),
+        Binding("g", "play_ghost_playback", "Ghost Playback", show=True, key_display="g"),
         Binding("ctrl+shift+h", "reset_termstory", "Reset App", show=True, key_display="ctrl+shift+h"),
 
         Binding("ctrl+down", "scroll_canvas_down", "", show=False),
@@ -1823,6 +2002,69 @@ class TermStoryWorkspace(App):
         background: #0284c7;
         color: white;
     }
+    MatrixDefragScreen {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.85);
+    }
+    #defrag-panel {
+        background: #0a0a0c;
+        border: double #00ff00;
+        width: auto;
+        height: auto;
+        padding: 2 4;
+        content-align: center middle;
+    }
+    #defrag-title {
+        text-align: center;
+        text-style: bold;
+        color: #00ff00;
+        margin-bottom: 1;
+    }
+    #defrag-grid {
+        color: #00ff00;
+        margin-bottom: 1;
+    }
+    #defrag-status {
+        text-align: center;
+        margin-bottom: 1;
+    }
+    #defrag-footer {
+        text-align: center;
+        color: #88889a;
+    }
+    GhostTyperScreen {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.85);
+    }
+    #ghost-panel {
+        background: #0c0c0f;
+        border: solid #00ffff;
+        width: 80%;
+        max-width: 80;
+        height: 60%;
+        max-height: 24;
+        padding: 1 2;
+    }
+    #ghost-title {
+        text-align: center;
+        text-style: bold;
+        color: #00ffff;
+        margin-bottom: 1;
+    }
+    #ghost-console-scroll {
+        height: 1fr;
+        border: solid #1e1e24;
+        background: #050507;
+        padding: 1;
+        margin-bottom: 1;
+    }
+    #ghost-console {
+        color: #e2e2e9;
+    }
+    #ghost-footer {
+        text-align: center;
+        color: #88889a;
+    }
     """
     
     def __init__(self, db: Database, days_limit: Optional[int] = 90, config_override: Optional[dict] = None):
@@ -1938,6 +2180,10 @@ class TermStoryWorkspace(App):
             self.call_after_refresh(do_initial_focus_and_select)
         else:
             tree.focus()
+            
+        # Setup heatmap pulse micro-animation timer
+        self.pulse_phase = 0
+        self.set_interval(0.5, self.step_heatmap_pulse)
 
     def select_today_or_latest_date_node(self) -> None:
         """Automatically focus/select today's date node or the most recent date node."""
@@ -1988,8 +2234,13 @@ class TermStoryWorkspace(App):
         else:
             self.query_one("#history-navigator").focus()
 
+    def step_heatmap_pulse(self) -> None:
+        self.pulse_phase += 1
+        self.update_stats_header()
+
     def update_stats_header(self) -> None:
-        stats = calculate_dashboard_stats(self.sessions, self.projects, days_limit=self.days_limit or 90)
+        pulse = getattr(self, "pulse_phase", 0)
+        stats = calculate_dashboard_stats(self.sessions, self.projects, days_limit=self.days_limit or 90, pulse_phase=pulse)
         ai_enabled = self.config.get("ai_enabled", False)
         provider = self.config.get("active_provider", "disabled")
         
@@ -2637,6 +2888,38 @@ class TermStoryWorkspace(App):
                     ]
                 if missing_sessions:
                     self.bulk_generate_sessions_stories(timeframe_id, timeframe_type, missing_sessions)
+
+    def action_play_defrag(self) -> None:
+        self.push_screen(MatrixDefragScreen())
+
+    def action_play_ghost_playback(self) -> None:
+        tree = self.query_one("#history-navigator")
+        node = tree.cursor_node
+        if not node or not node.data:
+            self.notify("Select a session or date node to play back.", severity="warning")
+            return
+            
+        node_type = node.data.get("type")
+        commands = []
+        if node_type == "session":
+            session_id = node.data.get("session_id")
+            session = next((s for s in self.sessions if s.id == session_id), None)
+            if session:
+                commands = [cmd.command for cmd in session.commands]
+        elif node_type == "date":
+            date_str = node.data.get("date_str")
+            matched = [s for s in self.sessions if s.date_str == date_str]
+            for s in matched:
+                commands.extend(cmd.command for cmd in s.commands)
+        else:
+            self.notify("Select a session or date node to play back.", severity="warning")
+            return
+            
+        if not commands:
+            self.notify("No commands found in selection.", severity="warning")
+            return
+            
+        self.push_screen(GhostTyperScreen(commands))
 
     def action_show_onboarding(self) -> None:
         self.push_screen(OnboardingScreen(self.config), self.handle_onboarding_result)

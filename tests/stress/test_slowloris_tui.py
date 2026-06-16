@@ -126,7 +126,7 @@ async def test_slowloris_tarpit(tmp_path, monkeypatch):
                 await asyncio.sleep(0.01)
             
             # Wait a bit for the workers to process
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(5.0)
 
             # Let's check if the main thread is blocked. We can verify by checking if the TUI responds to another action.
             assert time.time() - start_time < 10.0, "Main thread was blocked by slowloris!"
