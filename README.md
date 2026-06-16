@@ -952,3 +952,4 @@ TermStory shines brightest when your shell logs timestamps (e.g., `setopt EXTEND
 - **Burst Clustering**: Commands are grouped into chunks that preserve coherent terminal sessions.
 - **Circadian Snapping**: Synthetic dates are mathematically constrained to standard working hours on weekdays, ensuring your timeline looks realistic.
 - **Metric Exclusion**: Synthetic `[Legacy Archive]` commands are deliberately excluded from your Activity Heatmap and Streaks, so your "Perfect Coding Streaks" remain 100% authentic.
+
