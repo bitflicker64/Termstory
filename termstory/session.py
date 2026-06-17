@@ -23,7 +23,7 @@ def create_sessions(commands: List[Command], gap_threshold: int = 1800) -> List[
             # Create session for the accumulated commands
             start_time = current_commands[0].timestamp
             end_time = current_commands[-1].timestamp
-            duration_seconds = max(60, end_time - start_time)
+            duration_seconds = end_time - start_time
             
             # A session is considered a legacy archive if ALL its commands are legacy
             all_legacy = all(getattr(c, "is_legacy", False) for c in current_commands)
@@ -51,7 +51,7 @@ def create_sessions(commands: List[Command], gap_threshold: int = 1800) -> List[
     if current_commands:
         start_time = current_commands[0].timestamp
         end_time = current_commands[-1].timestamp
-        duration_seconds = max(60, end_time - start_time)
+        duration_seconds = end_time - start_time
         
         all_legacy = all(getattr(c, "is_legacy", False) for c in current_commands)
         

@@ -81,7 +81,7 @@ def serialize_sessions_to_dict(sessions: List[Session], db: Database) -> List[Di
             "start_time": s.start_time,
             "start_time_iso": datetime.fromtimestamp(s.start_time).isoformat(),
             "end_time": s.end_time,
-            "end_time_iso": datetime.fromtimestamp(s.end_time).isoformat(),
+            "end_time_iso": datetime.fromtimestamp(s.end_time).isoformat() if s.end_time is not None else None,
             "duration_seconds": s.duration_seconds,
             "duration_readable": s.duration_readable,
             "project_id": s.project_id,

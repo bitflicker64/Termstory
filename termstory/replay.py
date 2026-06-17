@@ -127,7 +127,7 @@ def run_replay(db: Database, session_id: Optional[int] = None, speed: float = 1.
                     time.sleep(wait_time)
             else:
                 # Small initial pause
-                time.sleep(0.5 / speed)
+                time.sleep(min(0.5 / speed, 2.0))
 
             # Calculate relative offset
             offset_sec = cmd.timestamp - session.start_time
