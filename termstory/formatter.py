@@ -295,9 +295,9 @@ def format_week_output(sessions: List[Session], projects: List[Project], start_t
     ]
     
     outer_group = Group(
-        Text.from_markup(f"[bold green]{header_title}[/]\\n"),
+        Text.from_markup(f"[bold green]{header_title}[/]\n"),
         *elements,
-        Text.from_markup("\\n" + "\\n".join(footer_text))
+        Text.from_markup("\n" + "\n".join(footer_text))
     )
     
     return render_to_string(outer_group)
@@ -370,9 +370,9 @@ def format_month_output(sessions: List[Session], projects: List[Project], year: 
         footer_text.append(f"Average Per Day: [bold yellow]{format_duration(avg_per_day)}[/]")
         
     outer_group = Group(
-        Text.from_markup(f"[bold green]{header_title}[/]\\n"),
+        Text.from_markup(f"[bold green]{header_title}[/]\n"),
         *elements,
-        Text.from_markup("\\n" + "\\n".join(footer_text))
+        Text.from_markup("\n" + "\n".join(footer_text))
     )
     
     return render_to_string(outer_group)
@@ -880,19 +880,6 @@ def format_insights_output(insights: Dict) -> str:
     from termstory.database import Database
     
     db = Database(get_db_path())
-    import sqlite3
-    try:
-        db.init_db()
-    except sqlite3.DatabaseError as e:
-        if "malformed" in str(e).lower():
-            from rich.console import Console
-            import sys
-            Console(stderr=True).print(
-                "\n[bold red]Database Corrupted[/bold red]\n"
-                "Your TermStory database is corrupted. Please run `termstory reset` to fix it."
-            )
-            sys.exit(1)
-        raise
     
     start_ts = int((get_current_time() - timedelta(days=days)).timestamp())
     sessions = db.get_range_sessions(start_ts, int(get_current_time().timestamp()))

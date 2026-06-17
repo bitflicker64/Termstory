@@ -387,7 +387,7 @@ def parse_bash_history(
         mtime = int(datetime.now().timestamp())
         
     raw_lines = []
-    with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
         for line in f:
             raw_lines.append(line)
             
@@ -617,7 +617,7 @@ def _assign_missing_timestamps_fallback(
                 resolved_timestamps[i] = five_years_ago
             elif resolved_timestamps[i] > now:
                 resolved_timestamps[i] = now
-            resolved_timestamps.sort()
+        resolved_timestamps.sort()
                 
         for idx, (t, cmd) in enumerate(temp_commands):
             fallback_ts = resolved_timestamps[idx]

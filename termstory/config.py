@@ -58,6 +58,9 @@ def get_history_files() -> List[str]:
         "~/.bash_history",
         "~/.zhistory",
         "~/.histfile",
+        "~/.local/share/fish/fish_history",
+        "~/.local/share/powershell/PSReadLine/ConsoleHost_history.txt",
+        "~/AppData/Roaming/Microsoft/Windows/PowerShell/PSReadLine/ConsoleHost_history.txt",
     ]
     for path in candidate_paths:
         expanded = os.path.expanduser(path)

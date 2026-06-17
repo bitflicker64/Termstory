@@ -236,7 +236,13 @@ def analyze_all(db=None) -> Dict:
         """)
         session_rows = cursor.fetchall()
 
-        cursor.execute("SELECT id, timestamp, command, exit_code, session_id, project_id FROM commands")
+        from datetime import timedelta
+        from termstory.date_utils import get_current_time
+        cutoff = int((get_current_time() - timedelta(days=90)).timestamp())
+        cursor.execute(
+            "SELECT id, timestamp, command, exit_code, session_id, project_id FROM commands WHERE timestamp >= ?",
+            (cutoff,)
+        )
         cmd_rows = cursor.fetchall()
         cmds_by_session = defaultdict(list)
         for c_id, ts, cmd_text, exit_code, s_id, p_id in cmd_rows:
@@ -460,6 +466,7 @@ def get_vampire_metrics(sessions: List[Session]) -> Dict[str, Any]:
     vampire_commands = 0
     total_commits = 0
     vampire_commits = 0
+    seen_commits = set()
     for s in sessions:
         for cmd in s.commands:
             total_commands += 1
@@ -467,9 +474,10 @@ def get_vampire_metrics(sessions: List[Session]) -> Dict[str, Any]:
             if 0 <= dt.hour < 5:
                 vampire_commands += 1
         for commit in s.commits:
-            total_commits += 1
             ts = commit.get("timestamp")
-            if ts:
+            if ts and ts not in seen_commits:
+                seen_commits.add(ts)
+                total_commits += 1
                 dt = datetime.fromtimestamp(ts)
                 if 0 <= dt.hour < 5:
                     vampire_commits += 1
