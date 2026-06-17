@@ -118,10 +118,14 @@ def _listdir_with_timeout(path: str, timeout: float = 0.5) -> List[str]:
     return result
 
 @functools.lru_cache(maxsize=1024)
+def _find_project_root_cached(path: str, time_bucket: int) -> str:
+    return _find_project_root_impl(path)
+
 def find_project_root(path: str) -> str:
     """Find the root project directory for a given path by looking for repository/project markers, 
     stopping at home or root directories. Prioritizes VCS roots (.git, .hg, .svn) first."""
-    return _find_project_root_impl(path)
+    time_bucket = int(time.time() / 60)
+    return _find_project_root_cached(path, time_bucket)
 
 def _find_project_root_impl(path: str) -> str:
     home = os.path.realpath(os.path.abspath(os.path.expanduser("~")))
@@ -497,10 +501,12 @@ def detect_projects(sessions: List[Session]) -> List[Project]:
             prev_project.total_time += session.duration_seconds
             continue
         
-        # Follow: immediately after a known session, within threshold
-        if prev_project_id is not None and prev_gap < PROPAGATION_GAP_THRESHOLD:
-            # check next_project proximity before assigning prev_project
-            if next_project_id is not None and next_gap < prev_gap and next_gap < PROPAGATION_GAP_THRESHOLD:
+        # Proximity assignments:
+        is_prev_valid = prev_project_id is not None and prev_gap < PROPAGATION_GAP_THRESHOLD
+        is_next_valid = next_project_id is not None and next_gap < PROPAGATION_GAP_THRESHOLD
+
+        if is_prev_valid and is_next_valid:
+            if next_gap < prev_gap:
                 _assign_project_to_session(session, next_project, projects_dict)
                 next_project.session_count += 1
                 next_project.total_time += session.duration_seconds
@@ -508,6 +514,16 @@ def detect_projects(sessions: List[Session]) -> List[Project]:
                 _assign_project_to_session(session, prev_project, projects_dict)
                 prev_project.session_count += 1
                 prev_project.total_time += session.duration_seconds
+            continue
+        elif is_prev_valid:
+            _assign_project_to_session(session, prev_project, projects_dict)
+            prev_project.session_count += 1
+            prev_project.total_time += session.duration_seconds
+            continue
+        elif is_next_valid:
+            _assign_project_to_session(session, next_project, projects_dict)
+            next_project.session_count += 1
+            next_project.total_time += session.duration_seconds
             continue
     
     return list(projects_dict.values())

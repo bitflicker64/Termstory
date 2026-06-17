@@ -296,3 +296,46 @@ def test_find_project_root_network_mounts_and_timeout(tmp_path, monkeypatch):
     t1 = time.time()
     assert res == str(local_dir)
     assert t1 - t0 < 3.0  # Timeout prevents 4 calls from taking 4.0s (mock listdir sleeps 1.0s per call, 4 calls = 4.0s)
+
+
+def test_neighbor_propagation_next_project_only():
+    """Pass 3: 'Other' session with next_project in proximity but no prev_project gets assigned to next_project."""
+    # Session 1: no cd, no project
+    s1 = Session(id=1, start_time=1000, end_time=1100, duration_seconds=100, project_id=None,
+                 commands=[Command(timestamp=1000, command="echo hello")])
+    
+    # Session 2: known project, starts within 2 hours of s1's end
+    s2 = Session(id=2, start_time=2000, end_time=2100, duration_seconds=100, project_id=None,
+                 commands=[Command(timestamp=2000, command="cd ~/projects/incubator-hugegraph"),
+                           Command(timestamp=2050, command="git status")])
+    
+    projects = detect_projects([s1, s2])
+    
+    assert s1.project_id is not None
+    assert s1.project_id == s2.project_id
+
+
+def test_neighbor_propagation_proximity_comparison():
+    """Pass 3: 'Other' session sandwiched but closer to next_project than prev_project (or vice versa)."""
+    # Session 1: project Alpha, ends at 1100
+    s1 = Session(id=1, start_time=1000, end_time=1100, duration_seconds=100, project_id=None,
+                 commands=[Command(timestamp=1000, command="cd ~/projects/project-alpha"),
+                           Command(timestamp=1050, command="git status")])
+    
+    # Session 2: no project, starts at 2000, ends at 2100.
+    # gap from s1: 2000 - 1100 = 900 seconds.
+    # gap to s3: 2500 - 2100 = 400 seconds.
+    s2 = Session(id=2, start_time=2000, end_time=2100, duration_seconds=100, project_id=None,
+                 commands=[Command(timestamp=2000, command="cd"),
+                           Command(timestamp=2050, command="echo hello")])
+    
+    # Session 3: project Beta, starts at 2500
+    s3 = Session(id=3, start_time=2500, end_time=2600, duration_seconds=100, project_id=None,
+                 commands=[Command(timestamp=2500, command="cd ~/projects/project-beta"),
+                           Command(timestamp=2550, command="git status")])
+    
+    projects = detect_projects([s1, s2, s3])
+    
+    # Since s2 is closer to s3 (400s gap) than s1 (900s gap), it should be assigned to s3's project
+    assert s2.project_id is not None
+    assert s2.project_id == s3.project_id

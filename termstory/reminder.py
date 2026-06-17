@@ -413,15 +413,22 @@ def run_sleep_daemon(db_path: str):
     signal.signal(signal.SIGINT, cleanup_pid)
 
     try:
-        with open(pid_file, "w") as f:
-            f.write(str(os.getpid()))
-    except Exception:
-        pass
-        
-    db = Database(db_path)
-    while True:
         try:
-            consolidate_sleep_contexts(db, force=False)
+            with open(pid_file, "w") as f:
+                f.write(str(os.getpid()))
         except Exception:
             pass
-        time.sleep(300)
+            
+        db = Database(db_path)
+        while True:
+            try:
+                consolidate_sleep_contexts(db, force=False)
+            except Exception:
+                pass
+            time.sleep(300)
+    finally:
+        try:
+            if os.path.exists(pid_file):
+                os.remove(pid_file)
+        except Exception:
+            pass

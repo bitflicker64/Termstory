@@ -229,16 +229,18 @@ def analyze_all(db=None) -> Dict:
         cursor.execute("SELECT id, name FROM projects")
         project_names = {row[0]: row[1] for row in cursor.fetchall()}
         
+        from datetime import timedelta
+        from termstory.date_utils import get_current_time
+        cutoff = int((get_current_time() - timedelta(days=90)).timestamp())
+
         cursor.execute("""
             SELECT s.id, s.start_time, s.end_time, s.duration_seconds, s.project_id,
                    (SELECT IFNULL(SUM(c.is_legacy) = COUNT(c.id), 0) FROM commands c WHERE c.session_id = s.id) AS is_legacy
             FROM sessions s
-        """)
+            WHERE s.start_time >= ?
+        """, (cutoff,))
         session_rows = cursor.fetchall()
 
-        from datetime import timedelta
-        from termstory.date_utils import get_current_time
-        cutoff = int((get_current_time() - timedelta(days=90)).timestamp())
         cursor.execute(
             "SELECT id, timestamp, command, exit_code, session_id, project_id FROM commands WHERE timestamp >= ?",
             (cutoff,)
@@ -248,7 +250,7 @@ def analyze_all(db=None) -> Dict:
         for c_id, ts, cmd_text, exit_code, s_id, p_id in cmd_rows:
             cmds_by_session[s_id].append(Command(id=c_id, timestamp=ts, command=cmd_text, exit_code=exit_code, session_id=s_id, project_id=p_id))
             
-        cursor.execute("SELECT hash, timestamp, message, cleaned_message, project_id FROM commits")
+        cursor.execute("SELECT hash, timestamp, message, cleaned_message, project_id FROM commits WHERE timestamp >= ?", (cutoff,))
         commit_rows = cursor.fetchall()
         commits_by_project = defaultdict(list)
         for hash_val, ts, msg, clean_msg, p_id in commit_rows:
@@ -440,7 +442,7 @@ def calculate_vampire_coder_index(sessions: List[Session]) -> float:
     """Calculate the percentage of commands and commits executed between midnight and 5:00 AM."""
     total_count = 0
     vampire_count = 0
-    seen_commits = set()  # Track commit timestamps to avoid double-counting
+    seen_commits = set()  # Track commit hashes to avoid double-counting
     for s in sessions:
         for cmd in s.commands:
             total_count += 1
@@ -448,13 +450,15 @@ def calculate_vampire_coder_index(sessions: List[Session]) -> float:
             if 0 <= dt.hour < 5:
                 vampire_count += 1
         for commit in s.commits:
-            ts = commit.get("timestamp")
-            if ts and ts not in seen_commits:
-                total_count += 1
-                seen_commits.add(ts)
-                dt = datetime.fromtimestamp(ts)
-                if 0 <= dt.hour < 5:
-                    vampire_count += 1
+            h = commit.get("hash")
+            if h and h not in seen_commits:
+                seen_commits.add(h)
+                ts = commit.get("timestamp")
+                if ts:
+                    total_count += 1
+                    dt = datetime.fromtimestamp(ts)
+                    if 0 <= dt.hour < 5:
+                        vampire_count += 1
     if total_count == 0:
         return 0.0
     return round((vampire_count / total_count) * 100, 1)
@@ -466,7 +470,7 @@ def get_vampire_metrics(sessions: List[Session]) -> Dict[str, Any]:
     vampire_commands = 0
     total_commits = 0
     vampire_commits = 0
-    seen_commits = set()
+    seen_commits = set()  # Track commit hashes to avoid double-counting
     for s in sessions:
         for cmd in s.commands:
             total_commands += 1
@@ -474,13 +478,15 @@ def get_vampire_metrics(sessions: List[Session]) -> Dict[str, Any]:
             if 0 <= dt.hour < 5:
                 vampire_commands += 1
         for commit in s.commits:
-            ts = commit.get("timestamp")
-            if ts and ts not in seen_commits:
-                seen_commits.add(ts)
-                total_commits += 1
-                dt = datetime.fromtimestamp(ts)
-                if 0 <= dt.hour < 5:
-                    vampire_commits += 1
+            h = commit.get("hash")
+            if h and h not in seen_commits:
+                seen_commits.add(h)
+                ts = commit.get("timestamp")
+                if ts:
+                    total_commits += 1
+                    dt = datetime.fromtimestamp(ts)
+                    if 0 <= dt.hour < 5:
+                        vampire_commits += 1
     total = total_commands + total_commits
     vampire = vampire_commands + vampire_commits
     index = round((vampire / total) * 100, 1) if total > 0 else 0.0

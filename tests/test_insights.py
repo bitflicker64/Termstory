@@ -138,6 +138,40 @@ def test_vampire_coder_index():
     assert metrics["vampire_commits"] == 1
     assert metrics["total_commits"] == 1
 
+    # Test that commits with identical timestamps but different hashes are NOT deduplicated
+    s_dup_ts = Session(
+        id=2,
+        start_time=ts_vampire,
+        end_time=ts_vampire + 100,
+        duration_seconds=100,
+        project_id=1,
+        commands=[],
+        commits=[
+            {"hash": "h1", "timestamp": ts_vampire, "message": "fix: bug"},
+            {"hash": "h2", "timestamp": ts_vampire, "message": "fix: bug 2"}
+        ]
+    )
+    metrics_dup_ts = get_vampire_metrics([s_dup_ts])
+    assert metrics_dup_ts["total_commits"] == 2
+    assert metrics_dup_ts["vampire_commits"] == 2
+
+    # Test that commits with identical hashes are deduplicated
+    s_dup_hash = Session(
+        id=3,
+        start_time=ts_vampire,
+        end_time=ts_vampire + 100,
+        duration_seconds=100,
+        project_id=1,
+        commands=[],
+        commits=[
+            {"hash": "h1", "timestamp": ts_vampire, "message": "fix: bug"},
+            {"hash": "h1", "timestamp": ts_vampire, "message": "fix: bug duplicate"}
+        ]
+    )
+    metrics_dup_hash = get_vampire_metrics([s_dup_hash])
+    assert metrics_dup_hash["total_commits"] == 1
+    assert metrics_dup_hash["vampire_commits"] == 1
+
 
 def test_assign_rpg_class():
     from termstory.insights import assign_rpg_class

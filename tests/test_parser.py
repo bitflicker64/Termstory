@@ -298,3 +298,30 @@ def test_parser_max_history_age(tmp_path, monkeypatch):
         cmds = parse_zsh_history(str(temp_file))
         assert len(cmds) == 0
 
+
+def test_parse_bash_history_out_of_order_anchors(tmp_path):
+    # Create a history file with anchors that are not in chronological order
+    temp_file = tmp_path / "bash_out_of_order_test"
+    temp_file.write_text(
+        "missing ts cmd\n"
+        "#1748851250\n"
+        "second cmd\n"
+        "#1748851200\n"
+        "third cmd\n"
+    )
+    
+    commands = parse_bash_history(str(temp_file))
+    assert len(commands) == 3
+    # The output is sorted by resolved timestamp.
+    # Correct (non-shuffled) mapping should be:
+    # missing ts cmd: 1748851240
+    # second cmd: 1748851250
+    # third cmd: 1748851200
+    # So after sorting:
+    assert commands[0].command == "third cmd"
+    assert commands[0].timestamp == 1748851200
+    assert commands[1].command == "missing ts cmd"
+    assert commands[1].timestamp == 1748851240
+    assert commands[2].command == "second cmd"
+    assert commands[2].timestamp == 1748851250
+

@@ -137,3 +137,23 @@ def test_cli_remind_commands(tmp_path, monkeypatch):
     result = runner.invoke(app, ["remind", "--complete", "999"])
     assert result.exit_code == 1
     assert "Reminder #999 not found" in result.stdout
+
+
+def test_run_sleep_daemon_cleanup_on_initialization_failure(tmp_path, monkeypatch):
+    from unittest.mock import patch
+    import termstory.reminder
+    
+    # Set get_app_dir("data") to tmp_path
+    monkeypatch.setattr("termstory.reminder.get_app_dir", lambda name: str(tmp_path))
+    pid_file = tmp_path / "sleep_daemon.pid"
+    
+    # Mock Database to raise an error during init
+    def mock_db_init(self, db_path):
+        raise ValueError("Initialization failure simulation")
+        
+    with patch("termstory.database.Database.__init__", mock_db_init):
+        with pytest.raises(ValueError, match="Initialization failure simulation"):
+            termstory.reminder.run_sleep_daemon("dummy_path")
+            
+    # The PID file should have been cleaned up and not exist on disk
+    assert not pid_file.exists()
