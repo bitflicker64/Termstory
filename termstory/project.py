@@ -118,14 +118,13 @@ def _listdir_with_timeout(path: str, timeout: float = 0.5) -> List[str]:
     return result
 
 @functools.lru_cache(maxsize=1024)
-def _find_project_root_cached(path: str, time_bucket: int) -> str:
+def _find_project_root_cached(path: str) -> str:
     return _find_project_root_impl(path)
 
 def find_project_root(path: str) -> str:
     """Find the root project directory for a given path by looking for repository/project markers, 
     stopping at home or root directories. Prioritizes VCS roots (.git, .hg, .svn) first."""
-    time_bucket = int(time.time() / 60)
-    return _find_project_root_cached(path, time_bucket)
+    return _find_project_root_cached(path)
 
 def _find_project_root_impl(path: str) -> str:
     home = os.path.realpath(os.path.abspath(os.path.expanduser("~")))

@@ -617,6 +617,7 @@ def _assign_missing_timestamps_fallback(
                 resolved_timestamps[i] = five_years_ago
             elif resolved_timestamps[i] > now:
                 resolved_timestamps[i] = now
+        resolved_timestamps.sort()
                 
         for idx, (t, cmd) in enumerate(temp_commands):
             fallback_ts = resolved_timestamps[idx]
