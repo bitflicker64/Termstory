@@ -192,6 +192,17 @@ class Database:
                     );
                 """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_mcp_snapshots_session_id ON mcp_snapshots(session_id);")
+                # Create rem_sleep_consolidation table if not exists
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS rem_sleep_consolidation (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        start_time INTEGER NOT NULL,
+                        end_time INTEGER NOT NULL,
+                        summary TEXT NOT NULL,
+                        commands TEXT NOT NULL,
+                        created_at INTEGER DEFAULT (strftime('%s', 'now'))
+                    );
+                """)
                 # One-time migrations
                 self._migrate_projects_unique_path(cursor)
                 self._migrate_deduplicate_sessions(cursor)
@@ -1401,6 +1412,106 @@ class Database:
                 WHERE ai_summary IS NOT NULL;
             """)
 
+        # Create and populate commands_fts virtual table
+        cursor.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS commands_fts USING fts5(
+            command,
+            exit_code,
+            content='commands',
+            content_rowid='id'
+        );
+        """)
+        cursor.execute("SELECT COUNT(*) FROM commands_fts LIMIT 1;")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("""
+                INSERT INTO commands_fts (rowid, command, exit_code)
+                SELECT id, command, exit_code FROM commands;
+            """)
+
+        # Create and populate sessions_fts virtual table
+        cursor.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
+            ai_summary,
+            content='sessions',
+            content_rowid='id'
+        );
+        """)
+        cursor.execute("SELECT COUNT(*) FROM sessions_fts LIMIT 1;")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("""
+                INSERT INTO sessions_fts (rowid, ai_summary)
+                SELECT id, ai_summary FROM sessions WHERE ai_summary IS NOT NULL;
+            """)
+
+        # Create and populate ai_summaries_fts virtual table (macro_summaries)
+        cursor.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS ai_summaries_fts USING fts5(
+            summary,
+            content='macro_summaries',
+            content_rowid='id'
+        );
+        """)
+        cursor.execute("SELECT COUNT(*) FROM ai_summaries_fts LIMIT 1;")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("""
+                INSERT INTO ai_summaries_fts (rowid, summary)
+                SELECT id, summary FROM macro_summaries WHERE summary IS NOT NULL;
+            """)
+
+        # Create triggers for commands_fts
+        cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS commands_ai AFTER INSERT ON commands BEGIN
+            INSERT INTO commands_fts(rowid, command, exit_code) VALUES (new.id, new.command, new.exit_code);
+        END;
+        """)
+        cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS commands_ad AFTER DELETE ON commands BEGIN
+            INSERT INTO commands_fts(commands_fts, rowid, command, exit_code) VALUES ('delete', old.id, old.command, old.exit_code);
+        END;
+        """)
+        cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS commands_au AFTER UPDATE ON commands BEGIN
+            INSERT INTO commands_fts(commands_fts, rowid, command, exit_code) VALUES ('delete', old.id, old.command, old.exit_code);
+            INSERT INTO commands_fts(rowid, command, exit_code) VALUES (new.id, new.command, new.exit_code);
+        END;
+        """)
+
+        # Create triggers for sessions_fts
+        cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS sessions_ai AFTER INSERT ON sessions BEGIN
+            INSERT INTO sessions_fts(rowid, ai_summary) VALUES (new.id, new.ai_summary);
+        END;
+        """)
+        cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS sessions_ad AFTER DELETE ON sessions BEGIN
+            INSERT INTO sessions_fts(sessions_fts, rowid, ai_summary) VALUES ('delete', old.id, old.ai_summary);
+        END;
+        """)
+        cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS sessions_au AFTER UPDATE ON sessions BEGIN
+            INSERT INTO sessions_fts(sessions_fts, rowid, ai_summary) VALUES ('delete', old.id, old.ai_summary);
+            INSERT INTO sessions_fts(rowid, ai_summary) VALUES (new.id, new.ai_summary);
+        END;
+        """)
+
+        # Create triggers for ai_summaries_fts (macro_summaries)
+        cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS macro_summaries_ai AFTER INSERT ON macro_summaries BEGIN
+            INSERT INTO ai_summaries_fts(rowid, summary) VALUES (new.id, new.summary);
+        END;
+        """)
+        cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS macro_summaries_ad AFTER DELETE ON macro_summaries BEGIN
+            INSERT INTO ai_summaries_fts(ai_summaries_fts, rowid, summary) VALUES ('delete', old.id, old.summary);
+        END;
+        """)
+        cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS macro_summaries_au AFTER UPDATE ON macro_summaries BEGIN
+            INSERT INTO ai_summaries_fts(ai_summaries_fts, rowid, summary) VALUES ('delete', old.id, old.summary);
+            INSERT INTO ai_summaries_fts(rowid, summary) VALUES (new.id, new.summary);
+        END;
+        """)
+
     def search_fts5(self, query: str, project_filter: Optional[str] = None, since_ts: Optional[int] = None) -> List[Dict]:
         """Ranked full-text search across sessions, commands, and commits using FTS5 virtual table"""
         conn = self.get_connection()
@@ -1508,3 +1619,41 @@ class Database:
         finally:
             conn.close()
         return results
+
+    def save_consolidated_context(self, start_time: int, end_time: int, summary: str, commands: List[str]) -> None:
+        """Save a consolidated context summary into the database."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO rem_sleep_consolidation (start_time, end_time, summary, commands)
+                VALUES (?, ?, ?, ?)
+            """, (start_time, end_time, summary, json.dumps(commands)))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_consolidated_contexts(self) -> List[Dict]:
+        """Fetch all consolidated contexts from the database."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, start_time, end_time, summary, commands, created_at
+                FROM rem_sleep_consolidation
+                ORDER BY start_time DESC
+            """)
+            rows = cursor.fetchall()
+            results = []
+            for row in rows:
+                results.append({
+                    "id": row[0],
+                    "start_time": row[1],
+                    "end_time": row[2],
+                    "summary": row[3],
+                    "commands": json.loads(row[4]),
+                    "created_at": row[5]
+                })
+            return results
+        finally:
+            conn.close()

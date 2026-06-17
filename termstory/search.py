@@ -8,7 +8,8 @@ def advanced_search(
     project_filter: Optional[str] = None,
     since_ts: Optional[int] = None,
     until_ts: Optional[int] = None,
-    tag_filters: Optional[List[str]] = None
+    tag_filters: Optional[List[str]] = None,
+    fts: bool = False
 ) -> List[Dict]:
     """
     Advanced search with query, date range (since_ts, until_ts), project, and tag filters.
@@ -17,6 +18,12 @@ def advanced_search(
     try:
         cursor = conn.cursor()
         
+        if fts and query:
+            try:
+                return _search_new_fts5(conn, query, project_filter, since_ts, until_ts, tag_filters)
+            except sqlite3.OperationalError:
+                pass
+
         # Check if FTS5 is enabled
         fts_enabled = False
         try:
@@ -34,6 +41,88 @@ def advanced_search(
         return _search_standard(conn, query, project_filter, since_ts, until_ts, tag_filters)
     finally:
         conn.close()
+
+
+def _search_new_fts5(
+    conn: sqlite3.Connection,
+    query: str,
+    project_filter: Optional[str],
+    since_ts: Optional[int],
+    until_ts: Optional[int],
+    tag_filters: Optional[List[str]]
+) -> List[Dict]:
+    cursor = conn.cursor()
+    
+    terms = query.split()
+    sanitized_terms = []
+    for term in terms:
+        clean_term = term.replace('"', '""')
+        if clean_term:
+            sanitized_terms.append(f'"{clean_term}"*')
+    fts_query = " ".join(sanitized_terms)
+    
+    if not fts_query:
+        return []
+        
+    sql = """
+        WITH matched_session_ids AS (
+            -- Matches from commands_fts
+            SELECT DISTINCT session_id AS id, 1 AS match_type, NULL as rank
+            FROM commands 
+            WHERE id IN (SELECT rowid FROM commands_fts WHERE commands_fts MATCH ?)
+              AND session_id IS NOT NULL
+
+            UNION ALL
+
+            -- Matches from sessions_fts
+            SELECT rowid AS id, 2 AS match_type, rank
+            FROM sessions_fts 
+            WHERE sessions_fts MATCH ?
+
+            UNION ALL
+
+            -- Matches from ai_summaries_fts (macro_summaries)
+            SELECT s.id, 3 AS match_type, f.rank
+            FROM sessions s
+            JOIN macro_summaries m ON date(s.start_time, 'unixepoch', 'localtime') = date(m.created_at, 'unixepoch', 'localtime')
+            JOIN ai_summaries_fts f ON f.rowid = m.id
+            WHERE f.ai_summaries_fts MATCH ?
+        ),
+        best_matches AS (
+            SELECT id, MIN(match_type) as min_match_type, MIN(rank) as min_rank
+            FROM matched_session_ids
+            GROUP BY id
+        )
+        SELECT s.id, s.start_time, s.end_time, s.duration_seconds, s.project_id, p.name, p.path, s.ai_summary
+        FROM sessions s
+        JOIN best_matches bm ON s.id = bm.id
+        LEFT JOIN projects p ON s.project_id = p.id
+        WHERE 1=1
+    """
+    params = [fts_query, fts_query, fts_query]
+    
+    if project_filter:
+        sql += " AND p.name LIKE ?"
+        params.append(f"%{project_filter}%")
+        
+    if since_ts:
+        sql += " AND s.start_time >= ?"
+        params.append(since_ts)
+        
+    if until_ts:
+        sql += " AND s.start_time <= ?"
+        params.append(until_ts)
+        
+    if tag_filters:
+        for tag in tag_filters:
+            sql += " AND s.tags LIKE ?"
+            params.append(f"%{tag}%")
+            
+    sql += " ORDER BY bm.min_match_type ASC, bm.min_rank ASC, s.start_time DESC"
+    
+    cursor.execute(sql, params)
+    rows = cursor.fetchall()
+    return _populate_results(cursor, rows, query)
 
 def _search_fts5(
     conn: sqlite3.Connection,

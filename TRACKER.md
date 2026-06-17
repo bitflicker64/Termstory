@@ -8,6 +8,7 @@
   * **Version Promotion**: Promoted version to `0.6.0` across the package core files.
 
 ## Completed
+* **SQLite FTS5 Integration (Batch 14)**: Added SQLite FTS5 virtual tables (`commands_fts`, `sessions_fts`, `ai_summaries_fts`) with triggers on insert/update/delete to keep FTS in sync. Added `--fts` flag to CLI search command to search using the new FTS5 tables.
 * **Documentation Updates & Refinement (Batch 13p3)**: Updated README.md with all current CLI commands, updated CHANGELOG.md for v0.6.0, updated WHAT_WORKS.md, WORKFLOW.md, DATA_PRIVACY.md, features.md, and issues.md to ensure all references to removed planning files are cleaned up, and documented batch 13p3 completion.
 * **Developer Memory Engine Documentation Overhaul (Batch 13p2)**: Conducted repository-wide code and module analysis of all modules and tests in the repository. Generated a highly comprehensive and detailed `agents.md` mapping core features, class hierarchies, database schemas, test methodologies, and data flow.
 * **MCP Time-Machine Snapshots (Batch 13)**: Create `mcp_snapshot.py` to capture active IDE state, Git status, and active terminal working directory. Store snapshots in `mcp_snapshots` SQLite table. Add `termstory replay --mcp <session_id>` CLI subcommand and custom formatters to display captured snapshots.
@@ -58,7 +59,6 @@
 * **Long-Term R&D Concepts**:
   * **"REM Sleep" Context Consolidation**: Background processing of command clusters during idle periods.
   * **Semantic Deep-Dive via Local RAG**: Zero-keyword query searching via locally generated command/commit embeddings.
-  * **SQLite FTS5 Integration**: Speeding up deep-history string matching and providing ranked search capabilities across sessions/commands/AI summaries.
   * **Concurrency Stress Tests & Massive History Simulations**: Hardening the test suite by synthesizing massive, multi-year history logs to simulate worst-case ingestion scenarios.
 
 ## Known Issues
@@ -78,3 +78,5 @@
 * **Batch 13 — MCP Time-Machine Snapshots**: ✅ Completed
 * **Batch 13p2 — Developer Memory Engine Documentation Overhaul**: ✅ Completed
 * **Batch 13p3 — Documentation Updates & Refinement**: ✅ Completed
+* **Batch 14 — SQLite FTS5 Integration**: ✅ Completed
+

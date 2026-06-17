@@ -145,6 +145,10 @@ def run_ingestion(db: Database) -> None:
     from termstory.mcp_snapshot import capture_and_store_mcp_snapshot
     capture_and_store_mcp_snapshot(db)
 
+    # Start REM Sleep background context consolidation daemon
+    from termstory.reminder import start_sleep_daemon
+    start_sleep_daemon(db.db_path)
+
 @app.command("search")
 def search_history(
     query: Optional[str] = typer.Argument(None, help="Search term/query across commits, commands, and project names"),
@@ -155,6 +159,7 @@ def search_history(
     limit: int = typer.Option(50, "--limit", help="Maximum number of search results to return"),
     detailed: bool = typer.Option(False, "--detailed", help="Show all commands and commits in matched sessions"),
     semantic: bool = typer.Option(False, "--semantic", help="Perform local semantic/RAG hybrid search"),
+    fts: bool = typer.Option(False, "--fts", help="Use SQLite FTS5 virtual tables for searching"),
 ):
     """Search across your work history (commits, commands, and projects) with advanced filters"""
     db_path = get_db_path()
@@ -214,7 +219,8 @@ def search_history(
             project_filter=project,
             since_ts=since_ts,
             until_ts=until_ts,
-            tag_filters=tag_list
+            tag_filters=tag_list,
+            fts=fts
         )
     
     # Limit results
@@ -1543,6 +1549,64 @@ def show_rage_quit():
     console.print(Text.from_ansi(output))
 
 
+@app.command("sleep")
+def sleep_cmd(
+    consolidate: bool = typer.Option(
+        False, "--consolidate",
+        help="Manually trigger REM Sleep context consolidation on all history since last run"
+    ),
+    show: bool = typer.Option(
+        False, "--show",
+        help="View all consolidated contexts"
+    ),
+):
+    """REM Sleep context consolidation manager."""
+    db_path = get_db_path()
+    db = Database(db_path)
+    safe_init_db(db)
+    
+    # Run ingestion first to ensure all recent commands are parsed and in the database
+    run_ingestion(db)
+    
+    from termstory.reminder import consolidate_sleep_contexts
+    
+    if consolidate:
+        console.print("[cyan]Running REM Sleep context consolidation...[/cyan]")
+        count = consolidate_sleep_contexts(db, force=True)
+        console.print(f"[bold green]✅ Consolidation complete. Created {count} new consolidated contexts.[/bold green]")
+        raise typer.Exit()
+        
+    if show:
+        contexts = db.get_consolidated_contexts()
+        if not contexts:
+            console.print("[yellow]No consolidated contexts found.[/yellow]")
+            raise typer.Exit()
+            
+        from rich.box import SIMPLE
+        table = Table(title="💤 REM Sleep Consolidated Contexts", box=SIMPLE, border_style="cyan")
+        table.add_column("Period", style="cyan")
+        table.add_column("Commands Count", style="magenta")
+        table.add_column("Consolidated Summary / Context", style="white")
+        
+        from datetime import datetime
+        from rich.markup import escape
+        for c in contexts:
+            start_dt = datetime.fromtimestamp(c["start_time"]).strftime("%Y-%m-%d %H:%M:%S")
+            end_dt = datetime.fromtimestamp(c["end_time"]).strftime("%Y-%m-%d %H:%M:%S")
+            period = f"{start_dt} to {end_dt}"
+            cmds_count = str(len(c["commands"]))
+            summary_escaped = escape(c["summary"])
+            table.add_row(period, cmds_count, summary_escaped)
+            
+        console.print(table)
+        raise typer.Exit()
+        
+    console.print(
+        "Usage: [bold]termstory sleep[/bold] [options]\n\n"
+        "Options:\n"
+        "  --consolidate   Manually trigger context consolidation\n"
+        "  --show          View consolidated contexts"
+    )
 
 
 def main_entry():
