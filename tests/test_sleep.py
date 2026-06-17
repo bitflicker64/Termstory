@@ -14,9 +14,6 @@ from termstory.reminder import (
 )
 
 def test_cluster_commands_fallback(monkeypatch):
-    # Disable sentence transformers to test fallback logic
-    monkeypatch.setattr("termstory.reminder.cluster_commands", cluster_commands)
-    
     # Try importing termstory.rag and monkeypatching SENTENCE_TRANSFORMERS_AVAILABLE to False
     import termstory.rag
     monkeypatch.setattr(termstory.rag, "SENTENCE_TRANSFORMERS_AVAILABLE", False)
@@ -136,6 +133,9 @@ def test_cli_sleep_command(tmp_path, monkeypatch):
     monkeypatch.setattr("termstory.cli.get_db_path", lambda: str(db_file))
     monkeypatch.setattr("termstory.cli.get_history_files", lambda: [])
     monkeypatch.setattr("termstory.config.load_config", lambda: {"provider": "disabled"})
+    
+    # Mock start_sleep_daemon to prevent spawning background process in tests
+    monkeypatch.setattr("termstory.reminder.start_sleep_daemon", lambda *args, **kwargs: None)
     
     db = Database(str(db_file))
     db.init_db()

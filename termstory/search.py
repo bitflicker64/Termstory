@@ -83,10 +83,11 @@ def _search_new_fts5(
 
             -- Matches from ai_summaries_fts (macro_summaries)
             SELECT s.id, 3 AS match_type, f.rank
-            FROM sessions s
-            JOIN macro_summaries m ON date(s.start_time, 'unixepoch', 'localtime') = date(m.created_at, 'unixepoch', 'localtime')
+            FROM macro_summaries m
             JOIN ai_summaries_fts f ON f.rowid = m.id
-            WHERE f.ai_summaries_fts MATCH ?
+            JOIN sessions s ON s.start_time >= CAST(strftime('%s', date(m.created_at, 'unixepoch', 'localtime') || ' 00:00:00', 'utc') AS INTEGER)
+                           AND s.start_time <= CAST(strftime('%s', date(m.created_at, 'unixepoch', 'localtime') || ' 23:59:59', 'utc') AS INTEGER)
+            WHERE f.ai_summaries_fts MATCH ? AND m.type = 'daily'
         ),
         best_matches AS (
             SELECT id, MIN(match_type) as min_match_type, MIN(rank) as min_rank

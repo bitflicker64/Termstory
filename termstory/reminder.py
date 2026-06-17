@@ -202,11 +202,11 @@ def cluster_commands(commands: List[str]) -> List[List[str]]:
             sim = dot / (norm1 * norm2) if (norm1 > 0 and norm2 > 0) else 0.0
             
             if sim >= threshold:
-                cluster.append(cmd)
                 new_center = []
                 for x, y in zip(c_emb, emb):
                     new_center.append((x * len(cluster) + y) / (len(cluster) + 1))
                 cluster_embs[i] = new_center
+                cluster.append(cmd)
                 placed = True
                 break
         if not placed:
@@ -218,9 +218,9 @@ def cluster_commands(commands: List[str]) -> List[List[str]]:
 
 def generate_cluster_summary(commands: List[str]) -> str:
     """Generate a single-line, high-density summary of a command cluster."""
-    from termstory.config import load_config
+    from termstory.config import load_config, get_config_value
     config = load_config()
-    provider = config.get("provider", "disabled")
+    provider = config.get("active_provider", "disabled")
     
     if provider == "disabled":
         unique = []
@@ -241,9 +241,9 @@ def generate_cluster_summary(commands: List[str]) -> str:
         "Return ONLY the single line summary. No markdown formatting, no conversational filler, and no surrounding quotes."
     )
     
-    api_key = config.get("api_key", "")
-    api_base_url = config.get("api_base_url", "")
-    model_name = config.get("model_name", "")
+    api_key = get_config_value(config, f"providers.{provider}.api_key") or ""
+    api_base_url = get_config_value(config, f"providers.{provider}.api_base_url") or ""
+    model_name = get_config_value(config, f"providers.{provider}.model_name") or ""
     
     summary = _send_llm_request(
         prompt, api_key, api_base_url, model_name, provider,
@@ -373,12 +373,21 @@ def start_sleep_daemon(db_path: str):
         except (ValueError, OSError):
             pass
             
+    # Inherit and configure the python path
+    env = os.environ.copy()
+    package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if "PYTHONPATH" in env:
+        env["PYTHONPATH"] = package_root + os.pathsep + env["PYTHONPATH"]
+    else:
+        env["PYTHONPATH"] = package_root
+
     try:
         subprocess.Popen(
             [sys.executable, "-c", f"from termstory.reminder import run_sleep_daemon; run_sleep_daemon({repr(db_path)})"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            start_new_session=True
+            start_new_session=True,
+            env=env
         )
     except Exception:
         pass

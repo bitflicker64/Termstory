@@ -1561,16 +1561,23 @@ def sleep_cmd(
     ),
 ):
     """REM Sleep context consolidation manager."""
+    if not consolidate and not show:
+        console.print(
+            "Usage: [bold]termstory sleep[/bold] [options]\n\n"
+            "Options:\n"
+            "  --consolidate   Manually trigger context consolidation\n"
+            "  --show          View consolidated contexts"
+        )
+        raise typer.Exit()
+
     db_path = get_db_path()
     db = Database(db_path)
     safe_init_db(db)
     
-    # Run ingestion first to ensure all recent commands are parsed and in the database
-    run_ingestion(db)
-    
-    from termstory.reminder import consolidate_sleep_contexts
-    
     if consolidate:
+        # Run ingestion first to ensure all recent commands are parsed and in the database
+        run_ingestion(db)
+        from termstory.reminder import consolidate_sleep_contexts
         console.print("[cyan]Running REM Sleep context consolidation...[/cyan]")
         count = consolidate_sleep_contexts(db, force=True)
         console.print(f"[bold green]✅ Consolidation complete. Created {count} new consolidated contexts.[/bold green]")
@@ -1600,13 +1607,6 @@ def sleep_cmd(
             
         console.print(table)
         raise typer.Exit()
-        
-    console.print(
-        "Usage: [bold]termstory sleep[/bold] [options]\n\n"
-        "Options:\n"
-        "  --consolidate   Manually trigger context consolidation\n"
-        "  --show          View consolidated contexts"
-    )
 
 
 def main_entry():

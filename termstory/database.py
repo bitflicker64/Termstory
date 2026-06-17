@@ -1469,8 +1469,9 @@ class Database:
             INSERT INTO commands_fts(commands_fts, rowid, command, exit_code) VALUES ('delete', old.id, old.command, old.exit_code);
         END;
         """)
+        cursor.execute("DROP TRIGGER IF EXISTS commands_au;")
         cursor.execute("""
-        CREATE TRIGGER IF NOT EXISTS commands_au AFTER UPDATE ON commands BEGIN
+        CREATE TRIGGER IF NOT EXISTS commands_au AFTER UPDATE OF command, exit_code ON commands BEGIN
             INSERT INTO commands_fts(commands_fts, rowid, command, exit_code) VALUES ('delete', old.id, old.command, old.exit_code);
             INSERT INTO commands_fts(rowid, command, exit_code) VALUES (new.id, new.command, new.exit_code);
         END;
@@ -1487,8 +1488,9 @@ class Database:
             INSERT INTO sessions_fts(sessions_fts, rowid, ai_summary) VALUES ('delete', old.id, old.ai_summary);
         END;
         """)
+        cursor.execute("DROP TRIGGER IF EXISTS sessions_au;")
         cursor.execute("""
-        CREATE TRIGGER IF NOT EXISTS sessions_au AFTER UPDATE ON sessions BEGIN
+        CREATE TRIGGER IF NOT EXISTS sessions_au AFTER UPDATE OF ai_summary ON sessions BEGIN
             INSERT INTO sessions_fts(sessions_fts, rowid, ai_summary) VALUES ('delete', old.id, old.ai_summary);
             INSERT INTO sessions_fts(rowid, ai_summary) VALUES (new.id, new.ai_summary);
         END;
@@ -1505,8 +1507,9 @@ class Database:
             INSERT INTO ai_summaries_fts(ai_summaries_fts, rowid, summary) VALUES ('delete', old.id, old.summary);
         END;
         """)
+        cursor.execute("DROP TRIGGER IF EXISTS macro_summaries_au;")
         cursor.execute("""
-        CREATE TRIGGER IF NOT EXISTS macro_summaries_au AFTER UPDATE ON macro_summaries BEGIN
+        CREATE TRIGGER IF NOT EXISTS macro_summaries_au AFTER UPDATE OF summary ON macro_summaries BEGIN
             INSERT INTO ai_summaries_fts(ai_summaries_fts, rowid, summary) VALUES ('delete', old.id, old.summary);
             INSERT INTO ai_summaries_fts(rowid, summary) VALUES (new.id, new.summary);
         END;
