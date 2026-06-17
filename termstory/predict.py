@@ -17,6 +17,8 @@ from datetime import datetime, timedelta
 from collections import Counter, defaultdict
 from typing import List, Dict, Optional, Tuple
 
+from termstory.database import Database
+
 # ---------------------------------------------------------------------------
 # Noise commands that are excluded from prediction signals
 # (mirrors formatter.py's _is_noise_command heuristic)
@@ -100,7 +102,7 @@ class Predictor:
         Load all non-legacy sessions with their project names, commands, and
         session boundaries directly from SQLite — no ORM overhead.
         """
-        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        conn = Database(self.db_path).get_connection()
         try:
             cursor = conn.cursor()
 

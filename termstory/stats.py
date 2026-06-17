@@ -205,7 +205,8 @@ def language_detection(db: Database) -> Dict[str, float]:
         cursor.execute("SELECT id, path FROM projects")
         projects = cursor.fetchall()
         
-        cursor.execute("SELECT project_id, command FROM commands")
+        cutoff = int((get_current_time() - timedelta(days=90)).timestamp())
+        cursor.execute("SELECT project_id, command FROM commands WHERE timestamp >= ?", (cutoff,))
         commands = cursor.fetchall()
     finally:
         conn.close()
@@ -264,7 +265,8 @@ def peak_hours(db: Database) -> Dict[int, int]:
     conn = db.get_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT timestamp FROM commands")
+        cutoff = int((get_current_time() - timedelta(days=90)).timestamp())
+        cursor.execute("SELECT timestamp FROM commands WHERE timestamp >= ?", (cutoff,))
         rows = cursor.fetchall()
     finally:
         conn.close()

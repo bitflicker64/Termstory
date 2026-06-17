@@ -639,7 +639,7 @@ class Database:
                         FROM commits
                         WHERE project_id = ? AND timestamp >= ? AND timestamp <= ?
                         ORDER BY timestamp ASC
-                    """, (p_id, start - 300, end + 600))
+                    """, (p_id, start - 300, (end or start) + 600))
                     for c_row in cursor.fetchall():
                         commits.append({
                             "hash": c_row[0],
@@ -760,7 +760,7 @@ class Database:
                         FROM commits
                         WHERE project_id = ? AND timestamp >= ? AND timestamp <= ?
                         ORDER BY timestamp ASC
-                    """, (p_id, start - 300, end + 600))
+                    """, (p_id, start - 300, (end or start) + 600))
                     for c_row in cursor.fetchall():
                         commits.append({
                             "hash": c_row[0],
@@ -835,7 +835,7 @@ class Database:
                         FROM commits
                         WHERE project_id = ? AND timestamp >= ? AND timestamp <= ?
                         ORDER BY timestamp ASC
-                    """, (p_id, start - 300, end + 600))
+                    """, (p_id, start - 300, (end or start) + 600))
                     for c_row in cursor.fetchall():
                         commits.append({
                             "hash": c_row[0],
@@ -910,7 +910,7 @@ class Database:
                         FROM commits
                         WHERE project_id = ? AND timestamp >= ? AND timestamp <= ?
                         ORDER BY timestamp ASC
-                    """, (p_id, start - 300, end + 600))
+                    """, (p_id, start - 300, (end or start) + 600))
                     for c_row in cursor.fetchall():
                         commits.append({
                             "hash": c_row[0],

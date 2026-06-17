@@ -54,7 +54,7 @@ PASSWORD_FLAG_PATTERN = re.compile(
     re.IGNORECASE
 )
 
-IP_ADDRESS_PATTERN = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
+IP_ADDRESS_PATTERN = re.compile(r'(?<![\d\.])(?:\d{1,3}\.){3}\d{1,3}(?![\d\.])')
 IPV6_ADDRESS_PATTERN = re.compile(
     r'\b(?:[0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{1,4}\b|'
     r'\b(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}\b|'

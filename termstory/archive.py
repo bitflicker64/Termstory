@@ -198,7 +198,8 @@ def archive_old_data(main_db_path: str, archive_db_path: str, days: int) -> Dict
                 INSERT OR IGNORE INTO archive.commits (hash, timestamp, message, cleaned_message, project_id, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (c_hash, c_ts, c_msg, c_cl_msg, new_c_proj_id, c_ca))
-            stats["commits"] += 1
+            if cursor.rowcount > 0:
+                stats["commits"] += 1
 
             if has_archive_fts5:
                 # Check if it already exists in search_index

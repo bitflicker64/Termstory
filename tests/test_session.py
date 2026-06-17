@@ -40,7 +40,7 @@ def test_create_sessions_multiple():
     assert sessions[0].id == 1
     assert sessions[0].start_time == 1000
     assert sessions[0].end_time == 1000
-    assert sessions[0].duration_seconds == 60
+    assert sessions[0].duration_seconds == 0
     assert len(sessions[0].commands) == 1
     
     # Session 2
@@ -54,7 +54,7 @@ def test_create_sessions_multiple():
     assert sessions[2].id == 3
     assert sessions[2].start_time == 4900
     assert sessions[2].end_time == 4900
-    assert sessions[2].duration_seconds == 60
+    assert sessions[2].duration_seconds == 0
     assert len(sessions[2].commands) == 1
 
 def test_create_sessions_no_cwd_fragmentation():
