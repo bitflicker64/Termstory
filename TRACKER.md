@@ -8,6 +8,7 @@
   * **Version Promotion**: Promoted version to `0.6.0` across the package core files.
 
 ## Completed
+* **REM Sleep Context Consolidation (Batch 15)**: Added REM Sleep background context consolidation daemon in `termstory/reminder.py` running during idle periods (30+ min gaps). Clusters similar commands using embeddings from `sentence-transformers`, creates context summaries, and stores in the SQLite database. Added CLI commands `termstory sleep --consolidate` and `termstory sleep --show` to trigger and view contexts, escaping LLM outputs with `escape()`.
 * **SQLite FTS5 Integration (Batch 14)**: Added SQLite FTS5 virtual tables (`commands_fts`, `sessions_fts`, `ai_summaries_fts`) with triggers on insert/update/delete to keep FTS in sync. Added `--fts` flag to CLI search command to search using the new FTS5 tables.
 * **Documentation Updates & Refinement (Batch 13p3)**: Updated README.md with all current CLI commands, updated CHANGELOG.md for v0.6.0, updated WHAT_WORKS.md, WORKFLOW.md, DATA_PRIVACY.md, features.md, and issues.md to ensure all references to removed planning files are cleaned up, and documented batch 13p3 completion.
 * **Developer Memory Engine Documentation Overhaul (Batch 13p2)**: Conducted repository-wide code and module analysis of all modules and tests in the repository. Generated a highly comprehensive and detailed `agents.md` mapping core features, class hierarchies, database schemas, test methodologies, and data flow.
@@ -57,7 +58,6 @@
 
 ## Backlog
 * **Long-Term R&D Concepts**:
-  * **"REM Sleep" Context Consolidation**: Background processing of command clusters during idle periods.
   * **Semantic Deep-Dive via Local RAG**: Zero-keyword query searching via locally generated command/commit embeddings.
   * **Concurrency Stress Tests & Massive History Simulations**: Hardening the test suite by synthesizing massive, multi-year history logs to simulate worst-case ingestion scenarios.
 
@@ -79,4 +79,6 @@
 * **Batch 13p2 — Developer Memory Engine Documentation Overhaul**: ✅ Completed
 * **Batch 13p3 — Documentation Updates & Refinement**: ✅ Completed
 * **Batch 14 — SQLite FTS5 Integration**: ✅ Completed
+* **Batch 15 — REM Sleep Context Consolidation**: ✅ Completed
+
 
