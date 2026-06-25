@@ -179,16 +179,16 @@ def search_history(
     if since:
         try:
             since_ts = int(date_parser.parse(since).timestamp())
-        except Exception:
-            Console(stderr=True).print(f"[bold red]Error: Could not parse date '{since}'[/]")
+        except (ValueError, OverflowError) as e:
+            Console(stderr=True).print(f"[bold red]Error: Could not parse date '{since}': {e}[/]")
             raise typer.Exit(code=1)
             
     until_ts = None
     if until:
         try:
             until_ts = int(date_parser.parse(until).timestamp())
-        except Exception:
-            Console(stderr=True).print(f"[bold red]Error: Could not parse date '{until}'[/]")
+        except (ValueError, OverflowError) as e:
+            Console(stderr=True).print(f"[bold red]Error: Could not parse date '{until}': {e}[/]")
             raise typer.Exit(code=1)
             
     tag_list = None
