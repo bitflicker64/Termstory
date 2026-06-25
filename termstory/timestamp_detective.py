@@ -1021,7 +1021,7 @@ class TimestampDetective:
                 for fmt in ("%a %b %d %H:%M:%S %Y %z", "%Y-%m-%d %H:%M:%S %z"):
                     try:
                         return int(datetime.strptime(date_str, fmt).timestamp())
-                    except Exception:
+                    except ValueError:
                         continue
         return None
 
@@ -1044,7 +1044,7 @@ class TimestampDetective:
         date_str = re.sub(r'\s+', ' ', m.group(1)).strip()
         try:
             dt = datetime.strptime(date_str, "%a %b %d %H:%M")
-        except Exception:
+        except ValueError:
             return None
         now = datetime.now()
         dt = dt.replace(year=now.year)

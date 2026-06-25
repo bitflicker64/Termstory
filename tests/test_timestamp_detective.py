@@ -34,6 +34,12 @@ from termstory.timestamp_detective import TimestampDetective
 # Helpers
 # ---------------------------------------------------------------------------
 
+class ParserBugDateTime:
+    @staticmethod
+    def strptime(*_args, **_kwargs):
+        raise TypeError("unexpected parser bug")
+
+
 NOW = int(datetime.now().timestamp())
 FOUR_YEARS_AGO = NOW - (4 * 365 * 24 * 60 * 60)
 SIX_YEARS_AGO  = NOW - (6 * 365 * 24 * 60 * 60)
@@ -857,6 +863,20 @@ class TestDetectMacosSystemLog(unittest.TestCase):
         iso = dt.astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
         ts = self.d._parse_git_log_date(f"commit x\nDate:   {iso}\n\n    msg\n")
         self.assertEqual(ts, FOUR_YEARS_AGO)
+
+    def test_parse_git_log_date_ignores_format_mismatches_only(self):
+        self.assertIsNone(self.d._parse_git_log_date("commit x\nDate:   not a date\n"))
+
+        with patch("termstory.timestamp_detective.datetime", ParserBugDateTime):
+            with self.assertRaises(TypeError):
+                self.d._parse_git_log_date("commit x\nDate:   not a date\n")
+
+    def test_parse_last_login_ignores_format_mismatches_only(self):
+        self.assertIsNone(self.d._parse_last_login("alice ttys000 Tue Jun 99 09:14 still logged in"))
+
+        with patch("termstory.timestamp_detective.datetime", ParserBugDateTime):
+            with self.assertRaises(TypeError):
+                self.d._parse_last_login("alice ttys000 Thu Jun 5 09:14 still logged in")
 
     def test_detect_macos_syslog_missing_file(self):
         """When install.log doesn't exist (e.g. on Linux), return None."""
