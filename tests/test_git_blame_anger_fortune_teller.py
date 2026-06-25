@@ -4,7 +4,7 @@ from datetime import datetime
 from typer.testing import CliRunner
 import pytest
 
-from termstory.cli import app
+from termstory.cli import app, get_ai_provider_settings
 from termstory.database import Database
 from termstory.models import Project, Session, Command
 from termstory.ai import translate_git_anger, predict_bugs_from_sessions
@@ -108,6 +108,42 @@ def test_ai_predict_bugs_from_sessions(monkeypatch):
     
     assert res == "🔮 Predicted Bug: Missing exception handler in test script."
     assert len(called) == 1
+
+
+def test_get_ai_provider_settings_reads_nested_ollama_config():
+    config = {
+        "active_provider": "ollama",
+        "providers": {
+            "ollama": {
+                "api_key": "",
+                "api_base_url": "http://ollama.internal:11434/v1",
+                "model_name": "llama3.2",
+            }
+        },
+    }
+
+    provider, api_key, api_base_url, model_name = get_ai_provider_settings(config)
+
+    assert provider == "ollama"
+    assert api_key == ""
+    assert api_base_url == "http://ollama.internal:11434/v1"
+    assert model_name == "llama3.2"
+
+
+def test_get_ai_provider_settings_keeps_legacy_fallbacks():
+    config = {
+        "ai_provider": "openai",
+        "openai_api_key": "legacy-key",
+        "openai_api_base_url": "https://legacy.example/v1",
+        "openai_model_name": "legacy-model",
+    }
+
+    provider, api_key, api_base_url, model_name = get_ai_provider_settings(config)
+
+    assert provider == "openai"
+    assert api_key == "legacy-key"
+    assert api_base_url == "https://legacy.example/v1"
+    assert model_name == "legacy-model"
 
 
 def test_detect_late_night_chaotic_sessions(tmp_path):

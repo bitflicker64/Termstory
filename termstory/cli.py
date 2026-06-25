@@ -7,7 +7,7 @@ from dateutil import parser as date_parser
 # Supported tags for session categorization
 TAGS = ["deploy", "debug", "setup", "test", "docs"]
 
-from termstory.config import get_history_files, get_db_path
+from termstory.config import get_config_value, get_history_files, get_db_path
 from termstory.parser import parse_all_histories
 from termstory.session import create_sessions
 from termstory.project import detect_projects
@@ -54,6 +54,23 @@ def safe_init_db(db: Database) -> None:
                 f"Could not initialize database: {e}"
             )
             sys.exit(1)
+
+def get_ai_provider_settings(config: dict) -> tuple[str, str, str, str]:
+    """Return active AI provider settings from nested config with legacy fallback."""
+    provider = config.get("active_provider") or config.get("ai_provider", "disabled")
+    api_key = (
+        get_config_value(config, f"providers.{provider}.api_key")
+        or config.get(f"{provider}_api_key", "")
+    )
+    api_base_url = (
+        get_config_value(config, f"providers.{provider}.api_base_url")
+        or config.get(f"{provider}_api_base_url", "")
+    )
+    model_name = (
+        get_config_value(config, f"providers.{provider}.model_name")
+        or config.get(f"{provider}_model_name", "")
+    )
+    return provider, api_key, api_base_url, model_name
 
 def intercept_sys_argv():
     """Intercept positional date arguments (e.g. termstory 2026-06-02) and rewrite them
@@ -687,21 +704,10 @@ def anger_translator(
     from termstory.config import load_config
     config = load_config()
     ai_enabled = config.get("ai_enabled", False)
-    provider = config.get("ai_provider", "disabled")
+    provider, api_key, api_base_url, model_name = get_ai_provider_settings(config)
     
     if ai_enabled and provider != "disabled":
         from termstory.ai import translate_git_anger
-        api_key = config.get(f"providers.{provider}.api_key", config.get(f"{provider}_api_key", ""))
-        api_base_url = config.get(f"providers.{provider}.api_base_url", config.get(f"{provider}_api_base_url", ""))
-        model_name = config.get(f"providers.{provider}.model_name", config.get(f"{provider}_model_name", ""))
-        
-        if not api_base_url:
-            if provider == "groq":
-                api_base_url = "https://api.groq.com/openai/v1"
-            elif provider == "openai":
-                api_base_url = "https://api.openai.com/v1"
-            elif provider == "ollama":
-                api_base_url = "http://localhost:11434/v1"
                 
         console.print("[bold yellow]Translating developer's git blame and terminal frustration...[/]")
         translation = translate_git_anger(
@@ -746,21 +752,10 @@ def fortune_teller(
     from termstory.config import load_config
     config = load_config()
     ai_enabled = config.get("ai_enabled", False)
-    provider = config.get("ai_provider", "disabled")
+    provider, api_key, api_base_url, model_name = get_ai_provider_settings(config)
     
     if ai_enabled and provider != "disabled":
         from termstory.ai import predict_bugs_from_sessions
-        api_key = config.get(f"providers.{provider}.api_key", config.get(f"{provider}_api_key", ""))
-        api_base_url = config.get(f"providers.{provider}.api_base_url", config.get(f"{provider}_api_base_url", ""))
-        model_name = config.get(f"providers.{provider}.model_name", config.get(f"{provider}_model_name", ""))
-        
-        if not api_base_url:
-            if provider == "groq":
-                api_base_url = "https://api.groq.com/openai/v1"
-            elif provider == "openai":
-                api_base_url = "https://api.openai.com/v1"
-            elif provider == "ollama":
-                api_base_url = "http://localhost:11434/v1"
                 
         console.print("[bold yellow]Foretelling potential bugs from late-night chaotic session telemetry...[/]")
         predictions = predict_bugs_from_sessions(
@@ -1482,21 +1477,10 @@ def show_rpg_class():
     from termstory.config import load_config
     config = load_config()
     ai_enabled = config.get("ai_enabled", False)
-    provider = config.get("ai_provider", "disabled")
+    provider, api_key, api_base_url, model_name = get_ai_provider_settings(config)
     
     if ai_enabled and provider != "disabled":
         from termstory.ai import generate_rpg_bio
-        api_key = config.get(f"providers.{provider}.api_key", config.get(f"{provider}_api_key", ""))
-        api_base_url = config.get(f"providers.{provider}.api_base_url", config.get(f"{provider}_api_base_url", ""))
-        model_name = config.get(f"providers.{provider}.model_name", config.get(f"{provider}_model_name", ""))
-        
-        if not api_base_url:
-            if provider == "groq":
-                api_base_url = "https://api.groq.com/openai/v1"
-            elif provider == "openai":
-                api_base_url = "https://api.openai.com/v1"
-            elif provider == "ollama":
-                api_base_url = "http://localhost:11434/v1"
                 
         console.print("[bold yellow]Querying LLM to generate your custom RPG developer biography...[/]")
         bio = generate_rpg_bio(
