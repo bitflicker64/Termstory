@@ -162,7 +162,12 @@ def load_config() -> dict:
         "has_seen_timestamp_prompt": False,
         "has_seen_onboarding_reminder": False,
         "max_history_age": 5,
-        "max_query_log": 10000
+        "max_query_log": 10000,
+        "tool_keywords": [
+            "rustc", "cargo", "go", "python3", "python", "pip", "npm", "yarn",
+            "node", "docker", "docker-compose", "kubectl", "pytest", "git",
+            "clang", "gcc", "make", "cmake", "mvn", "gradle", "java", "sqlite3", "psql"
+        ]
     }
     
     config = {}
