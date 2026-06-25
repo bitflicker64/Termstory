@@ -401,8 +401,11 @@ class HelpScreen(ModalScreen[None]):
         
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-close-help":
+            # call_after_refresh(self.dismiss) — necessary wrapper so
+            # dismiss() is not invoked directly inside this Button.Pressed
+            # message handler (Textual 0.87+ raises ScreenError otherwise).
             self.call_after_refresh(self.dismiss)
-            
+
     def action_dismiss_none(self) -> None:
         self.call_after_refresh(self.dismiss)
 
@@ -591,7 +594,13 @@ class OnboardingScreen(ModalScreen[dict]):
             self.config["ai_enabled"] = True
             self.config["active_provider"] = self.selected_provider
             self.config["has_seen_onboarding"] = True
-            
+
+            # Schedule dismiss out-of-band of this message handler. Using
+            # call_after_refresh(self.dismiss, ...) is not enough by itself
+            # because the AwaitComplete's pre_await callback raises
+            # ScreenError if awaited from inside the screen's message context
+            # (Textual 8.x). set_timer runs on the next tick outside the
+            # Button.Pressed dispatch chain.
             self.call_after_refresh(self.dismiss, self.config)
         elif button_id == "btn-disable-ai":
             github_username = self.query_one("#input-github-username").value.strip().lstrip('@')
@@ -1625,7 +1634,7 @@ class ResetConfirmScreen(ModalScreen):
     
     def action_confirm_reset(self) -> None:
         self.call_after_refresh(self.dismiss, True)
-    
+
     def action_cancel_reset(self) -> None:
         self.call_after_refresh(self.dismiss, False)
 
