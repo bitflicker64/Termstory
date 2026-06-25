@@ -2612,7 +2612,8 @@ class TermStoryWorkspace(App):
         found_tools = set()
         total_commands = 0
         
-        tool_keywords = set(self.config.get("tool_keywords") or [])
+        _kw = self.config.get("tool_keywords") or []
+        tool_keywords = set(k.strip() for k in _kw.split(",")) if isinstance(_kw, str) else set(_kw)
         editor_executables = {"vim", "vi", "nano", "emacs", "code"}
         
         for s in matched_sessions:
