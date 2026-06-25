@@ -321,8 +321,12 @@ async def test_tui_onboarding_click_disabled():
         async with app.run_test() as pilot:
             # Press 'ctrl+d' (Keep Local Only shortcut) on OnboardingScreen
             await pilot.press("ctrl+d")
+            await pilot.pause()
             assert app.config["has_seen_onboarding"] is True
             assert app.config["ai_enabled"] is False
+            # Drain any pending workers/timers so the test context exits cleanly.
+            app.workers.cancel_all()
+            await pilot.pause()
 
 
 @pytest.mark.asyncio
@@ -1103,6 +1107,7 @@ async def test_tui_worker_cancellation(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(30)
 async def test_tui_batch_8_cyberpunk_animations(monkeypatch):
     """Test the newly added Batch 8 features (Matrix Defrag, Ghost Typer, Heatmap Pulse)."""
     import tempfile
@@ -1140,6 +1145,11 @@ async def test_tui_batch_8_cyberpunk_animations(monkeypatch):
             await pilot.press("d")
             await pilot.pause()
             assert isinstance(app.screen, MatrixDefragScreen)
+            # Stop the animation timer before dismissing to ensure cleanup
+            # happens within the test context — otherwise the timer keeps
+            # firing and prevents run_test() exit (CI hangs).
+            if app.screen.animation_timer is not None:
+                app.screen.animation_timer.stop()
             # Wait for animation to finish or manually dismiss
             app.screen.dismiss()
             await pilot.pause()
