@@ -1196,6 +1196,12 @@ async def test_tui_batch_8_cyberpunk_animations(monkeypatch):
                 await pilot.press("g")
                 await pilot.pause()
                 assert isinstance(app.screen, GhostTyperScreen)
+                # Stop the typing_timer before dismissing — same pattern as
+                # MatrixDefragScreen animation_timer fix above. Without this,
+                # the 30ms set_interval keeps firing after dismiss and prevents
+                # run_test() exit (proven CI hang).
+                if getattr(app.screen, "typing_timer", None) is not None:
+                    app.screen.typing_timer.stop()
                 # Dismiss
                 app.screen.dismiss()
                 await pilot.pause()
