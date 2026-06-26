@@ -1069,7 +1069,7 @@ class TimestampDetective:
         try:
             with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
                 lines = f.readlines()
-        except Exception:
+        except OSError:
             return None
 
         needle = package.lower()
