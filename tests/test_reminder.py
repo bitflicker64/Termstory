@@ -172,6 +172,29 @@ def test_cli_remind_commands(tmp_path, monkeypatch):
     assert "Reminder #999 not found" in result.stdout
 
 
+def test_run_sleep_daemon_uses_configured_poll_interval(tmp_path, monkeypatch):
+    from unittest.mock import patch, MagicMock
+    import termstory.reminder
+
+    monkeypatch.setattr("termstory.reminder.get_app_dir", lambda name: str(tmp_path))
+    monkeypatch.setattr("termstory.config.load_config", lambda: {"reminder_poll_interval": 60})
+
+    sleep_calls = []
+
+    def fake_sleep(n):
+        sleep_calls.append(n)
+        raise SystemExit(0)
+
+    mock_db = MagicMock()
+    with patch("termstory.reminder.time.sleep", fake_sleep):
+        with patch("termstory.database.Database.__init__", lambda self, path: None):
+            with patch("termstory.reminder.consolidate_sleep_contexts", return_value=None):
+                with pytest.raises(SystemExit):
+                    termstory.reminder.run_sleep_daemon("dummy_path")
+
+    assert sleep_calls == [60]
+
+
 def test_run_sleep_daemon_cleanup_on_initialization_failure(tmp_path, monkeypatch):
     from unittest.mock import patch
     import termstory.reminder
