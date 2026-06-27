@@ -2604,8 +2604,9 @@ class TermStoryWorkspace(App):
         merged_prs = len(merged_branches)
         if merged_prs == 0 and commit_messages:
             merged_prs = max(1, len(matched_sessions) // 3)
-            
-        branch_names_list = ", ".join(merged_branches[:5]) if merged_branches else "main, feature/tui, bugfix/exit-code"
+
+        _default_branches = self.config.get("default_branch_names") or ["main"]
+        branch_names_list = ", ".join(merged_branches[:5]) if merged_branches else ", ".join(_default_branches)
         cleaned_commits_block = "\n".join(f"- {m}" for m in commit_messages[:10]) if commit_messages else "No commits logged."
         
         from collections import Counter

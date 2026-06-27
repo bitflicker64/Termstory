@@ -167,7 +167,8 @@ def load_config() -> dict:
             "rustc", "cargo", "go", "python3", "python", "pip", "npm", "yarn",
             "node", "docker", "docker-compose", "kubectl", "pytest", "git",
             "clang", "gcc", "make", "cmake", "mvn", "gradle", "java", "sqlite3", "psql"
-        ]
+        ],
+        "default_branch_names": ["main"]
     }
     
     config = {}
