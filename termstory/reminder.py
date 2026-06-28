@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 import time
 import re
@@ -149,7 +150,6 @@ def complete_reminder(reminder_id: int) -> bool:
 
 def cluster_commands(commands: List[str]) -> List[List[str]]:
     """Cluster similar commands using sentence-transformers embeddings."""
-    import math
     if not commands:
         return []
         
@@ -412,7 +412,12 @@ def run_sleep_daemon(db_path: str):
 
     config = load_config()
     poll_interval = config.get("reminder_poll_interval", 300)
-    if isinstance(poll_interval, bool) or not isinstance(poll_interval, (int, float)) or poll_interval <= 0:
+    if (
+        isinstance(poll_interval, bool)
+        or not isinstance(poll_interval, (int, float))
+        or not math.isfinite(poll_interval)
+        or poll_interval <= 0
+    ):
         poll_interval = 300
     pid_file = os.path.join(get_app_dir("data"), "sleep_daemon.pid")
     
