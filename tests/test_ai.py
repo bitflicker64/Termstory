@@ -794,3 +794,47 @@ def test_reload_circuit_breaker_config_no_args_flushes_cache():
 
     assert ai._cb_max_failures is None
     assert ai._cb_cooldown_seconds is None
+
+
+def test_get_cb_limits_clamps_non_positive_max_failures(monkeypatch):
+    """ai_max_failures=0 or negative must be clamped to 1 (P1 fix)."""
+    from termstory import ai
+
+    ai.reload_circuit_breaker_config()
+    monkeypatch.setattr(
+        "termstory.config.load_config",
+        lambda: {"ai_max_failures": 0, "ai_cooldown_seconds": 60.0},
+    )
+    max_f, _ = ai._get_cb_limits()
+    assert max_f >= 1, "max_failures must never be <= 0"
+    ai.reload_circuit_breaker_config()
+
+
+def test_get_cb_limits_clamps_non_positive_cooldown(monkeypatch):
+    """ai_cooldown_seconds=0 must be clamped to >= 1.0 (P1 fix)."""
+    from termstory import ai
+
+    ai.reload_circuit_breaker_config()
+    monkeypatch.setattr(
+        "termstory.config.load_config",
+        lambda: {"ai_max_failures": 3, "ai_cooldown_seconds": 0},
+    )
+    _, cooldown = ai._get_cb_limits()
+    assert cooldown >= 1.0, "cooldown_seconds must never be <= 0"
+    ai.reload_circuit_breaker_config()
+
+
+def test_partial_override_max_failures_only(monkeypatch):
+    """reload_circuit_breaker_config(max_failures=5) must not discard the override (P1 fix)."""
+    from termstory import ai
+
+    ai.reload_circuit_breaker_config()
+    monkeypatch.setattr(
+        "termstory.config.load_config",
+        lambda: {"ai_max_failures": 3, "ai_cooldown_seconds": 60.0},
+    )
+    ai.reload_circuit_breaker_config(max_failures=5)  # only override one slot
+    max_f, cooldown = ai._get_cb_limits()
+    assert max_f == 5, "Explicit max_failures override must be preserved"
+    assert cooldown == 60.0, "cooldown_seconds should still read from config"
+    ai.reload_circuit_breaker_config()

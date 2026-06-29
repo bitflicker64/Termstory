@@ -20,8 +20,10 @@ _circuit_breaker_open_until = 0.0
 _DEFAULT_MAX_FAILURES: int = 3
 _DEFAULT_COOLDOWN_SECONDS: float = 60.0
 
-# Public aliases kept for backward compatibility.
-# New code should call _get_cb_limits() instead.
+# Public aliases kept for backward compatibility (read-only semantics).
+# NOTE: mutating these directly (e.g. termstory.ai.MAX_FAILURES = 5) has no
+# effect — _send_llm_request() reads limits through _get_cb_limits().
+# Use reload_circuit_breaker_config() for live in-process overrides.
 MAX_FAILURES: int = _DEFAULT_MAX_FAILURES
 COOLDOWN_SECONDS: float = _DEFAULT_COOLDOWN_SECONDS
 
@@ -40,21 +42,34 @@ def reset_circuit_breaker() -> None:
 def _get_cb_limits() -> tuple[int, float]:
     """Return (max_failures, cooldown_seconds) from the in-process cache or config.
 
-    Values are cached after the first read.  Call
-    :func:`reload_circuit_breaker_config` to flush the cache and pick up
-    changes from ``config.json`` without restarting the process.
+    Each limit is resolved independently, so a partial override via
+    :func:`reload_circuit_breaker_config` (e.g. only ``max_failures``) is
+    preserved while the other slot is still read from config.
+
+    Values are clamped to sane minimums (≥ 1 / ≥ 1.0) so a zero or negative
+    entry in ``config.json`` cannot silently disable the circuit breaker.
+
+    Call :func:`reload_circuit_breaker_config` with no arguments to flush
+    the cache and re-read both values from ``config.json``.
     """
     global _cb_max_failures, _cb_cooldown_seconds
-    if _cb_max_failures is not None and _cb_cooldown_seconds is not None:
-        return _cb_max_failures, _cb_cooldown_seconds
-    try:
-        from termstory.config import load_config
-        cfg = load_config()
-        _cb_max_failures = int(cfg.get("ai_max_failures", _DEFAULT_MAX_FAILURES))
-        _cb_cooldown_seconds = float(cfg.get("ai_cooldown_seconds", _DEFAULT_COOLDOWN_SECONDS))
-    except Exception:
-        _cb_max_failures = _DEFAULT_MAX_FAILURES
-        _cb_cooldown_seconds = _DEFAULT_COOLDOWN_SECONDS
+
+    if _cb_max_failures is None:
+        try:
+            from termstory.config import load_config
+            cfg = load_config()
+            _cb_max_failures = max(1, int(cfg.get("ai_max_failures", _DEFAULT_MAX_FAILURES)))
+        except Exception:
+            _cb_max_failures = _DEFAULT_MAX_FAILURES
+
+    if _cb_cooldown_seconds is None:
+        try:
+            from termstory.config import load_config
+            cfg = load_config()
+            _cb_cooldown_seconds = max(1.0, float(cfg.get("ai_cooldown_seconds", _DEFAULT_COOLDOWN_SECONDS)))
+        except Exception:
+            _cb_cooldown_seconds = _DEFAULT_COOLDOWN_SECONDS
+
     return _cb_max_failures, _cb_cooldown_seconds
 
 def reload_circuit_breaker_config(
@@ -981,4 +996,3 @@ def generate_rpg_bio(
         prompt, api_key, api_base_url, model_name, provider,
         max_tokens=1500, timeout=effective_timeout
     )
-    
