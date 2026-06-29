@@ -51,6 +51,7 @@ from termstory.ai import generate_ai_summary, generate_timeframe_summary, genera
 from termstory.insights import calculate_focus_score, calculate_time_of_day_distribution
 
 def is_worker_cancelled() -> bool:
+    """Return True if the current Textual worker has been cancelled, False otherwise."""
     try:
         from textual.worker import get_current_worker, NoActiveWorker
         try:
