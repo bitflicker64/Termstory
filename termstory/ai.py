@@ -995,3 +995,33 @@ def generate_rpg_bio(
         prompt, api_key, api_base_url, model_name, provider,
         max_tokens=1500, timeout=effective_timeout
     )
+
+
+def __getattr__(name: str) -> object:
+    """Backward-compatible access to deprecated module-level constants.
+
+    ``MAX_FAILURES`` and ``COOLDOWN_SECONDS`` were removed in favour of
+    :func:`reload_circuit_breaker_config`.  Reading them still works but
+    emits a :class:`DeprecationWarning`; they always return the current
+    default, not any live override.  Mutating them has no effect on the
+    circuit breaker — use :func:`reload_circuit_breaker_config` instead.
+    """
+    import warnings
+
+    if name == "MAX_FAILURES":
+        warnings.warn(
+            "termstory.ai.MAX_FAILURES is deprecated and has no effect on the "
+            "circuit breaker. Use reload_circuit_breaker_config() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return _DEFAULT_MAX_FAILURES
+    if name == "COOLDOWN_SECONDS":
+        warnings.warn(
+            "termstory.ai.COOLDOWN_SECONDS is deprecated and has no effect on "
+            "the circuit breaker. Use reload_circuit_breaker_config() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return _DEFAULT_COOLDOWN_SECONDS
+    raise AttributeError(f"module 'termstory.ai' has no attribute {name!r}")
