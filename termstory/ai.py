@@ -97,6 +97,7 @@ def get_last_ai_error() -> Optional[str]:
     return getattr(_local_ai_state, "last_error", None)
 
 def clear_last_ai_error() -> None:
+    """Reset the per-thread AI error cache to a clean state."""
     """Clear the last AI call error message for the current thread."""
     if hasattr(_local_ai_state, "last_error"):
         delattr(_local_ai_state, "last_error")
