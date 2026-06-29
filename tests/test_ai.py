@@ -838,3 +838,13 @@ def test_partial_override_max_failures_only(monkeypatch):
     assert max_f == 5, "Explicit max_failures override must be preserved"
     assert cooldown == 60.0, "cooldown_seconds should still read from config"
     ai.reload_circuit_breaker_config()
+
+
+def test_reload_circuit_breaker_config_clamps_non_positive_values():
+    """reload_circuit_breaker_config() must clamp non-positive values (P1 fix)."""
+    from termstory import ai
+
+    ai.reload_circuit_breaker_config(max_failures=0, cooldown_seconds=0.0)
+    assert ai._cb_max_failures >= 1
+    assert ai._cb_cooldown_seconds >= 1.0
+    ai.reload_circuit_breaker_config()

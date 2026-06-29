@@ -90,8 +90,8 @@ def reload_circuit_breaker_config(
             ``None`` (default) flushes the cached value.
     """
     global _cb_max_failures, _cb_cooldown_seconds
-    _cb_max_failures = max_failures
-    _cb_cooldown_seconds = cooldown_seconds
+    _cb_max_failures = max(1, max_failures) if max_failures is not None else None
+    _cb_cooldown_seconds = max(1.0, cooldown_seconds) if cooldown_seconds is not None else None
 
 def get_last_ai_error() -> Optional[str]:
     """Retrieve the last AI call error message, if any, for the current thread."""
