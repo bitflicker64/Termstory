@@ -49,28 +49,33 @@ def _get_cb_limits() -> tuple[int, float]:
     Values are clamped to sane minimums (≥ 1 / ≥ 1.0) so a zero or negative
     entry in ``config.json`` cannot silently disable the circuit breaker.
 
+    The entire check-and-set is held under ``_circuit_breaker_lock`` so a
+    concurrent :func:`reload_circuit_breaker_config` call cannot race and
+    overwrite an explicit override with a stale config value.
+
     Call :func:`reload_circuit_breaker_config` with no arguments to flush
     the cache and re-read both values from ``config.json``.
     """
     global _cb_max_failures, _cb_cooldown_seconds
 
-    if _cb_max_failures is None:
-        try:
-            from termstory.config import load_config
-            cfg = load_config()
-            _cb_max_failures = max(1, int(cfg.get("ai_max_failures", _DEFAULT_MAX_FAILURES)))
-        except Exception:
-            _cb_max_failures = _DEFAULT_MAX_FAILURES
+    with _circuit_breaker_lock:
+        if _cb_max_failures is None:
+            try:
+                from termstory.config import load_config
+                cfg = load_config()
+                _cb_max_failures = max(1, int(cfg.get("ai_max_failures", _DEFAULT_MAX_FAILURES)))
+            except Exception:
+                _cb_max_failures = _DEFAULT_MAX_FAILURES
 
-    if _cb_cooldown_seconds is None:
-        try:
-            from termstory.config import load_config
-            cfg = load_config()
-            _cb_cooldown_seconds = max(1.0, float(cfg.get("ai_cooldown_seconds", _DEFAULT_COOLDOWN_SECONDS)))
-        except Exception:
-            _cb_cooldown_seconds = _DEFAULT_COOLDOWN_SECONDS
+        if _cb_cooldown_seconds is None:
+            try:
+                from termstory.config import load_config
+                cfg = load_config()
+                _cb_cooldown_seconds = max(1.0, float(cfg.get("ai_cooldown_seconds", _DEFAULT_COOLDOWN_SECONDS)))
+            except Exception:
+                _cb_cooldown_seconds = _DEFAULT_COOLDOWN_SECONDS
 
-    return _cb_max_failures, _cb_cooldown_seconds
+        return _cb_max_failures, _cb_cooldown_seconds
 
 def reload_circuit_breaker_config(
     max_failures: Optional[int] = None,
@@ -90,8 +95,9 @@ def reload_circuit_breaker_config(
             ``None`` (default) flushes the cached value.
     """
     global _cb_max_failures, _cb_cooldown_seconds
-    _cb_max_failures = max(1, max_failures) if max_failures is not None else None
-    _cb_cooldown_seconds = max(1.0, cooldown_seconds) if cooldown_seconds is not None else None
+    with _circuit_breaker_lock:
+        _cb_max_failures = max(1, max_failures) if max_failures is not None else None
+        _cb_cooldown_seconds = max(1.0, cooldown_seconds) if cooldown_seconds is not None else None
 
 def get_last_ai_error() -> Optional[str]:
     """Retrieve the last AI call error message, if any, for the current thread."""
