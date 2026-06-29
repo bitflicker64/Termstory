@@ -15,8 +15,20 @@ _local_ai_state = threading.local()
 _circuit_breaker_lock = threading.Lock()
 _circuit_breaker_failures = 0
 _circuit_breaker_open_until = 0.0
-MAX_FAILURES = 3
-COOLDOWN_SECONDS = 60.0
+
+# Module-level defaults — used when config is unavailable.
+_DEFAULT_MAX_FAILURES: int = 3
+_DEFAULT_COOLDOWN_SECONDS: float = 60.0
+
+# Public aliases kept for backward compatibility.
+# New code should call _get_cb_limits() instead.
+MAX_FAILURES: int = _DEFAULT_MAX_FAILURES
+COOLDOWN_SECONDS: float = _DEFAULT_COOLDOWN_SECONDS
+
+# In-process cache for the configurable limits.
+# None = re-read from config on the next LLM request.
+_cb_max_failures: Optional[int] = None
+_cb_cooldown_seconds: Optional[float] = None
 
 def reset_circuit_breaker() -> None:
     """Reset the global circuit breaker state. Primarily used for testing."""
@@ -24,6 +36,47 @@ def reset_circuit_breaker() -> None:
     with _circuit_breaker_lock:
         _circuit_breaker_failures = 0
         _circuit_breaker_open_until = 0.0
+
+def _get_cb_limits() -> tuple[int, float]:
+    """Return (max_failures, cooldown_seconds) from the in-process cache or config.
+
+    Values are cached after the first read.  Call
+    :func:`reload_circuit_breaker_config` to flush the cache and pick up
+    changes from ``config.json`` without restarting the process.
+    """
+    global _cb_max_failures, _cb_cooldown_seconds
+    if _cb_max_failures is not None and _cb_cooldown_seconds is not None:
+        return _cb_max_failures, _cb_cooldown_seconds
+    try:
+        from termstory.config import load_config
+        cfg = load_config()
+        _cb_max_failures = int(cfg.get("ai_max_failures", _DEFAULT_MAX_FAILURES))
+        _cb_cooldown_seconds = float(cfg.get("ai_cooldown_seconds", _DEFAULT_COOLDOWN_SECONDS))
+    except Exception:
+        _cb_max_failures = _DEFAULT_MAX_FAILURES
+        _cb_cooldown_seconds = _DEFAULT_COOLDOWN_SECONDS
+    return _cb_max_failures, _cb_cooldown_seconds
+
+def reload_circuit_breaker_config(
+    max_failures: Optional[int] = None,
+    cooldown_seconds: Optional[float] = None,
+) -> None:
+    """Update the live circuit breaker limits without restarting the process.
+
+    Call with **no arguments** to flush the cached values so they are
+    re-read from ``config.json`` on the next LLM request.  Pass explicit
+    values to set one-off in-process overrides (useful in tests and for
+    operator tooling).
+
+    Args:
+        max_failures: Override for the number of consecutive timeouts before
+            the circuit opens.  ``None`` (default) flushes the cached value.
+        cooldown_seconds: Override for the cooldown duration in seconds.
+            ``None`` (default) flushes the cached value.
+    """
+    global _cb_max_failures, _cb_cooldown_seconds
+    _cb_max_failures = max_failures
+    _cb_cooldown_seconds = cooldown_seconds
 
 def get_last_ai_error() -> Optional[str]:
     """Retrieve the last AI call error message, if any, for the current thread."""
@@ -149,6 +202,7 @@ def _send_llm_request(
     
     max_retries = 3
     backoff = 1.0
+    max_failures, cooldown_seconds = _get_cb_limits()
     
     for attempt in range(max_retries + 1):
         if attempt > 0:
@@ -201,8 +255,8 @@ def _send_llm_request(
             # Half-open socket zombie or severe hang detected
             with _circuit_breaker_lock:
                 _circuit_breaker_failures += 1
-                if _circuit_breaker_failures >= MAX_FAILURES:
-                    _circuit_breaker_open_until = time.time() + COOLDOWN_SECONDS
+                if _circuit_breaker_failures >= max_failures:
+                    _circuit_breaker_open_until = time.time() + cooldown_seconds
             _local_ai_state.last_error = f"Strict timeout exceeded ({timeout}s). LLM process hung."
             continue
             
@@ -222,8 +276,8 @@ def _send_llm_request(
             if is_timeout:
                 with _circuit_breaker_lock:
                     _circuit_breaker_failures += 1
-                    if _circuit_breaker_failures >= MAX_FAILURES:
-                        _circuit_breaker_open_until = time.time() + COOLDOWN_SECONDS
+                    if _circuit_breaker_failures >= max_failures:
+                        _circuit_breaker_open_until = time.time() + cooldown_seconds
             else:
                 with _circuit_breaker_lock:
                     _circuit_breaker_failures = 0
@@ -927,6 +981,4 @@ def generate_rpg_bio(
         prompt, api_key, api_base_url, model_name, provider,
         max_tokens=1500, timeout=effective_timeout
     )
-
-
-
+    

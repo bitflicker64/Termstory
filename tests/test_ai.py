@@ -1,7 +1,9 @@
 import json
-import urllib.request
+import socket
+import time as _time_module
 import urllib.error
-from io import BytesIO
+import urllib.request
+
 from termstory.ai import generate_ai_summary, generate_timeframe_summary
 
 class MockResponse:
@@ -537,7 +539,7 @@ def test_daily_chronicle_blacklists_sensitive_session():
 
 
 
-def test_ai_summary_redacts_secrets_in_commit_messages(monkeypatch):
+def test_ai_summary_redacts_secrets_in_commit_messages(monkeypatch):  # noqa: F811
     """generate_ai_summary must redact secrets from commit messages, same as it
     already does for commands."""
     called = []
@@ -566,7 +568,7 @@ def test_ai_summary_redacts_secrets_in_commit_messages(monkeypatch):
     assert res == "Summary."
 
 
-def test_daily_chronicle_redacts_secrets_in_commands_and_commits():
+def test_daily_chronicle_redacts_secrets_in_commands_and_commits():  # noqa: F811
     """generate_daily_chronicle_prompt must not leak raw secrets from commands
     or commit messages."""
     from termstory.ai import generate_daily_chronicle_prompt
@@ -595,7 +597,7 @@ def test_daily_chronicle_redacts_secrets_in_commands_and_commits():
     assert "REDACTED_AWS_KEY" in prompt
 
 
-def test_daily_chronicle_blacklists_sensitive_session():
+def test_daily_chronicle_blacklists_sensitive_session():  # noqa: F811
     """A session with a blacklisted command should have its COMMANDS section
     gated entirely, mirroring generate_answer's behavior."""
     from termstory.ai import generate_daily_chronicle_prompt
@@ -674,3 +676,121 @@ def test_daily_chronicle_redacts_uri_credential_and_password_literal():
 
     assert "ChroniclePassword123!" not in prompt
 
+
+
+# ---------------------------------------------------------------------------
+# Configurable circuit breaker
+# ---------------------------------------------------------------------------
+
+def test_circuit_breaker_opens_after_config_max_failures(monkeypatch):
+    """Circuit breaker opens after ai_max_failures timeouts, not the hardcoded default."""
+    from termstory import ai
+
+    ai.reset_circuit_breaker()
+    # max_failures=1: the circuit must open after the very first timeout
+    ai.reload_circuit_breaker_config(max_failures=1, cooldown_seconds=9999.0)
+
+    call_count = [0]
+
+    def mock_urlopen(req, timeout=None):
+        call_count[0] += 1
+        raise socket.timeout("timed out")
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    # First call: first timeout → failures reaches 1 → circuit opens
+    generate_ai_summary(["pytest"], "key", "https://api.groq.com/openai/v1", "model", "groq")
+
+    with ai._circuit_breaker_lock:
+        assert ai._circuit_breaker_open_until > _time_module.time(), (
+            "Circuit breaker should be open after max_failures=1 timeout"
+        )
+
+    # Second call must be blocked immediately — urlopen should NOT be reached
+    calls_before = call_count[0]
+    generate_ai_summary(["pytest"], "key", "https://api.groq.com/openai/v1", "model", "groq")
+    assert call_count[0] == calls_before, (
+        "Open circuit breaker should have short-circuited the second call"
+    )
+
+    ai.reset_circuit_breaker()
+    ai.reload_circuit_breaker_config()
+
+
+def test_circuit_breaker_open_until_uses_config_cooldown(monkeypatch):
+    """open_until timestamp is set using ai_cooldown_seconds, not the hardcoded 60s."""
+    from termstory import ai
+
+    ai.reset_circuit_breaker()
+    ai.reload_circuit_breaker_config(max_failures=1, cooldown_seconds=300.0)
+
+    def mock_urlopen(req, timeout=None):
+        raise socket.timeout("timed out")
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    before = _time_module.time()
+    generate_ai_summary(["pytest"], "key", "https://api.groq.com/openai/v1", "model", "groq")
+
+    with ai._circuit_breaker_lock:
+        assert ai._circuit_breaker_open_until >= before + 300.0, (
+            "open_until should reflect the configured cooldown_seconds=300.0, not 60.0"
+        )
+
+    ai.reset_circuit_breaker()
+    ai.reload_circuit_breaker_config()
+
+
+def test_get_cb_limits_reads_ai_max_failures_and_ai_cooldown_seconds(monkeypatch):
+    """_get_cb_limits() honours ai_max_failures and ai_cooldown_seconds from config."""
+    from termstory import ai
+
+    ai.reload_circuit_breaker_config()  # flush cache before test
+
+    monkeypatch.setattr(
+        "termstory.config.load_config",
+        lambda: {"ai_max_failures": 7, "ai_cooldown_seconds": 180.0, "request_timeout_seconds": 30},
+    )
+
+    max_f, cooldown = ai._get_cb_limits()
+    assert max_f == 7
+    assert cooldown == 180.0
+
+    ai.reload_circuit_breaker_config()  # cleanup
+
+
+def test_get_cb_limits_falls_back_to_defaults_when_config_raises(monkeypatch):
+    """_get_cb_limits() returns module defaults when config.load_config() raises."""
+    from termstory import ai
+
+    ai.reload_circuit_breaker_config()  # flush cache
+
+    monkeypatch.setattr("termstory.config.load_config", lambda: (_ for _ in ()).throw(OSError("no file")))
+
+    max_f, cooldown = ai._get_cb_limits()
+    assert max_f == ai._DEFAULT_MAX_FAILURES
+    assert cooldown == ai._DEFAULT_COOLDOWN_SECONDS
+
+    ai.reload_circuit_breaker_config()  # cleanup
+
+
+def test_reload_circuit_breaker_config_sets_explicit_overrides():
+    """reload_circuit_breaker_config(n, s) caches the supplied values immediately."""
+    from termstory import ai
+
+    ai.reload_circuit_breaker_config(max_failures=10, cooldown_seconds=250.0)
+    assert ai._cb_max_failures == 10
+    assert ai._cb_cooldown_seconds == 250.0
+
+    ai.reload_circuit_breaker_config()  # cleanup
+
+
+def test_reload_circuit_breaker_config_no_args_flushes_cache():
+    """reload_circuit_breaker_config() with no args sets both cache slots to None."""
+    from termstory import ai
+
+    ai.reload_circuit_breaker_config(max_failures=99, cooldown_seconds=9999.0)
+    ai.reload_circuit_breaker_config()  # flush
+
+    assert ai._cb_max_failures is None
+    assert ai._cb_cooldown_seconds is None
