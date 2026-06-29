@@ -20,13 +20,6 @@ _circuit_breaker_open_until = 0.0
 _DEFAULT_MAX_FAILURES: int = 3
 _DEFAULT_COOLDOWN_SECONDS: float = 60.0
 
-# Public aliases kept for backward compatibility (read-only semantics).
-# NOTE: mutating these directly (e.g. termstory.ai.MAX_FAILURES = 5) has no
-# effect — _send_llm_request() reads limits through _get_cb_limits().
-# Use reload_circuit_breaker_config() for live in-process overrides.
-MAX_FAILURES: int = _DEFAULT_MAX_FAILURES
-COOLDOWN_SECONDS: float = _DEFAULT_COOLDOWN_SECONDS
-
 # In-process cache for the configurable limits.
 # None = re-read from config on the next LLM request.
 _cb_max_failures: Optional[int] = None
