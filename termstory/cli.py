@@ -27,6 +27,7 @@ import re
 console = Console()
 
 def safe_init_db(db: Database) -> None:
+    """Initialize the SQLite database, tolerating transient lock/IO errors."""
     try:
         db.init_db()
     except sqlite3.DatabaseError as e:
