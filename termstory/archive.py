@@ -10,6 +10,7 @@ def is_timeframe_older_than(timeframe_id: str, tf_type: str, cutoff_date: date) 
     """Check if a macro_summary timeframe is older than cutoff_date."""
     if tf_type == 'date':
         # Format: YYYY-MM-DD
+        #test
         match = re.match(r'^(\d{4})-(\d{2})-(\d{2})$', timeframe_id)
         if match:
             try:
