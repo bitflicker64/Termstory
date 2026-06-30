@@ -1,6 +1,6 @@
 #!/bin/bash
 # TermStory Installer v0.6.4
-
+#TEST 
 set -euo pipefail
 
 echo "=== TermStory Installer v0.6.4 ==="
