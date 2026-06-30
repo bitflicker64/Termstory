@@ -5,7 +5,7 @@ import os
 import time
 import re
 from typing import List, Dict, Optional, Tuple
-from termstory.config import get_app_dir
+from termstory.config import get_app_dir, load_config
 
 logger = logging.getLogger(__name__)
 
@@ -148,8 +148,35 @@ def complete_reminder(reminder_id: int) -> bool:
     return updated
 
 
-def cluster_commands(commands: List[str]) -> List[List[str]]:
-    """Cluster similar commands using sentence-transformers embeddings."""
+_DEFAULT_CLUSTERING_THRESHOLD = 0.6
+
+
+def _resolve_clustering_threshold() -> float:
+    """Read ``clustering_threshold`` from config.json.
+
+    Falls back to :data:`_DEFAULT_CLUSTERING_THRESHOLD` if config is
+    unavailable, malformed, or the value cannot be coerced to float.
+    Shared by :func:`cluster_commands` (per-call default) and
+    :func:`consolidate_sleep_contexts` (resolved once per run).
+    """
+    try:
+        cfg = load_config()
+        return float(cfg.get("clustering_threshold", _DEFAULT_CLUSTERING_THRESHOLD))
+    except Exception:
+        return _DEFAULT_CLUSTERING_THRESHOLD
+
+
+def cluster_commands(commands: List[str], threshold: Optional[float] = None) -> List[List[str]]:
+    """Cluster similar commands using sentence-transformers embeddings.
+
+    Args:
+        commands: Commands to cluster.
+        threshold: Cosine similarity threshold above which two commands are
+            merged into the same cluster. Lower values over-merge unrelated
+            commands; higher values split related ones. Defaults to the
+            ``clustering_threshold`` config value (falls back to
+            ``_DEFAULT_CLUSTERING_THRESHOLD`` if config is unavailable).
+    """
     if not commands:
         return []
         
@@ -201,7 +228,8 @@ def cluster_commands(commands: List[str]) -> List[List[str]]:
     # Simple leader clustering
     clusters = []
     cluster_embs = []
-    threshold = 0.6
+    if threshold is None:
+        threshold = _resolve_clustering_threshold()
     
     for cmd, emb in zip(unique_cmds, emb_list):
         placed = False
@@ -341,13 +369,14 @@ def consolidate_sleep_contexts(db, force: bool = False) -> int:
         return 0
 
     # 5. Consolidate each chunk
+    clustering_threshold = _resolve_clustering_threshold()
     consolidated_count = 0
     for chunk in chunks_to_consolidate:
         start_time = chunk[0]["timestamp"]
         end_time = chunk[-1]["timestamp"]
         cmd_strs = [c["command"] for c in chunk]
         
-        clusters = cluster_commands(cmd_strs)
+        clusters = cluster_commands(cmd_strs, threshold=clustering_threshold)
         cluster_summaries = []
         for cluster in clusters:
             summ = generate_cluster_summary(cluster)

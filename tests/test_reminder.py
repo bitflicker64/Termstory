@@ -14,7 +14,10 @@ from termstory.reminder import (
     complete_reminder,
     load_reminders,
     save_reminders,
-    get_reminders_file_path
+    get_reminders_file_path,
+    cluster_commands,
+    _DEFAULT_CLUSTERING_THRESHOLD,
+    consolidate_sleep_contexts
 )
 
 def test_parse_reminder_text():
@@ -299,3 +302,133 @@ def test_add_reminder_days_validation(tmp_path, monkeypatch):
      # Test parsed phrase that yields an invalid range
     with pytest.raises(ValueError, match="Days must be between 0 and 3650."):
         add_reminder("do something in 4000 days")
+
+
+def _fake_get_embeddings(monkeypatch, mapping):
+    import termstory.rag as rag
+
+    def fake(texts, model_name="all-MiniLM-L6-v2"):
+        return [mapping[t] for t in texts]
+
+    monkeypatch.setattr(rag, "get_embeddings", fake)
+    monkeypatch.setattr(rag, "SENTENCE_TRANSFORMERS_AVAILABLE", True)
+
+
+def test_cluster_commands_merges_above_threshold(monkeypatch):
+    embeddings = {
+        "git status": [1.0, 0.0],
+        "git status -s": [0.99, 0.14107],  # cos sim with [1,0] ≈ 0.99
+    }
+    _fake_get_embeddings(monkeypatch, embeddings)
+
+    clusters = cluster_commands(list(embeddings.keys()), threshold=0.6)
+
+    assert len(clusters) == 1
+    assert set(clusters[0]) == set(embeddings.keys())
+
+
+def test_cluster_commands_splits_below_threshold(monkeypatch):
+    embeddings = {
+        "git status": [1.0, 0.0],
+        "docker ps": [0.0, 1.0],  # cos sim = 0.0, well below 0.6
+    }
+    _fake_get_embeddings(monkeypatch, embeddings)
+
+    clusters = cluster_commands(list(embeddings.keys()), threshold=0.6)
+
+    assert len(clusters) == 2
+
+
+def test_cluster_commands_respects_explicit_threshold_override(monkeypatch):
+    embeddings = {
+        "a": [1.0, 0.0],
+        "b": [0.7, 0.7141],  # cos sim ≈ 0.7 — merges at 0.6, splits at 0.9
+    }
+    _fake_get_embeddings(monkeypatch, embeddings)
+
+    # Lower threshold (0.5): merges
+    merged = cluster_commands(list(embeddings.keys()), threshold=0.5)
+    assert len(merged) == 1
+
+    # Higher threshold (0.9): splits
+    split = cluster_commands(list(embeddings.keys()), threshold=0.9)
+    assert len(split) == 2
+
+
+def test_cluster_commands_reads_threshold_from_config_when_unset(monkeypatch):
+    embeddings = {
+        "a": [1.0, 0.0],
+        "b": [0.7, 0.7141],  # cos sim ≈ 0.7
+    }
+    _fake_get_embeddings(monkeypatch, embeddings)
+
+    # Config sets a high threshold (0.9) — must split even though the old
+    # hardcoded 0.6 default would have merged these.
+    monkeypatch.setattr(
+        "termstory.reminder.load_config",
+        lambda: {"clustering_threshold": 0.9},
+    )
+    clusters = cluster_commands(list(embeddings.keys()))
+    assert len(clusters) == 2
+
+
+def test_cluster_commands_falls_back_to_default_when_config_raises(monkeypatch):
+    embeddings = {
+        "git status": [1.0, 0.0],
+        "git status -s": [0.99, 0.14107],
+    }
+    _fake_get_embeddings(monkeypatch, embeddings)
+
+    monkeypatch.setattr(
+        "termstory.reminder.load_config",
+        lambda: (_ for _ in ()).throw(OSError("no config")),
+    )
+    clusters = cluster_commands(list(embeddings.keys()))
+    # _DEFAULT_CLUSTERING_THRESHOLD (0.6) merges these — fallback succeeded
+    assert len(clusters) == 1
+    assert _DEFAULT_CLUSTERING_THRESHOLD == 0.6
+
+
+def test_consolidate_sleep_contexts_reads_config_once_not_per_chunk(tmp_path, monkeypatch):
+    import termstory.rag as rag
+
+    db_file = tmp_path / "test_consolidate.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    now = int(time.time())
+    p = Project(id=1, name="termstory", path="~/projects/termstory", first_seen=now, last_seen=now, session_count=1, total_time=100)
+
+    # 3 chunks separated by >= 1800s idle gaps, 2 commands each.
+    commands = []
+    for chunk_idx in range(3):
+        base = now - (3 - chunk_idx) * 3600
+        commands.append(Command(timestamp=base, command=f"git status {chunk_idx}", session_id=1, project_id=1))
+        commands.append(Command(timestamp=base + 10, command=f"git log {chunk_idx}", session_id=1, project_id=1))
+
+    s = Session(id=1, start_time=commands[0].timestamp, end_time=commands[-1].timestamp, duration_seconds=3600, project_id=1, commands=commands)
+    db.save_data([p], [s], commands)
+
+    # Force the embeddings path (not the verb-fallback path) so cluster_commands
+    # actually reaches the threshold-resolution / load_config() call.
+    def fake_get_embeddings(texts, model_name="all-MiniLM-L6-v2"):
+        return [[1.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(rag, "get_embeddings", fake_get_embeddings)
+    monkeypatch.setattr(rag, "SENTENCE_TRANSFORMERS_AVAILABLE", True)
+
+    call_count = [0]
+    real_defaults = {"clustering_threshold": 0.6}
+
+    def counting_load_config():
+        call_count[0] += 1
+        return real_defaults
+
+    monkeypatch.setattr("termstory.reminder.load_config", counting_load_config)
+
+    consolidate_sleep_contexts(db, force=True)
+
+    assert call_count[0] == 1, (
+        f"load_config() was called {call_count[0]} times for 3 chunks — "
+        "expected exactly 1 (resolved once per run, not once per chunk)"
+    )

@@ -171,6 +171,7 @@ def load_config() -> dict:
             "clang", "gcc", "make", "cmake", "mvn", "gradle", "java", "sqlite3", "psql"
         ],
         "reminder_poll_interval": 300,
+        "clustering_threshold": 0.6,
         "default_branch_names": ["main"]
     }
     
