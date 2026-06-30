@@ -1,3 +1,4 @@
+#test1
 ## 9. Database Schema & Thread Safety
 
 `~/.termstory/termstory.db` — SQLite with WAL mode (`PRAGMA journal_mode = WAL`).
