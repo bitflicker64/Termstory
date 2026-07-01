@@ -359,13 +359,14 @@ def test_database_get_connection_passes_configured_timeout(tmp_path, monkeypatch
 def test_database_clamps_non_positive_db_timeout(tmp_path, monkeypatch):
     """A zero or negative db_timeout in config must not be passed through
     to sqlite3.connect(), it should fall back to DEFAULT_DB_TIMEOUT."""
-    monkeypatch.setattr(
-        "termstory.database.load_config",
-        lambda: {"max_query_log": 10000, "db_timeout": 0},
-    )
-    db_file = tmp_path / "test_zero_timeout.db"
-    db = Database(str(db_file))
-    assert db.db_timeout == Database.DEFAULT_DB_TIMEOUT
+    for bad_value in (0, -1.0):
+        monkeypatch.setattr(
+            "termstory.database.load_config",
+            lambda v=bad_value: {"max_query_log": 10000, "db_timeout": v},
+        )
+        db_file = tmp_path / f"test_bad_timeout_{bad_value}.db"
+        db = Database(str(db_file))
+        assert db.db_timeout == Database.DEFAULT_DB_TIMEOUT, f"expected default for db_timeout={bad_value!r}"
 
 
 def test_database_ignores_malformed_db_timeout(tmp_path, monkeypatch):
