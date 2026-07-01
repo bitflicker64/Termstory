@@ -401,13 +401,15 @@ class HelpScreen(ModalScreen[None]):
         
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-close-help":
-            # call_after_refresh(self.dismiss) — necessary wrapper so
-            # dismiss() is not invoked directly inside this Button.Pressed
-            # message handler (Textual 0.87+ raises ScreenError otherwise).
-            self.call_after_refresh(self.dismiss)
+            # set_timer(0.0, ...) schedules the dismiss on the next event
+            # loop tick, fully outside the Button.Pressed dispatch chain.
+            # Textual 8.x raises ScreenError if AwaitComplete.pre_await runs
+            # inside the screen's message pump, which call_after_refresh
+            # can't escape.
+            self.set_timer(0.0, lambda: self.dismiss())
 
     def action_dismiss_none(self) -> None:
-        self.call_after_refresh(self.dismiss)
+        self.set_timer(0.0, lambda: self.dismiss())
 
 
 class OnboardingScreen(ModalScreen[dict]):
@@ -534,10 +536,10 @@ class OnboardingScreen(ModalScreen[dict]):
         self.config["ai_enabled"] = False
         self.config["active_provider"] = "disabled"
         self.config["has_seen_onboarding"] = True
-        self.call_after_refresh(self.dismiss, self.config)
-        
+        self.set_timer(0.0, lambda: self.dismiss(self.config))
+
     def action_dismiss_none(self) -> None:
-        self.call_after_refresh(self.dismiss, None)
+        self.set_timer(0.0, lambda: self.dismiss(None))
         
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id
@@ -601,14 +603,14 @@ class OnboardingScreen(ModalScreen[dict]):
             # ScreenError if awaited from inside the screen's message context
             # (Textual 8.x). set_timer runs on the next tick outside the
             # Button.Pressed dispatch chain.
-            self.call_after_refresh(self.dismiss, self.config)
+            self.set_timer(0.0, lambda: self.dismiss(self.config))
         elif button_id == "btn-disable-ai":
             github_username = self.query_one("#input-github-username").value.strip().lstrip('@')
             self.config["github_username"] = github_username
             self.config["ai_enabled"] = False
             self.config["active_provider"] = "disabled"
             self.config["has_seen_onboarding"] = True
-            self.call_after_refresh(self.dismiss, self.config)
+            self.set_timer(0.0, lambda: self.dismiss(self.config))
 
 
 
@@ -1633,10 +1635,10 @@ class ResetConfirmScreen(ModalScreen):
         )
     
     def action_confirm_reset(self) -> None:
-        self.call_after_refresh(self.dismiss, True)
+        self.set_timer(0.0, lambda: self.dismiss(True))
 
     def action_cancel_reset(self) -> None:
-        self.call_after_refresh(self.dismiss, False)
+        self.set_timer(0.0, lambda: self.dismiss(False))
 
 
 class MatrixDefragScreen(ModalScreen[None]):
@@ -1647,7 +1649,7 @@ class MatrixDefragScreen(ModalScreen[None]):
     ]
 
     def action_close_matrix(self) -> None:
-        self.call_after_refresh(self.dismiss)
+        self.set_timer(0.0, lambda: self.dismiss())
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1727,7 +1729,7 @@ class MatrixDefragScreen(ModalScreen[None]):
             self.update_grid()
             if self.animation_timer:
                 self.animation_timer.stop()
-            self.set_timer(0.8, lambda: self.call_after_refresh(self.dismiss))
+            self.set_timer(0.8, lambda: self.dismiss())
 
 
 class GhostTyperScreen(ModalScreen[None]):
@@ -1738,7 +1740,7 @@ class GhostTyperScreen(ModalScreen[None]):
     ]
 
     def action_close_typing(self) -> None:
-        self.call_after_refresh(self.dismiss)
+        self.set_timer(0.0, lambda: self.dismiss())
     
     def __init__(self, commands: List[str], *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1760,15 +1762,15 @@ class GhostTyperScreen(ModalScreen[None]):
     def on_mount(self) -> None:
         if not self.commands:
             self.query_one("#ghost-console").update("No commands available for playback.")
-            self.set_timer(1.2, lambda: self.call_after_refresh(self.dismiss))
+            self.set_timer(1.2, lambda: self.dismiss())
             return
         self.start_typing_next_command()
-        
+
     def start_typing_next_command(self) -> None:
         if self.current_cmd_idx >= len(self.commands):
             self.lines.append("\n[bold green]>> PLAYBACK COMPLETE.[/bold green]")
             self.update_console()
-            self.set_timer(1.0, lambda: self.call_after_refresh(self.dismiss))
+            self.set_timer(1.0, lambda: self.dismiss())
             return
             
         self.current_char_idx = 0
