@@ -304,3 +304,99 @@ def test_database_query_logs_are_bounded():
 
 
 
+def test_database_uses_default_timeout_when_config_unset(tmp_path, monkeypatch):
+    """Database() must fall back to DEFAULT_DB_TIMEOUT (30.0) when config.json
+    has no db_timeout key."""
+    monkeypatch.setattr(
+        "termstory.database.load_config",
+        lambda: {"max_query_log": 10000},  # no db_timeout key present
+    )
+    db_file = tmp_path / "test_default_timeout.db"
+    db = Database(str(db_file))
+    assert db.db_timeout == Database.DEFAULT_DB_TIMEOUT
+    assert db.db_timeout == 30.0
+
+
+def test_database_reads_db_timeout_from_config(tmp_path, monkeypatch):
+    """Database() must read db_timeout from config.json instead of the
+    hardcoded 30.0 literal."""
+    monkeypatch.setattr(
+        "termstory.database.load_config",
+        lambda: {"max_query_log": 10000, "db_timeout": 90.0},
+    )
+    db_file = tmp_path / "test_custom_timeout.db"
+    db = Database(str(db_file))
+    assert db.db_timeout == 90.0
+
+
+def test_database_get_connection_passes_configured_timeout(tmp_path, monkeypatch):
+    """get_connection() must pass self.db_timeout to sqlite3.connect(),
+    not the old hardcoded 30.0 literal."""
+    import sqlite3
+
+    monkeypatch.setattr(
+        "termstory.database.load_config",
+        lambda: {"max_query_log": 10000, "db_timeout": 5.0},
+    )
+    db_file = tmp_path / "test_connect_timeout.db"
+    db = Database(str(db_file))
+
+    captured_kwargs = {}
+    real_connect = sqlite3.connect
+
+    def spy_connect(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr("termstory.database.sqlite3.connect", spy_connect)
+
+    conn = db.get_connection()
+    conn.close()
+
+    assert captured_kwargs.get("timeout") == 5.0
+
+
+def test_database_clamps_non_positive_db_timeout(tmp_path, monkeypatch):
+    """A zero or negative db_timeout in config must not be passed through
+    to sqlite3.connect(), it should fall back to DEFAULT_DB_TIMEOUT."""
+    monkeypatch.setattr(
+        "termstory.database.load_config",
+        lambda: {"max_query_log": 10000, "db_timeout": 0},
+    )
+    db_file = tmp_path / "test_zero_timeout.db"
+    db = Database(str(db_file))
+    assert db.db_timeout == Database.DEFAULT_DB_TIMEOUT
+
+
+def test_database_ignores_malformed_db_timeout(tmp_path, monkeypatch):
+    """A non-numeric db_timeout in config must not crash Database.__init__
+    and must fall back to DEFAULT_DB_TIMEOUT."""
+    monkeypatch.setattr(
+        "termstory.database.load_config",
+        lambda: {"max_query_log": 10000, "db_timeout": "not-a-number"},
+    )
+    db_file = tmp_path / "test_bad_timeout.db"
+    db = Database(str(db_file))
+    assert db.db_timeout == Database.DEFAULT_DB_TIMEOUT
+
+
+def test_database_still_works_end_to_end_with_custom_timeout(tmp_path, monkeypatch):
+    """Regression guard: a Database configured with a custom db_timeout
+    must still initialize and accept queries normally (existing tests
+    green, per the issue's acceptance criteria)."""
+    monkeypatch.setattr(
+        "termstory.database.load_config",
+        lambda: {"max_query_log": 10000, "db_timeout": 45.0},
+    )
+    db_file = tmp_path / "test_e2e_timeout.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = {row[0] for row in cursor.fetchall()}
+    conn.close()
+
+    assert "projects" in tables
+    assert db.db_timeout == 45.0

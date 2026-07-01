@@ -83,12 +83,20 @@ class SafeConnection(sqlite3.Connection):
 
 class Database:
     MAX_QUERY_LOG = 10000
+    DEFAULT_DB_TIMEOUT = 30.0
 
     def __init__(self, db_path: str):
         self.db_path = db_path
         self.query_logs = []
-        configured_max = get_config_value(load_config(), "max_query_log")
+        config = load_config()
+        configured_max = get_config_value(config, "max_query_log")
         self.max_query_log = configured_max if type(configured_max) is int and configured_max > 0 else self.MAX_QUERY_LOG
+        configured_timeout = get_config_value(config, "db_timeout")
+        self.db_timeout = (
+            configured_timeout
+            if type(configured_timeout) in (int, float) and configured_timeout > 0
+            else self.DEFAULT_DB_TIMEOUT
+        )
 
     def log_query(self, sql: str, duration: float):
         self.query_logs.append({
@@ -100,7 +108,7 @@ class Database:
         
     def get_connection(self) -> sqlite3.Connection:
         """Create and return a database connection with foreign key support enabled"""
-        conn = sqlite3.connect(self.db_path, timeout=30.0, factory=SafeConnection)
+        conn = sqlite3.connect(self.db_path, timeout=self.db_timeout, factory=SafeConnection)
         conn._db_instance = self
         conn.execute("PRAGMA foreign_keys = ON;")
         return conn
