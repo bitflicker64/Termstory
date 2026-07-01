@@ -406,10 +406,10 @@ class HelpScreen(ModalScreen[None]):
             # Textual 8.x raises ScreenError if AwaitComplete.pre_await runs
             # inside the screen's message pump, which call_after_refresh
             # can't escape.
-            self.set_timer(0.0, lambda: self.dismiss())
+            self.set_timer(0.0, self.dismiss)
 
     def action_dismiss_none(self) -> None:
-        self.set_timer(0.0, lambda: self.dismiss())
+        self.set_timer(0.0, self.dismiss)
 
 
 class OnboardingScreen(ModalScreen[dict]):
@@ -1649,7 +1649,7 @@ class MatrixDefragScreen(ModalScreen[None]):
     ]
 
     def action_close_matrix(self) -> None:
-        self.set_timer(0.0, lambda: self.dismiss())
+        self.set_timer(0.0, self.dismiss)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1729,7 +1729,7 @@ class MatrixDefragScreen(ModalScreen[None]):
             self.update_grid()
             if self.animation_timer:
                 self.animation_timer.stop()
-            self.set_timer(0.8, lambda: self.dismiss())
+            self.set_timer(0.8, self.dismiss)
 
 
 class GhostTyperScreen(ModalScreen[None]):
@@ -1740,7 +1740,7 @@ class GhostTyperScreen(ModalScreen[None]):
     ]
 
     def action_close_typing(self) -> None:
-        self.set_timer(0.0, lambda: self.dismiss())
+        self.set_timer(0.0, self.dismiss)
     
     def __init__(self, commands: List[str], *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1762,7 +1762,7 @@ class GhostTyperScreen(ModalScreen[None]):
     def on_mount(self) -> None:
         if not self.commands:
             self.query_one("#ghost-console").update("No commands available for playback.")
-            self.set_timer(1.2, lambda: self.dismiss())
+            self.set_timer(1.2, self.dismiss)
             return
         self.start_typing_next_command()
 
@@ -1770,7 +1770,7 @@ class GhostTyperScreen(ModalScreen[None]):
         if self.current_cmd_idx >= len(self.commands):
             self.lines.append("\n[bold green]>> PLAYBACK COMPLETE.[/bold green]")
             self.update_console()
-            self.set_timer(1.0, lambda: self.dismiss())
+            self.set_timer(1.0, self.dismiss)
             return
             
         self.current_char_idx = 0
