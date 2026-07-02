@@ -1,10 +1,14 @@
 import os
 import json
+import logging
+import sqlite3
 import webbrowser
 from typing import Optional
 from termstory.insights import analyze_all
 from termstory.formatter import _is_noise_command
 from termstory.database import Database
+
+logger = logging.getLogger(__name__)
 
 
 def get_web_data(db: Database, start_ts: Optional[int] = None, end_ts: Optional[int] = None) -> dict:
@@ -230,8 +234,11 @@ def get_web_data(db: Database, start_ts: Optional[int] = None, end_ts: Optional[
         for day, count in cursor.fetchall():
             if day in daily_activity:
                 daily_activity[day]["sessions"] = count
-    except Exception:
-        pass
+    except sqlite3.Error:
+        logger.warning(
+            "Failed to calculate daily activity heatmap; returning zeroed heatmap.",
+            exc_info=True,
+        )
     finally:
         conn.close()
 
