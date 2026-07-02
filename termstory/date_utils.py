@@ -97,7 +97,7 @@ def parse_date_range_helper(date_range_str: str) -> Tuple[int, int]:
             end = datetime.combine(end_dt.date(), time.max)
             return int(start.timestamp()), int(end.timestamp())
         except Exception as e:
-            raise ValueError(f"Invalid date range format: {e}")
+            raise ValueError(f"Invalid date range format: {e}") from e
             
     # Try parsing as a single date
     try:
@@ -105,6 +105,6 @@ def parse_date_range_helper(date_range_str: str) -> Tuple[int, int]:
         start = datetime.combine(dt.date(), time.min)
         end = datetime.combine(dt.date(), time.max)
         return int(start.timestamp()), int(end.timestamp())
-    except Exception:
-        raise ValueError(f"Unknown date range format '{date_range_str}'")
+    except Exception as e:
+        raise ValueError(f"Unknown date range format '{date_range_str}'") from e
 
