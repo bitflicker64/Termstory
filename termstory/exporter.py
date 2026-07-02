@@ -2,12 +2,29 @@ import csv
 import json
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from dateutil import parser as date_parser
 
 from termstory.database import Database
 from termstory.models import Session, Command, Project
+
+_FAR_FUTURE_TS: int = sys.maxsize
+
+def _get_timestamp(dt: datetime) -> int:
+    """Safely get Unix timestamp from datetime object on all platforms, including Windows."""
+    if dt.tzinfo is None:
+        local_offset = datetime.now().astimezone().utcoffset()
+        dt = dt.replace(tzinfo=timezone(local_offset))
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    return int((dt - epoch).total_seconds())
+
+def _safe_fromtimestamp(ts: float) -> datetime:
+    """Safely convert a Unix timestamp to a local naive datetime on all platforms, including Windows."""
+    utc_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+    local_offset = datetime.now().astimezone().utcoffset()
+    local_dt = utc_dt.astimezone(timezone(local_offset))
+    return local_dt.replace(tzinfo=None)
 
 def parse_since(since_str: Optional[str]) -> Optional[int]:
     """Parse a since string (either number of days or a date string) into a Unix timestamp."""
@@ -21,11 +38,11 @@ def parse_since(since_str: Optional[str]) -> Optional[int]:
         dt = now - timedelta(days=days)
         # Start of that day
         start_of_day = datetime.combine(dt.date(), datetime.min.time())
-        return int(start_of_day.timestamp())
+        return _get_timestamp(start_of_day)
     
     try:
         dt = date_parser.parse(since_str)
-        return int(dt.timestamp())
+        return _get_timestamp(dt)
     except Exception as e:
         raise ValueError(f"Invalid date or day count format '{since_str}': {e}")
 
@@ -42,7 +59,7 @@ def fetch_export_data(
             start_ts = since_ts
             
     # Fetch all sessions in the range (up to far in the future)
-    sessions = db.get_range_sessions(start_ts, 9999999999)
+    sessions = db.get_range_sessions(start_ts, _FAR_FUTURE_TS)
     
     # Get project info to map names/paths
     project_ids = list(set(s.project_id for s in sessions if s.project_id is not None))
@@ -79,9 +96,9 @@ def serialize_sessions_to_dict(sessions: List[Session], db: Database) -> List[Di
         session_dict = {
             "session_id": s.id,
             "start_time": s.start_time,
-            "start_time_iso": datetime.fromtimestamp(s.start_time).isoformat(),
+            "start_time_iso": _safe_fromtimestamp(s.start_time).isoformat(),
             "end_time": s.end_time,
-            "end_time_iso": datetime.fromtimestamp(s.end_time).isoformat() if s.end_time is not None else None,
+            "end_time_iso": _safe_fromtimestamp(s.end_time).isoformat() if s.end_time is not None else None,
             "duration_seconds": s.duration_seconds,
             "duration_readable": s.duration_readable,
             "project_id": s.project_id,
@@ -97,7 +114,7 @@ def serialize_sessions_to_dict(sessions: List[Session], db: Database) -> List[Di
             session_dict["commands"].append({
                 "command_id": cmd.id,
                 "timestamp": cmd.timestamp,
-                "timestamp_iso": datetime.fromtimestamp(cmd.timestamp).isoformat(),
+                "timestamp_iso": _safe_fromtimestamp(cmd.timestamp).isoformat(),
                 "command": cmd.command,
                 "exit_code": cmd.exit_code,
                 "is_legacy": cmd.is_legacy,
@@ -108,7 +125,7 @@ def serialize_sessions_to_dict(sessions: List[Session], db: Database) -> List[Di
             session_dict["commits"].append({
                 "hash": commit.get("hash"),
                 "timestamp": commit.get("timestamp"),
-                "timestamp_iso": datetime.fromtimestamp(commit.get("timestamp")).isoformat() if commit.get("timestamp") else None,
+                "timestamp_iso": _safe_fromtimestamp(commit.get("timestamp")).isoformat() if commit.get("timestamp") else None,
                 "message": commit.get("message"),
                 "cleaned_message": commit.get("cleaned_message")
             })
@@ -181,8 +198,8 @@ def export_csv(
             for cmd in commands:
                 row = {
                     "session_id": s.id,
-                    "session_start_time": datetime.fromtimestamp(s.start_time).isoformat(),
-                    "session_end_time": datetime.fromtimestamp(s.end_time).isoformat() if s.end_time is not None else "",
+                    "session_start_time": _safe_fromtimestamp(s.start_time).isoformat(),
+                    "session_end_time": _safe_fromtimestamp(s.end_time).isoformat() if s.end_time is not None else "",
                     "session_duration_seconds": s.duration_seconds,
                     "project_name": proj.name if proj else "Other",
                     "project_path": proj.path if proj else "",
@@ -194,7 +211,7 @@ def export_csv(
                 if cmd:
                     row.update({
                         "command_id": cmd.id,
-                        "command_timestamp": datetime.fromtimestamp(cmd.timestamp).isoformat(),
+                        "command_timestamp": _safe_fromtimestamp(cmd.timestamp).isoformat(),
                         "command_text": cmd.command,
                         "command_exit_code": cmd.exit_code,
                         "command_is_legacy": cmd.is_legacy
