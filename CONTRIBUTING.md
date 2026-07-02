@@ -68,6 +68,14 @@ in `termstory/ai.py`.
 *   **Branch naming**: Use descriptive branch names like `feature/new-cli-command`, `bugfix/issue-123`, or `docs/update-readme`.
 *   **Commit messages**: Use clear, concise commit messages. A good format is `[Scope] Short description`, for example, `[Parser] Fix bug in zsh history parsing`.
 
+## Reviewing PRs (Maintainers)
+
+Posting inline code suggestions on GitHub via the API has a sharp edge worth knowing: **` ```suggestion ` blocks only anchor to lines inside the PR's diff hunks.** Suggesting a fix on a sibling line outside the diff, or on a test file the PR doesn't touch, returns `422 Unprocessable Entity` and silently drops the whole review payload.
+
+Workarounds and the full review workflow (multi-comment atomic posts via `gh api`, `Apply suggestion` JSON shape, `APPROVE` vs `REQUEST_CHANGES` vs `COMMENT` event types) live in the `github-code-review` skill — `~/.hermes/skills/github/github-code-review/SKILL.md`. Read it before posting your first formal review.
+
+If you spot an inconsistency outside the PR's diff (e.g. a sibling code path, a missing test), either ask the contributor to expand the PR's diff so the suggestion can anchor properly, or include the fix as a fenced code block inside a regular comment body — no `[Apply]` button, but it works.
+
 ## Adding a New CLI Command
 
 To add a new command to the TermStory CLI:
