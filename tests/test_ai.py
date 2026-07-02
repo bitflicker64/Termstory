@@ -1,9 +1,12 @@
 import json
 import socket
+import sys
 import time as _time_module
 import urllib.error
 import urllib.request
+from types import SimpleNamespace
 
+import termstory.ai as ai
 from termstory.ai import generate_ai_summary, generate_timeframe_summary
 
 class MockResponse:
@@ -338,9 +341,84 @@ def test_timeframe_summary_max_tokens(monkeypatch):
         model_name="gpt-4o", provider="openai"
     )
     assert res == "ok"
-    assert captured["body"]["max_tokens"] == 1500
+    assert captured["body"]["max_tokens"] == ai.DEFAULT_MAX_TOKENS
     # Falls back to default 30 when config lacks the key
     assert captured["timeout"] == 30
+
+
+def test_long_form_generators_share_default_max_tokens(monkeypatch):
+    captured = []
+
+    def mock_urlopen(req, timeout=None):
+        body = json.loads(req.data.decode("utf-8"))
+        captured.append(body["max_tokens"])
+        resp_payload = {"choices": [{"message": {"content": "ok"}}]}
+        return MockResponse(json.dumps(resp_payload).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+    monkeypatch.setattr("termstory.config.load_config", lambda: {})
+    monkeypatch.setattr(ai, "_get_all_active_project_contexts", lambda: [])
+    monkeypatch.setattr(ai, "DEFAULT_MAX_TOKENS", 1234, raising=False)
+    monkeypatch.setitem(
+        sys.modules,
+        "termstory.formatter",
+        SimpleNamespace(get_operator_handle=lambda: "user"),
+    )
+    monkeypatch.setitem(sys.modules, "rich", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules,
+        "rich.markup",
+        SimpleNamespace(escape=lambda text: text),
+    )
+
+    common = {
+        "api_key": "k",
+        "api_base_url": "https://api.openai.com/v1",
+        "model_name": "gpt-4o",
+        "provider": "openai",
+    }
+
+    assert ai.generate_timeframe_summary(stats_summary="stats", **common) == "ok"
+    assert ai.generate_wrapped_summary(
+        github_username="user",
+        focus_hours=1.0,
+        total_sessions=1,
+        additions=10,
+        deletions=2,
+        merged_prs=0,
+        branch_names_list="main",
+        cleaned_commits_block="- test",
+        project_distributions_percentages="TermStory 100%",
+        top_editor_buffers_with_durations="termstory/ai.py 1h",
+        amends_count=0,
+        midnight_percentage=0.0,
+        success_rate=100.0,
+        failed_builds=0,
+        passed_builds=1,
+        tool_keywords_list="pytest",
+        redacted_secrets_count=0,
+        **common,
+    ) == "ok"
+    assert ai.translate_git_anger(
+        [{"hash": "abc1234", "message": "fix: test", "preceding_errors": ["pytest"]}],
+        **common,
+    ) == "ok"
+    assert ai.predict_bugs_from_sessions(
+        [
+            {
+                "session_id": 1,
+                "project_name": "TermStory",
+                "hour": 1,
+                "failed_commands": ["pytest"],
+                "commands": ["pytest"],
+                "commits": ["fix: test"],
+            }
+        ],
+        **common,
+    ) == "ok"
+    assert ai.generate_rpg_bio("Test Mage", ["pytest"], **common) == "ok"
+
+    assert captured == [1234, 1234, 1234, 1234, 1234]
 
 
 def test_daily_chronicle_session_truncation():

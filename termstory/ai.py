@@ -17,6 +17,7 @@ _circuit_breaker_failures = 0
 _circuit_breaker_open_until = 0.0
 
 # Module-level defaults — used when config is unavailable.
+DEFAULT_MAX_TOKENS: int = 1500
 _DEFAULT_MAX_FAILURES: int = 3
 _DEFAULT_COOLDOWN_SECONDS: float = 60.0
 
@@ -166,7 +167,7 @@ def _send_llm_request(
     api_base_url: str,
     model_name: str,
     provider: str,
-    max_tokens: int = 1500,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
     timeout: float = 30.0
 ) -> Optional[str]:
     """Shared helper to construct and send the OpenAI-compatible chat completion request."""
@@ -526,7 +527,7 @@ def generate_timeframe_summary(
     effective_timeout = timeout if timeout is not None else config.get("request_timeout_seconds", 30.0)
     return _send_llm_request(
         prompt, api_key, api_base_url, model_name, provider,
-        max_tokens=1500, timeout=effective_timeout
+        max_tokens=DEFAULT_MAX_TOKENS, timeout=effective_timeout
     )
 
 
@@ -854,7 +855,7 @@ def generate_wrapped_summary(
     effective_timeout = timeout if timeout is not None else config.get("request_timeout_seconds", 30.0)
     return _send_llm_request(
         prompt, api_key, api_base_url, model_name, provider,
-        max_tokens=1500, timeout=effective_timeout
+        max_tokens=DEFAULT_MAX_TOKENS, timeout=effective_timeout
     )
 
 
@@ -901,7 +902,7 @@ def translate_git_anger(
     effective_timeout = timeout if timeout is not None else config.get("request_timeout_seconds", 30.0)
     return _send_llm_request(
         prompt, api_key, api_base_url, model_name, provider,
-        max_tokens=1500, timeout=effective_timeout
+        max_tokens=DEFAULT_MAX_TOKENS, timeout=effective_timeout
     )
 
 
@@ -952,7 +953,7 @@ def predict_bugs_from_sessions(
     effective_timeout = timeout if timeout is not None else config.get("request_timeout_seconds", 30.0)
     return _send_llm_request(
         prompt, api_key, api_base_url, model_name, provider,
-        max_tokens=1500, timeout=effective_timeout
+        max_tokens=DEFAULT_MAX_TOKENS, timeout=effective_timeout
     )
 
 
@@ -993,7 +994,7 @@ def generate_rpg_bio(
     effective_timeout = timeout if timeout is not None else config.get("request_timeout_seconds", 30.0)
     return _send_llm_request(
         prompt, api_key, api_base_url, model_name, provider,
-        max_tokens=1500, timeout=effective_timeout
+        max_tokens=DEFAULT_MAX_TOKENS, timeout=effective_timeout
     )
 
 
