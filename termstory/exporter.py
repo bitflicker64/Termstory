@@ -9,21 +9,27 @@ from dateutil import parser as date_parser
 from termstory.database import Database
 from termstory.models import Session, Command, Project
 
-_FAR_FUTURE_TS: int = sys.maxsize
+_FAR_FUTURE_TS: int = 9_999_999_999 # ~year 2286, safely beyond any real session timestamp
 
 def _get_timestamp(dt: datetime) -> int:
     """Safely get Unix timestamp from datetime object on all platforms, including Windows."""
     if dt.tzinfo is None:
-        local_offset = datetime.now().astimezone().utcoffset()
-        dt = dt.replace(tzinfo=timezone(local_offset))
+        try:
+            dt = dt.astimezone()
+        except OSError:
+            local_offset = datetime.now().astimezone().utcoffset()
+            dt = dt.replace(tzinfo=timezone(local_offset))
     epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
     return int((dt - epoch).total_seconds())
 
 def _safe_fromtimestamp(ts: float) -> datetime:
     """Safely convert a Unix timestamp to a local naive datetime on all platforms, including Windows."""
     utc_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-    local_offset = datetime.now().astimezone().utcoffset()
-    local_dt = utc_dt.astimezone(timezone(local_offset))
+    try:
+        local_dt = utc_dt.astimezone()
+    except OSError:
+        local_offset = datetime.now().astimezone().utcoffset()
+        local_dt = utc_dt.astimezone(timezone(local_offset))
     return local_dt.replace(tzinfo=None)
 
 def parse_since(since_str: Optional[str]) -> Optional[int]:
