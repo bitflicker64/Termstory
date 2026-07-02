@@ -1,9 +1,11 @@
 import json
 import socket
+import threading
 import time as _time_module
 import urllib.error
 import urllib.request
 
+from termstory import ai
 from termstory.ai import generate_ai_summary, generate_timeframe_summary
 
 class MockResponse:
@@ -111,6 +113,43 @@ def test_ai_failure_exception(monkeypatch):
         "groq"
     )
     assert res is None
+
+
+def test_last_ai_error_is_shared_across_request_threads(monkeypatch):
+    """A worker failure from a background request thread is visible to callers."""
+    fake_now = [1000.0]
+
+    def mock_urlopen(req, timeout=None):
+        raise urllib.error.URLError("Connection refused")
+
+    def fake_sleep(seconds):
+        fake_now[0] += seconds
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+    monkeypatch.setattr(ai.time, "time", lambda: fake_now[0])
+    monkeypatch.setattr(ai.time, "sleep", fake_sleep)
+
+    ai.clear_last_ai_error()
+    result_box = []
+
+    def run_request():
+        result_box.append(
+            ai._send_llm_request(
+                "prompt",
+                "test-key",
+                "https://api.openai.com/v1",
+                "gpt-4o",
+                "openai",
+            )
+        )
+
+    request_thread = threading.Thread(target=run_request)
+    request_thread.start()
+    request_thread.join()
+
+    assert result_box == [None]
+    assert ai.get_last_ai_error() == "<urlopen error Connection refused>"
+    ai.clear_last_ai_error()
 
 
 def test_ai_url_normalization(monkeypatch):

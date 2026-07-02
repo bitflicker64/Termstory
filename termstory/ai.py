@@ -9,7 +9,8 @@ from typing import List, Optional, Dict
 from termstory.sanitizer import sanitize_session_commands, redact_command
 
 logger = logging.getLogger(__name__)
-_local_ai_state = threading.local()
+_last_ai_error_lock = threading.Lock()
+_last_ai_error: Optional[str] = None
 
 # Circuit Breaker Configuration
 _circuit_breaker_lock = threading.Lock()
@@ -92,14 +93,19 @@ def reload_circuit_breaker_config(
         _cb_max_failures = max(1, max_failures) if max_failures is not None else None
         _cb_cooldown_seconds = max(1.0, cooldown_seconds) if cooldown_seconds is not None else None
 
+def _set_last_ai_error(error: Optional[str]) -> None:
+    global _last_ai_error
+    with _last_ai_error_lock:
+        _last_ai_error = error
+
 def get_last_ai_error() -> Optional[str]:
-    """Retrieve the last AI call error message, if any, for the current thread."""
-    return getattr(_local_ai_state, "last_error", None)
+    """Retrieve the most recent AI call error message, if any."""
+    with _last_ai_error_lock:
+        return _last_ai_error
 
 def clear_last_ai_error() -> None:
-    """Clear the last AI call error message for the current thread."""
-    if hasattr(_local_ai_state, "last_error"):
-        delattr(_local_ai_state, "last_error")
+    """Clear the most recent AI call error message."""
+    _set_last_ai_error(None)
 
 def _get_project_context_from_db(project_name: str) -> Optional[str]:
     conn = None
@@ -170,7 +176,7 @@ def _send_llm_request(
     timeout: float = 30.0
 ) -> Optional[str]:
     """Shared helper to construct and send the OpenAI-compatible chat completion request."""
-    _local_ai_state.last_error = None
+    clear_last_ai_error()
 
     if _is_current_worker_cancelled():
         return None
@@ -181,7 +187,7 @@ def _send_llm_request(
     global _circuit_breaker_failures, _circuit_breaker_open_until
     with _circuit_breaker_lock:
         if time.time() < _circuit_breaker_open_until:
-            _local_ai_state.last_error = "Circuit breaker open: Too many LLM timeouts. Requests temporarily disabled."
+            _set_last_ai_error("Circuit breaker open: Too many LLM timeouts. Requests temporarily disabled.")
             return None
 
     headers = {
@@ -193,7 +199,7 @@ def _send_llm_request(
         
     # OpenAI compatibility endpoint (normalize trailing slash)
     if not api_base_url or not isinstance(api_base_url, str):
-        _local_ai_state.last_error = "API Base URL is not configured or invalid."
+        _set_last_ai_error("API Base URL is not configured or invalid.")
         return None
     endpoint = api_base_url.strip().rstrip('/')
     if not endpoint.endswith('/chat/completions'):
@@ -271,7 +277,7 @@ def _send_llm_request(
                 _circuit_breaker_failures += 1
                 if _circuit_breaker_failures >= max_failures:
                     _circuit_breaker_open_until = time.time() + cooldown_seconds
-            _local_ai_state.last_error = f"Strict timeout exceeded ({timeout}s). LLM process hung."
+            _set_last_ai_error(f"Strict timeout exceeded ({timeout}s). LLM process hung.")
             continue
             
         if error_box:
@@ -303,7 +309,7 @@ def _send_llm_request(
                         reason_str = " ".join(str(e.reason).split())
                         if len(reason_str) > 200:
                             reason_str = reason_str[:200] + "..."
-                        _local_ai_state.last_error = f"HTTP Error {e.code}: {reason_str}"
+                        _set_last_ai_error(f"HTTP Error {e.code}: {reason_str}")
                     else:
                         try:
                             err_json = json.loads(raw_body)
@@ -312,28 +318,28 @@ def _send_llm_request(
                                 msg_str = " ".join(str(msg).split())
                                 if len(msg_str) > 200:
                                     msg_str = msg_str[:200] + "..."
-                                _local_ai_state.last_error = f"HTTP Error {e.code}: {msg_str}"
+                                _set_last_ai_error(f"HTTP Error {e.code}: {msg_str}")
                             else:
                                 body_str = " ".join(raw_body.split())
                                 if len(body_str) > 200:
                                     body_str = body_str[:200] + "..."
-                                _local_ai_state.last_error = f"HTTP Error {e.code}: {body_str}"
+                                _set_last_ai_error(f"HTTP Error {e.code}: {body_str}")
                         except Exception:
                             body_str = " ".join(raw_body.split())
                             if len(body_str) > 200:
                                 body_str = body_str[:200] + "..."
-                            _local_ai_state.last_error = f"HTTP Error {e.code}: {body_str}"
+                            _set_last_ai_error(f"HTTP Error {e.code}: {body_str}")
                 except Exception:
                     reason_str = " ".join(str(e.reason).split())
                     if len(reason_str) > 200:
                         reason_str = reason_str[:200] + "..."
-                    _local_ai_state.last_error = f"HTTP Error {e.code}: {reason_str}"
+                    _set_last_ai_error(f"HTTP Error {e.code}: {reason_str}")
             else:
                 # Gracefully fail and capture normalized exception
                 msg = " ".join(str(e).split())
                 if len(msg) > 200:
                     msg = msg[:200] + "..."
-                _local_ai_state.last_error = msg
+                _set_last_ai_error(msg)
             continue
 
         # Success
