@@ -403,13 +403,13 @@ def test_listdir_timeout_caching_custom_ttl(monkeypatch):
     """Custom nfs_timeout_cache_ttl from config is respected."""
     import time
     import pytest
-    import termstory.config as config_module
+    import termstory.project as project_module
     from termstory.project import _listdir_with_timeout, _timed_out_paths
 
     _timed_out_paths.clear()
 
-    # Patch load_config to return a short TTL of 1 second
-    monkeypatch.setattr(config_module, "load_config", lambda: {"nfs_timeout_cache_ttl": 1})
+    # Patch the module-level constant directly to 1 second
+    monkeypatch.setattr(project_module, "_NFS_TIMEOUT_CACHE_TTL", 1)
 
     def mock_listdir_hang(path):
         time.sleep(2.0)
