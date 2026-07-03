@@ -101,10 +101,16 @@ _timeout_lock = threading.Lock()
 
 def _listdir_with_timeout(path: str, timeout: float = 0.5) -> List[str]:
     """Execute os.listdir in a daemon thread to enforce a timeout (e.g. on hung NFS mounts)"""
+    from termstory.config import load_config
+    try:
+        ttl = load_config().get("nfs_timeout_cache_ttl", 60)
+    except Exception:
+        ttl = 60
+
     now = time.time()
     with _timeout_lock:
         if path in _timed_out_paths:
-            if now - _timed_out_paths[path] < 60:
+            if now - _timed_out_paths[path] < ttl:
                 raise TimeoutError(f"os.listdir recently timed out on path (cached): {path}")
             else:
                 del _timed_out_paths[path]

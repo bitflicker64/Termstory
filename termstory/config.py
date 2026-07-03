@@ -173,7 +173,8 @@ def load_config() -> dict:
         ],
         "reminder_poll_interval": 300,
         "clustering_threshold": 0.6,
-        "default_branch_names": ["main"]
+        "default_branch_names": ["main"],
+        "nfs_timeout_cache_ttl": 60,
     }
     
     config = {}
