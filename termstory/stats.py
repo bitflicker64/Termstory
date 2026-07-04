@@ -1,3 +1,4 @@
+import logging
 import os
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -5,6 +6,8 @@ from typing import Dict, Any, Optional
 
 from termstory.database import Database
 from termstory.date_utils import get_current_time
+
+logger = logging.getLogger(__name__)
 
 def daily_activity_heatmap(db: Database, days_limit: int = 30, colored: bool = True) -> str:
     """Generate a GitHub-like activity heatmap from the database for the last N days."""
@@ -193,7 +196,7 @@ def detect_project_language_from_files(path: str) -> Optional[str]:
                 _LANG_CACHE[path] = lang
                 return lang
         except Exception:
-            pass
+            logger.debug("Failed to check for config file %s in %s", filename, path, exc_info=True)
             
     try:
         for f in os.listdir(path):
@@ -204,7 +207,7 @@ def detect_project_language_from_files(path: str) -> Optional[str]:
                 _LANG_CACHE[path] = "C/C++"
                 return "C/C++"
     except Exception:
-        pass
+        logger.debug("Failed to list directory contents for language detection: %s", path, exc_info=True)
         
     _LANG_CACHE[path] = None
     return None
