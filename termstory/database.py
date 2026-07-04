@@ -284,7 +284,8 @@ class Database:
                 conn.commit()
         except (sqlite3.Error, RuntimeError, ValueError):
             logger.exception("Weekly VACUUM check failed during database initialization")
-        conn.close()
+        finally:
+            conn.close()
 
     def _migrate_projects_unique_path(self, cursor) -> None:
         """One-time migration: change projects table to have UNIQUE on path instead of name"""
