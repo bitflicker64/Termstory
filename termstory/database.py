@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 import json
 from datetime import datetime
@@ -5,6 +6,8 @@ from typing import List, Dict, Optional
 from termstory.models import Command, Session, Project
 from termstory.config import get_config_value, load_config
 import time
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_rollback_and_reraise(conn, original_exception):
@@ -32,7 +35,7 @@ def _safe_rollback_and_reraise(conn, original_exception):
     try:
         conn.rollback()
     except Exception:
-        pass
+        logger.debug("Rollback failed while handling a database error", exc_info=True)
     raise original_exception.with_traceback(tb)
 
 
@@ -279,8 +282,8 @@ class Database:
                     VALUES ('last_vacuum', 'system', 'vacuum', ?)
                 """, (current_time,))
                 conn.commit()
-        except Exception:
-            pass
+        except (sqlite3.Error, RuntimeError, ValueError):
+            logger.exception("Weekly VACUUM check failed during database initialization")
         conn.close()
 
     def _migrate_projects_unique_path(self, cursor) -> None:
@@ -656,7 +659,8 @@ class Database:
             """, (int(datetime.now().timestamp()),))
 
             conn.commit()
-        except Exception as e:
+        except (sqlite3.Error, RuntimeError, ValueError) as e:
+            logger.exception("Database write failed while saving ingestion metadata")
             _safe_rollback_and_reraise(conn, e)
         finally:
             conn.close()
@@ -891,7 +895,8 @@ class Database:
                             VALUES (?, 'session_summary', ?, ?, ?)
                         """, (ai_summary, str(session_id), project_id, start_time))
             conn.commit()
-        except Exception as e:
+        except (sqlite3.Error, RuntimeError, ValueError) as e:
+            logger.exception("Database write failed while saving session AI summary")
             _safe_rollback_and_reraise(conn, e)
         finally:
             conn.close()
@@ -906,7 +911,8 @@ class Database:
                 UPDATE sessions SET tags = ? WHERE id = ?
             """, (tags, session_id))
             conn.commit()
-        except Exception as e:
+        except (sqlite3.Error, RuntimeError, ValueError) as e:
+            logger.exception("Database write failed while saving session tags")
             _safe_rollback_and_reraise(conn, e)
         finally:
             conn.close()
@@ -922,7 +928,8 @@ class Database:
                 VALUES (?, ?, ?, ?)
             """, (session_id, source, json.dumps(payload), captured_at))
             conn.commit()
-        except Exception as e:
+        except (sqlite3.Error, RuntimeError, ValueError) as e:
+            logger.exception("Database write failed while saving MCP snapshot")
             _safe_rollback_and_reraise(conn, e)
         finally:
             conn.close()
@@ -940,7 +947,13 @@ class Database:
             for row in rows:
                 try:
                     payload_dict = json.loads(row[1])
-                except Exception:
+                except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                    logger.warning(
+                        "Failed to parse MCP snapshot payload for session %s: %s",
+                        session_id,
+                        exc,
+                        exc_info=True,
+                    )
                     payload_dict = row[1]
                 results.append({
                     "source": row[0],
@@ -999,7 +1012,8 @@ class Database:
                 VALUES (?, ?, ?)
             """, (timeframe_id, type_str, summary))
             conn.commit()
-        except Exception as e:
+        except (sqlite3.Error, RuntimeError, ValueError) as e:
+            logger.exception("Database write failed while caching macro summary")
             _safe_rollback_and_reraise(conn, e)
         finally:
             conn.close()
@@ -1130,7 +1144,8 @@ class Database:
                     """, (c["cleaned_message"], c["hash"], project_id, c["timestamp"]))
             
             conn.commit()
-        except Exception as e:
+        except (sqlite3.Error, RuntimeError, ValueError) as e:
+            logger.exception("Database write failed while saving commits")
             _safe_rollback_and_reraise(conn, e)
         finally:
             conn.close()
@@ -1300,7 +1315,8 @@ class Database:
         try:
             cursor.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_index';")
             return cursor.fetchone() is not None
-        except Exception:
+        except sqlite3.Error as exc:
+            logger.debug("Unable to determine whether FTS is available", exc_info=exc)
             return False
 
     def _migrate_fts5(self, cursor) -> None:
