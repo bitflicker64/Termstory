@@ -275,14 +275,22 @@ class Database:
             cursor.execute("SELECT created_at FROM macro_summaries WHERE timeframe_id = 'last_vacuum'")
             row = cursor.fetchone()
             current_time = int(datetime.utcnow().timestamp())
-            if not row or (current_time - row[0]) >= 7 * 24 * 3600:
+            created_at = row[0] if row else None
+            if created_at is None or not isinstance(created_at, (int, float)):
                 cursor.execute("VACUUM;")
                 cursor.execute("""
                     INSERT OR REPLACE INTO macro_summaries (timeframe_id, type, summary, created_at)
                     VALUES ('last_vacuum', 'system', 'vacuum', ?)
                 """, (current_time,))
                 conn.commit()
-        except (sqlite3.Error, RuntimeError, ValueError):
+            elif (current_time - created_at) >= 7 * 24 * 3600:
+                cursor.execute("VACUUM;")
+                cursor.execute("""
+                    INSERT OR REPLACE INTO macro_summaries (timeframe_id, type, summary, created_at)
+                    VALUES ('last_vacuum', 'system', 'vacuum', ?)
+                """, (current_time,))
+                conn.commit()
+        except (sqlite3.Error, RuntimeError, ValueError, TypeError):
             logger.exception("Weekly VACUUM check failed during database initialization")
         finally:
             conn.close()
