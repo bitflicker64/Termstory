@@ -2,6 +2,7 @@ import os
 import tempfile
 import json
 import sqlite3
+import subprocess
 from unittest.mock import patch, MagicMock
 import pytest
 
@@ -156,3 +157,28 @@ def test_capture_mcp_snapshot_deleted_cwd():
         snapshot = capture_mcp_snapshot()
         assert snapshot["cwd"] is None
         assert not snapshot["git"]["is_repo"]
+
+
+def test_capture_git_status_subprocess_timeout():
+    with patch(
+        "termstory.mcp_snapshot.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd="git", timeout=5),
+    ):
+        status = capture_git_status("/some/path")
+        assert not status["is_repo"]
+        assert status["branch"] is None
+        assert len(status["uncommitted_files"]) == 0
+
+
+@patch("termstory.mcp_snapshot.os.getcwd", return_value="/Users/developer/termstory")
+@patch("termstory.mcp_snapshot.capture_ide_state", return_value={"ide_name": "VS Code", "env_vars": {}})
+@patch("termstory.mcp_snapshot.capture_git_status", return_value={"is_repo": True, "branch": "main", "uncommitted_files": []})
+def test_capture_and_store_mcp_snapshot_db_error_does_not_raise(mock_git, mock_ide, mock_cwd):
+    db = MagicMock()
+    db.get_latest_session_id.return_value = 1
+    db.get_mcp_snapshots.return_value = []
+    db.save_mcp_snapshot.side_effect = sqlite3.OperationalError("database is locked")
+
+    # Must swallow the db failure and return normally. A snapshot
+    # failure must never disrupt the core ingestion process.
+    capture_and_store_mcp_snapshot(db)

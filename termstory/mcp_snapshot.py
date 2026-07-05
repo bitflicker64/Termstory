@@ -1,7 +1,11 @@
+import logging
 import os
+import sqlite3
 import subprocess
 import time
 from typing import Dict, Any, List
+
+logger = logging.getLogger(__name__)
 
 def capture_ide_state() -> Dict[str, Any]:
     """Capture active IDE state from environment variables"""
@@ -108,8 +112,11 @@ def capture_git_status(cwd: str) -> Dict[str, Any]:
                     uncommitted.append(line.strip())
             result["uncommitted_files"] = uncommitted
             
-    except Exception:
-        pass
+    except (subprocess.TimeoutExpired, OSError):
+        logger.exception(
+            "capture_git_status: git command failed or timed out for %r; returning partial result.",
+            cwd,
+        )
         
     return result
 
@@ -117,7 +124,10 @@ def capture_mcp_snapshot() -> Dict[str, Any]:
     """Capture a snapshot of the IDE state, git status, and active terminal directories"""
     try:
         cwd = os.getcwd()
-    except Exception:
+    except OSError:
+        logger.exception(
+            "capture_mcp_snapshot: failed to resolve current working directory; cwd will be None."
+        )
         cwd = None
     ide_info = capture_ide_state()
     git_info = capture_git_status(cwd)
@@ -149,6 +159,9 @@ def capture_and_store_mcp_snapshot(db: Any) -> None:
             payload=snapshot,
             captured_at=int(time.time())
         )
-    except Exception:
-        # Fail silently to not disrupt the core ingestion process
-        pass
+    except (sqlite3.DatabaseError, OSError, RuntimeError):
+        # Log but do not re-raise: an MCP snapshot failure must not
+        # disrupt the core ingestion process.
+        logger.exception(
+            "capture_and_store_mcp_snapshot: failed to capture or store MCP snapshot; continuing without it."
+        )
