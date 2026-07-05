@@ -1325,9 +1325,9 @@ class Database:
         try:
             cursor.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_index';")
             return cursor.fetchone() is not None
-        except sqlite3.Error as exc:
+        except sqlite3.Error:
             logger.debug("Unable to determine whether FTS is available", exc_info=True)
-            logger.debug("Unable to determine whether FTS is available", exc_info=True)
+            return False
 
     def _migrate_fts5(self, cursor) -> None:
         """Create and populate FTS5 search_index virtual table if supported"""
