@@ -108,7 +108,7 @@ def capture_git_status(cwd: str) -> Dict[str, Any]:
                     uncommitted.append(line.strip())
             result["uncommitted_files"] = uncommitted
             
-    except Exception:
+    except OSError:
         pass
         
     return result
@@ -117,7 +117,7 @@ def capture_mcp_snapshot() -> Dict[str, Any]:
     """Capture a snapshot of the IDE state, git status, and active terminal directories"""
     try:
         cwd = os.getcwd()
-    except Exception:
+    except OSError:
         cwd = None
     ide_info = capture_ide_state()
     git_info = capture_git_status(cwd)
@@ -149,6 +149,6 @@ def capture_and_store_mcp_snapshot(db: Any) -> None:
             payload=snapshot,
             captured_at=int(time.time())
         )
-    except Exception:
+    except (AttributeError, TypeError, KeyError):
         # Fail silently to not disrupt the core ingestion process
         pass
