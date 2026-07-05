@@ -159,9 +159,13 @@ def capture_and_store_mcp_snapshot(db: Any) -> None:
             payload=snapshot,
             captured_at=int(time.time())
         )
-    except (sqlite3.DatabaseError, OSError, RuntimeError):
+    except (sqlite3.DatabaseError, OSError, RuntimeError, TypeError, ValueError):
         # Log but do not re-raise: an MCP snapshot failure must not
-        # disrupt the core ingestion process.
+        # disrupt the core ingestion process. TypeError/ValueError are
+        # included because Database.save_mcp_snapshot's json.dumps(payload)
+        # call re-raises those unchanged on a non-serializable or circular
+        # payload (via _safe_rollback_and_reraise), on top of the sqlite3/
+        # OSError/RuntimeError failure modes from the db layer itself.
         logger.exception(
             "capture_and_store_mcp_snapshot: failed to capture or store MCP snapshot; continuing without it."
         )
