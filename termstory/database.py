@@ -1325,7 +1325,7 @@ class Database:
             cursor.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_index';")
             return cursor.fetchone() is not None
         except sqlite3.Error as exc:
-            logger.debug("Unable to determine whether FTS is available", exc_info=exc)
+            logger.debug("Unable to determine whether FTS is available", exc_info=True)
             logger.debug("Unable to determine whether FTS is available", exc_info=True)
 
     def _migrate_fts5(self, cursor) -> None:
