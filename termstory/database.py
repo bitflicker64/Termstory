@@ -1326,7 +1326,7 @@ class Database:
             return cursor.fetchone() is not None
         except sqlite3.Error as exc:
             logger.debug("Unable to determine whether FTS is available", exc_info=exc)
-            return False
+            logger.debug("Unable to determine whether FTS is available", exc_info=True)
 
     def _migrate_fts5(self, cursor) -> None:
         """Create and populate FTS5 search_index virtual table if supported"""
