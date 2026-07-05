@@ -278,7 +278,7 @@ class Database:
             created_at = row[0] if row else None
             if created_at is None or not isinstance(created_at, (int, float)):
                 cursor.execute("VACUUM;")
-                cursor.execute("""
+            if not isinstance(created_at, (int, float)):
                     INSERT OR REPLACE INTO macro_summaries (timeframe_id, type, summary, created_at)
                     VALUES ('last_vacuum', 'system', 'vacuum', ?)
                 """, (current_time,))
