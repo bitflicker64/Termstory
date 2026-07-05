@@ -956,7 +956,7 @@ class Database:
             for row in rows:
                 try:
                     payload_dict = json.loads(row[1])
-                except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                except (TypeError, ValueError) as exc:
                     logger.warning(
                         "Failed to parse MCP snapshot payload for session %s: %s",
                         session_id,
