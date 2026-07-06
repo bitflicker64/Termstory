@@ -118,6 +118,8 @@ def hybrid_search(
 ) -> List[Dict]:
     """
     Performs a hybrid search (BM25 + Cosine Similarity) over terminal sessions.
+    Uses FTS-backed candidate retrieval first, but falls back to a bounded non-FTS
+    candidate set when no FTS matches are found so semantic reranking still works.
     If sentence-transformers is not installed, raises an ImportError.
     """
     if not SENTENCE_TRANSFORMERS_AVAILABLE:
@@ -138,6 +140,17 @@ def hybrid_search(
         fts=True,
         limit=top_k
     )
+
+    if not candidate_sessions and query:
+        candidate_sessions = advanced_search(
+            db,
+            query=None,
+            project_filter=project_filter,
+            since_ts=since_ts,
+            until_ts=until_ts,
+            tag_filters=tag_filters,
+            limit=top_k
+        )
     
     if not candidate_sessions or not query:
         return candidate_sessions
