@@ -67,6 +67,9 @@ def test_get_web_data_logs_daily_activity_query_errors(monkeypatch, caplog):
 
         def get_connection(self):
             self.connection_count += 1
+            # Connection #1: sessions query (section 3)
+            # Connection #2: AI highlights query (section 4, len(ai_sessions) < 15)
+            # Connection #3: heatmap query (section 5) — the one we want to fail
             return FakeConnection(fail=self.connection_count == 3)
 
         def get_sessions_by_ids(self, session_ids):
