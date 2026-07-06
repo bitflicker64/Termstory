@@ -92,6 +92,7 @@ def test_get_web_data_logs_daily_activity_query_errors(monkeypatch, caplog):
     assert len(data["daily_activity"]) == 90
     assert any("daily activity heatmap" in record.message for record in caplog.records)
 
+
 def test_get_web_data_populated_db(tmp_path):
     db_file = tmp_path / "populated.db"
     db = Database(str(db_file))
