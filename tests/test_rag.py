@@ -123,20 +123,18 @@ def test_hybrid_search_success_with_mocked_dependency(tmp_path, monkeypatch):
     
     # Searching for "docker"
     results_docker = hybrid_search(db, "docker", alpha=0.5)
-    assert len(results_docker) == 2
+    assert len(results_docker) == 1
     # The first one should be Docker Registry since it has "docker" in project name, commands, summary
     assert results_docker[0]["session_id"] == 1
     assert results_docker[0]["project_name"] == "Docker Registry"
     assert "docker ps -a" in results_docker[0]["matching_commands"]
-    assert results_docker[0]["hybrid_score"] > results_docker[1]["hybrid_score"]
 
     # Searching for "pytest"
     results_pytest = hybrid_search(db, "pytest", alpha=0.5)
-    assert len(results_pytest) == 2
+    assert len(results_pytest) == 1
     assert results_pytest[0]["session_id"] == 2
     assert results_pytest[0]["project_name"] == "Test Runner"
     assert "pytest tests/" in results_pytest[0]["matching_commands"]
-    assert results_pytest[0]["hybrid_score"] > results_pytest[1]["hybrid_score"]
 
 
 def test_cli_search_semantic_success(tmp_path, monkeypatch):

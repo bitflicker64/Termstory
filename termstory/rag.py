@@ -113,7 +113,8 @@ def hybrid_search(
     until_ts: Optional[int] = None,
     tag_filters: Optional[List[str]] = None,
     alpha: float = 0.5,
-    model_name: str = "all-MiniLM-L6-v2"
+    model_name: str = "all-MiniLM-L6-v2",
+    top_k: Optional[int] = 20
 ) -> List[Dict]:
     """
     Performs a hybrid search (BM25 + Cosine Similarity) over terminal sessions.
@@ -125,15 +126,17 @@ def hybrid_search(
             "Please install it using: pip install sentence-transformers"
         )
         
-    # Fetch all candidate sessions matching metadata filters (but without the query text filter)
+    # Retrieve a bounded candidate set using the text-aware search pipeline before reranking.
     from termstory.search import advanced_search
     candidate_sessions = advanced_search(
         db,
-        query=None,
+        query=query,
         project_filter=project_filter,
         since_ts=since_ts,
         until_ts=until_ts,
-        tag_filters=tag_filters
+        tag_filters=tag_filters,
+        fts=True,
+        limit=top_k
     )
     
     if not candidate_sessions or not query:
