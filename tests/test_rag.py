@@ -137,6 +137,54 @@ def test_hybrid_search_success_with_mocked_dependency(tmp_path, monkeypatch):
     assert "pytest tests/" in results_pytest[0]["matching_commands"]
 
 
+def test_hybrid_search_falls_back_when_fts_has_no_matches(tmp_path, monkeypatch):
+    monkeypatch.setattr("termstory.rag.SENTENCE_TRANSFORMERS_AVAILABLE", True)
+    monkeypatch.setattr("termstory.rag.SentenceTransformer", MockSentenceTransformer, raising=False)
+    monkeypatch.setattr("termstory.rag.np", MockNp)
+
+    db_file = tmp_path / "test_rag_fallback.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    now = 1780000000
+    p1 = Project(id=1, name="Docker Registry", path="~/projects/docker", first_seen=now, last_seen=now, session_count=1, total_time=100)
+    cmd1 = Command(timestamp=now, command="docker ps -a", session_id=1, project_id=1)
+    s1 = Session(id=1, start_time=now, end_time=now + 100, duration_seconds=100, project_id=1, commands=[cmd1])
+    s1.ai_summary = "Running docker daemon container checks"
+    db.save_data([p1], [s1], [cmd1])
+
+    calls = []
+
+    def fake_advanced_search(db_obj, query=None, **kwargs):
+        calls.append(query)
+        if query == "containerization":
+            return []
+        return [{
+            "session_id": 1,
+            "start_time": now,
+            "end_time": now + 100,
+            "duration_seconds": 100,
+            "project_id": 1,
+            "project_name": "Docker Registry",
+            "project_path": "~/projects/docker",
+            "ai_summary": "Running docker daemon container checks",
+            "all_commands": ["docker ps -a"],
+            "matching_commands": [],
+            "all_commits": [],
+            "matching_commits": []
+        }]
+
+    monkeypatch.setattr("termstory.search.advanced_search", fake_advanced_search)
+
+    from termstory.rag import hybrid_search
+
+    results = hybrid_search(db, "containerization", alpha=0.5)
+
+    assert len(results) == 1
+    assert results[0]["session_id"] == 1
+    assert calls[0] == "containerization"
+    assert calls[1] is None
+    
 def test_cli_search_semantic_success(tmp_path, monkeypatch):
     from typer.testing import CliRunner
     from termstory.cli import app
