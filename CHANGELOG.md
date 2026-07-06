@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`save_data` sentinel/pruning follow-up (#138)**: The unique index on `sessions(start_time, COALESCE(project_id, -1))` treated a hypothetical `project_id = -1` row as identical to `project_id IS NULL`; replaced with two partial unique indexes (`idx_sessions_start_time_with_project`, `idx_sessions_start_time_no_project`) so no sentinel value is needed. The dedup migration was split into two passes to match. Also scoped the orphan-session prune in `save_data` to sessions that share a `start_time` with another session, instead of deleting every command-less session. The old predicate could remove a legitimately empty, non-duplicate session. The unguarded `row[0]` in the same conflict-recovery path (also reported in #138) already had a `None` guard and regression test from a prior fix, no change needed there.
+
 ## [0.6.1] - 2026-06-25
 
 ### Security

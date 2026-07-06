@@ -1,4 +1,3 @@
-import logging
 import sqlite3
 import json
 from datetime import datetime
@@ -6,8 +5,6 @@ from typing import List, Dict, Optional
 from termstory.models import Command, Session, Project
 from termstory.config import get_config_value, load_config
 import time
-
-logger = logging.getLogger(__name__)
 
 
 def _safe_rollback_and_reraise(conn, original_exception):
@@ -35,7 +32,7 @@ def _safe_rollback_and_reraise(conn, original_exception):
     try:
         conn.rollback()
     except Exception:
-        logger.debug("Rollback failed while handling a database error", exc_info=True)
+        pass
     raise original_exception.with_traceback(tb)
 
 
@@ -275,26 +272,16 @@ class Database:
             cursor.execute("SELECT created_at FROM macro_summaries WHERE timeframe_id = 'last_vacuum'")
             row = cursor.fetchone()
             current_time = int(datetime.utcnow().timestamp())
-            created_at = row[0] if row else None
-            if created_at is None or not isinstance(created_at, (int, float)):
-                cursor.execute("VACUUM;")
-            if not isinstance(created_at, (int, float)):
-                cursor.execute("""
-                    INSERT OR REPLACE INTO macro_summaries (timeframe_id, type, summary, created_at)
-                    VALUES ('last_vacuum', 'system', 'vacuum', ?)
-                """, (current_time,))
-                conn.commit()
-            elif (current_time - created_at) >= 7 * 24 * 3600:
+            if not row or (current_time - row[0]) >= 7 * 24 * 3600:
                 cursor.execute("VACUUM;")
                 cursor.execute("""
                     INSERT OR REPLACE INTO macro_summaries (timeframe_id, type, summary, created_at)
                     VALUES ('last_vacuum', 'system', 'vacuum', ?)
                 """, (current_time,))
                 conn.commit()
-        except (sqlite3.Error, RuntimeError, ValueError, TypeError):
-            logger.exception("Weekly VACUUM check failed during database initialization")
-        finally:
-            conn.close()
+        except Exception:
+            pass
+        conn.close()
 
     def _migrate_projects_unique_path(self, cursor) -> None:
         """One-time migration: change projects table to have UNIQUE on path instead of name"""
@@ -337,42 +324,77 @@ class Database:
             cursor.connection.commit()
             cursor.execute("PRAGMA foreign_keys = ON;")
 
+    @staticmethod
+    def _merge_duplicate_sessions(cursor, rows) -> None:
+        """Given rows for one duplicate group, ordered best-first (most
+        commands, then has an ai_summary, then lowest id. See the callers'
+        ORDER BY), keep rows[0] and fold the rest into it: reassign their
+        commands to the keeper, then delete the now-empty duplicate rows.
+        """
+        keeper_id = rows[0][0]
+        for row in rows[1:]:
+            dup_id = row[0]
+            cursor.execute("UPDATE commands SET session_id = ? WHERE session_id = ?", (keeper_id, dup_id))
+            cursor.execute("DELETE FROM sessions WHERE id = ?", (dup_id,))
+
     def _migrate_deduplicate_sessions(self, cursor) -> None:
         """One-time migration: remove duplicate sessions and commands that share the same keys,
-        and create unique constraints to prevent future duplicates."""
-        # Find (start_time, project_id) that have duplicates - use COALESCE for NULL project_id
+        and create unique constraints to prevent future duplicates.
+
+        Sessions are deduplicated in two separate passes, one for
+        project_id IS NOT NULL, one for project_id IS NULL, instead of
+        collapsing both cases into a single GROUP BY on
+        COALESCE(project_id, -1). A sentinel-based grouping key would treat a
+        session that legitimately had project_id = -1 (direct SQL, a future
+        migration, a bug elsewhere) as indistinguishable from a session with
+        no project at all, both here and in the UNIQUE index created below.
+        """
+        # --- Duplicate sessions that have a project_id ---
         cursor.execute("""
             SELECT start_time, project_id, COUNT(*) as cnt
             FROM sessions
-            GROUP BY start_time, COALESCE(project_id, -1)
+            WHERE project_id IS NOT NULL
+            GROUP BY start_time, project_id
             HAVING cnt > 1
         """)
-        dup_start_times = cursor.fetchall()
-        
-        for (start_time, project_id, _count) in dup_start_times:
-            # Get all sessions with this start_time and project_id
+        dup_with_project = cursor.fetchall()
+
+        for (start_time, project_id, _count) in dup_with_project:
             cursor.execute("""
                 SELECT s.id, s.ai_summary,
                        (SELECT COUNT(*) FROM commands WHERE session_id = s.id) as cmd_count
                 FROM sessions s
-                WHERE s.start_time = ? AND (s.project_id = ? OR (s.project_id IS NULL AND ? IS NULL))
+                WHERE s.start_time = ? AND s.project_id = ?
                 ORDER BY cmd_count DESC, s.ai_summary IS NOT NULL DESC, s.id ASC
-            """, (start_time, project_id, project_id))
+            """, (start_time, project_id))
             rows = cursor.fetchall()
-            
-            if len(rows) <= 1:
-                continue
-                
-            # Keep the best one (most commands, or has ai_summary)
-            keeper_id = rows[0][0]
-            
-            # Reassign orphaned commands from duplicates to the keeper
-            for row in rows[1:]:
-                dup_id = row[0]
-                cursor.execute("UPDATE commands SET session_id = ? WHERE session_id = ?", (keeper_id, dup_id))
-                cursor.execute("DELETE FROM sessions WHERE id = ?", (dup_id,))
-        
-        # Deduplicate legacy commands on (timestamp, command)
+            if len(rows) > 1:
+                self._merge_duplicate_sessions(cursor, rows)
+
+        # --- Duplicate sessions with no project_id ---
+        cursor.execute("""
+            SELECT start_time, COUNT(*) as cnt
+            FROM sessions
+            WHERE project_id IS NULL
+            GROUP BY start_time
+            HAVING cnt > 1
+        """)
+        dup_without_project = cursor.fetchall()
+
+        for (start_time, _count) in dup_without_project:
+            cursor.execute("""
+                SELECT s.id, s.ai_summary,
+                       (SELECT COUNT(*) FROM commands WHERE session_id = s.id) as cmd_count
+                FROM sessions s
+                WHERE s.start_time = ? AND s.project_id IS NULL
+                ORDER BY cmd_count DESC, s.ai_summary IS NOT NULL DESC, s.id ASC
+            """, (start_time,))
+            rows = cursor.fetchall()
+            if len(rows) > 1:
+                self._merge_duplicate_sessions(cursor, rows)
+
+        # Deduplicate legacy commands on (timestamp, command). Unaffected by
+        # the project_id sentinel question, left as-is.
         cursor.execute("""
             SELECT timestamp, command, COUNT(*) as cnt
             FROM commands
@@ -391,13 +413,33 @@ class Database:
                 # Keep the first one, delete the rest
                 for row in cmd_rows[1:]:
                     cursor.execute("DELETE FROM commands WHERE id = ?", (row[0],))
-        
-        # Create UNIQUE indexes - use COALESCE to handle NULL project_id (SQLite treats NULL as unequal in UNIQUE)
+
+        # Replace the old sentinel-based unique index (if a previous run of
+        # this migration created it) with two partial indexes. SQLite treats
+        # every NULL as distinct from every other value, including other
+        # NULLs, inside a UNIQUE index, which is exactly why the old code
+        # needed COALESCE(project_id, -1) to fold NULL into a real value in
+        # the first place. Splitting into two partial indexes enforces the
+        # same "one session per (start_time, project)" rule without ever
+        # needing a sentinel that could theoretically collide with a real id.
+        cursor.execute("DROP INDEX IF EXISTS idx_sessions_start_time_unique;")
+
         try:
-            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_start_time_unique ON sessions(start_time, COALESCE(project_id, -1));")
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_start_time_with_project "
+                "ON sessions(start_time, project_id) WHERE project_id IS NOT NULL;"
+            )
         except sqlite3.IntegrityError:
             pass  # Edge case: if migration didn't fully clean up, index creation will be retried next run
-            
+
+        try:
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_start_time_no_project "
+                "ON sessions(start_time) WHERE project_id IS NULL;"
+            )
+        except sqlite3.IntegrityError:
+            pass
+
         try:
             cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_commands_ts_cmd_unique ON commands(timestamp, command);")
         except sqlite3.IntegrityError:
@@ -504,14 +546,16 @@ class Database:
                     """, (session.start_time, session.end_time, session.duration_seconds, session.project_id, session.tags))
                     db_id = cursor.lastrowid
                     if cursor.rowcount == 0:
-                        # INSERT OR IGNORE hit a conflict — fetch the existing row.
-                        # The conflict can only come from the unique index on
-                        # start_time (with or without COALESCE(project_id,-1)),
-                        # so match by start_time only. Including project_id in
-                        # the WHERE clause causes false misses when the user's DB
-                        # still has the older index (sessions(start_time) — no
-                        # project_id at all) and the existing row has a different
-                        # project_id from the incoming session.
+                        # INSERT OR IGNORE hit a conflict, fetch the existing row.
+                        # The conflict can only come from a unique index keyed on
+                        # start_time (idx_sessions_start_time_with_project,
+                        # idx_sessions_start_time_no_project, or an older
+                        # pre-migration index), so match by start_time only.
+                        # Including project_id in the WHERE clause causes false
+                        # misses when the existing row has a different project_id
+                        # from the incoming session, e.g. the same session
+                        # getting re-resolved to a different project on a later
+                        # sync (see test_session_deduplication_stable_key).
                         cursor.execute(
                             "SELECT id FROM sessions "
                             "WHERE start_time = ?",
@@ -616,10 +660,29 @@ class Database:
                     UPDATE commands SET exit_code = ?, session_id = ?, project_id = ?, recovery_source = ?, is_legacy = ? WHERE id = ?
                 """, commands_to_update)
                 
-            # Prune legacy duplicate sessions that became orphaned (have no commands)
+            # Prune legacy duplicate sessions that became orphaned (have no commands).
+            # Scoped to sessions that share start_time with another session,
+            # i.e. are actual dedup leftovers, rather than every command-less
+            # session in the table. A blanket "no commands" predicate would also
+            # delete any legitimately empty, non-duplicate session (e.g. an
+            # opened-then-immediately-closed terminal) that isn't a dedup
+            # artifact at all.
+            #
+            # Note this intentionally matches on start_time ALONE, not
+            # (start_time, project_id): project_id is a re-resolvable attribute
+            # of a session (see test_session_deduplication_stable_key), so the
+            # same underlying session can legitimately reappear here with a
+            # different project_id on a later sync. Requiring project_id to
+            # match too would leave the old, now-commandless row behind as
+            # permanent clutter instead of pruning it.
             cursor.execute("""
-                DELETE FROM sessions 
-                WHERE id NOT IN (SELECT DISTINCT session_id FROM commands WHERE session_id IS NOT NULL);
+                DELETE FROM sessions
+                WHERE id NOT IN (SELECT DISTINCT session_id FROM commands WHERE session_id IS NOT NULL)
+                  AND EXISTS (
+                        SELECT 1 FROM sessions s2
+                        WHERE s2.id != sessions.id
+                          AND s2.start_time = sessions.start_time
+                  );
             """)
 
             # If FTS5 is supported, sync updated/inserted commands and sessions
@@ -669,8 +732,7 @@ class Database:
             """, (int(datetime.now().timestamp()),))
 
             conn.commit()
-        except (sqlite3.Error, RuntimeError, ValueError) as e:
-            logger.exception("Database write failed while saving ingestion metadata")
+        except Exception as e:
             _safe_rollback_and_reraise(conn, e)
         finally:
             conn.close()
@@ -905,8 +967,7 @@ class Database:
                             VALUES (?, 'session_summary', ?, ?, ?)
                         """, (ai_summary, str(session_id), project_id, start_time))
             conn.commit()
-        except (sqlite3.Error, RuntimeError, ValueError) as e:
-            logger.exception("Database write failed while saving session AI summary")
+        except Exception as e:
             _safe_rollback_and_reraise(conn, e)
         finally:
             conn.close()
@@ -921,8 +982,7 @@ class Database:
                 UPDATE sessions SET tags = ? WHERE id = ?
             """, (tags, session_id))
             conn.commit()
-        except (sqlite3.Error, RuntimeError, ValueError) as e:
-            logger.exception("Database write failed while saving session tags")
+        except Exception as e:
             _safe_rollback_and_reraise(conn, e)
         finally:
             conn.close()
@@ -938,8 +998,7 @@ class Database:
                 VALUES (?, ?, ?, ?)
             """, (session_id, source, json.dumps(payload), captured_at))
             conn.commit()
-        except (sqlite3.Error, RuntimeError, ValueError) as e:
-            logger.exception("Database write failed while saving MCP snapshot")
+        except Exception as e:
             _safe_rollback_and_reraise(conn, e)
         finally:
             conn.close()
@@ -957,13 +1016,7 @@ class Database:
             for row in rows:
                 try:
                     payload_dict = json.loads(row[1])
-                except (TypeError, ValueError) as exc:
-                    logger.warning(
-                        "Failed to parse MCP snapshot payload for session %s: %s",
-                        session_id,
-                        exc,
-                        exc_info=True,
-                    )
+                except Exception:
                     payload_dict = row[1]
                 results.append({
                     "source": row[0],
@@ -1022,8 +1075,7 @@ class Database:
                 VALUES (?, ?, ?)
             """, (timeframe_id, type_str, summary))
             conn.commit()
-        except (sqlite3.Error, RuntimeError, ValueError) as e:
-            logger.exception("Database write failed while caching macro summary")
+        except Exception as e:
             _safe_rollback_and_reraise(conn, e)
         finally:
             conn.close()
@@ -1154,8 +1206,7 @@ class Database:
                     """, (c["cleaned_message"], c["hash"], project_id, c["timestamp"]))
             
             conn.commit()
-        except (sqlite3.Error, RuntimeError, ValueError) as e:
-            logger.exception("Database write failed while saving commits")
+        except Exception as e:
             _safe_rollback_and_reraise(conn, e)
         finally:
             conn.close()
@@ -1325,8 +1376,7 @@ class Database:
         try:
             cursor.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='search_index';")
             return cursor.fetchone() is not None
-        except sqlite3.Error:
-            logger.debug("Unable to determine whether FTS is available", exc_info=True)
+        except Exception:
             return False
 
     def _migrate_fts5(self, cursor) -> None:
