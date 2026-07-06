@@ -9,7 +9,10 @@ from typing import List, Optional, Dict
 from termstory.sanitizer import sanitize_session_commands, redact_command
 
 logger = logging.getLogger(__name__)
+# Per-thread error state — each caller (archive, dashboard, etc.)
+# keeps its own last error so switching screens doesn't lose context.
 _last_ai_error_lock = threading.Lock()
+_local_ai_state = threading.local()
 _last_ai_error: Optional[str] = None
 
 # Circuit Breaker Configuration
