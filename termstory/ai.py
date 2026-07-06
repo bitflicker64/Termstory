@@ -162,11 +162,13 @@ def _send_llm_request(
     api_base_url: str,
     model_name: str,
     provider: str,
-    max_tokens: int = _DEFAULT_MAX_TOKENS,
+    max_tokens: Optional[int] = None,
     timeout: float = 30.0
 ) -> Optional[str]:
     """Shared helper to construct and send the OpenAI-compatible chat completion request."""
     _local_ai_state.last_error = None
+    if max_tokens is None:
+        max_tokens = _DEFAULT_MAX_TOKENS
 
     if _is_current_worker_cancelled():
         return None

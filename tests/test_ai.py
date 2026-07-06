@@ -343,6 +343,29 @@ def test_timeframe_summary_max_tokens(monkeypatch):
     assert captured["timeout"] == 30
 
 
+def test_send_llm_request_uses_runtime_default_max_tokens(monkeypatch):
+    import termstory.ai as ai
+    captured = {}
+
+    def mock_urlopen(req, timeout=None):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        resp_payload = {"choices": [{"message": {"content": "ok"}}]}
+        return MockResponse(json.dumps(resp_payload).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+    monkeypatch.setattr(ai, "_DEFAULT_MAX_TOKENS", 1234)
+
+    res = ai._send_llm_request(
+        prompt="test prompt",
+        api_key="k",
+        api_base_url="https://api.openai.com/v1",
+        model_name="gpt-4o",
+        provider="openai",
+    )
+    assert res == "ok"
+    assert captured["body"]["max_tokens"] == 1234
+
+
 def test_daily_chronicle_session_truncation():
     """generate_daily_chronicle_prompt should cap sessions at the 20 most recent."""
     from termstory.ai import generate_daily_chronicle_prompt
