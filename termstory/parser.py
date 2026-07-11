@@ -1,6 +1,7 @@
 import os
 import re
 import logging
+import sqlite3
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any, Union, Callable
 from termstory.models import Command
@@ -186,7 +187,11 @@ def parse_zsh_history(
     # Get file mtime as a common reference point — used in both branches below.
     try:
         file_mtime = int(os.path.getmtime(filepath))
-    except Exception:
+    except OSError:
+        logger.exception(
+            "parse_zsh_history: failed to stat %r for mtime; using current time as anchor.",
+            filepath,
+        )
         file_mtime = int(datetime.now().timestamp())
 
     n_legacy = len(legacy_items)
@@ -249,7 +254,17 @@ def parse_zsh_history(
             try:
                 resolved_paths = project_paths() if callable(project_paths) else project_paths
             except Exception:
-                pass
+                # project_paths is an arbitrary caller-supplied callback (see the
+                # Callable[[], List[str]] type hint), its failure modes aren't
+                # knowable from this file, so this one is intentionally kept
+                # broad rather than narrowed to a specific tuple. It's a nice-to-
+                # have enrichment for the Timestamp Detective, not core parsing,
+                # so we degrade to an empty project list instead of failing the
+                # whole history parse.
+                logger.exception(
+                    "parse_zsh_history: project_paths callback raised; "
+                    "continuing without project-path enrichment."
+                )
         detective = TimestampDetective(
             search_root=os.path.expanduser("~"),
             project_paths=resolved_paths or []
@@ -401,9 +416,13 @@ def parse_bash_history(
         
     try:
         mtime = int(os.path.getmtime(filepath))
-    except Exception:
+    except OSError:
+        logger.exception(
+            "parse_bash_history: failed to stat %r for mtime; using current time as anchor.",
+            filepath,
+        )
         mtime = int(datetime.now().timestamp())
-        
+
     raw_lines = []
     with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
         for line in f:
@@ -691,7 +710,11 @@ def parse_fish_history(
         
     try:
         mtime = int(os.path.getmtime(filepath))
-    except Exception:
+    except OSError:
+        logger.exception(
+            "parse_fish_history: failed to stat %r for mtime; using current time as anchor.",
+            filepath,
+        )
         mtime = int(datetime.now().timestamp())
         
     temp_commands = []
@@ -737,7 +760,11 @@ def parse_powershell_history(
         
     try:
         mtime = int(os.path.getmtime(filepath))
-    except Exception:
+    except OSError:
+        logger.exception(
+            "parse_powershell_history: failed to stat %r for mtime; using current time as anchor.",
+            filepath,
+        )
         mtime = int(datetime.now().timestamp())
         
     raw_lines = []
@@ -780,8 +807,11 @@ def parse_all_histories(
     if db is not None:
         try:
             existing_lookup = db.get_all_commands_lookup()
-        except Exception:
-            pass
+        except (sqlite3.DatabaseError, OSError, RuntimeError):
+            logger.exception(
+                "parse_all_histories: failed to load existing command timestamp lookup; "
+                "continuing without timestamp locking."
+            )
 
     all_commands = []
     for path in filepaths:

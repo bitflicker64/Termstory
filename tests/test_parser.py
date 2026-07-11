@@ -357,3 +357,49 @@ def test_assign_missing_timestamps_fallback_clamping():
     assert commands[0].timestamp == 1748851190
 
 
+def test_parse_zsh_history_getmtime_oserror_falls_back(tmp_path):
+    from unittest.mock import patch
+
+    temp_file = tmp_path / "zsh_getmtime_fail_test"
+    temp_file.write_text(": 1748851200:0;git status\n")
+
+    # os.path.getmtime raising must not abort the parse, it should fall
+    # back to the current time as the anchor instead of propagating.
+    with patch("termstory.parser.os.path.getmtime", side_effect=OSError("stat failed")):
+        commands = parse_zsh_history(str(temp_file))
+        assert len(commands) == 1
+        assert commands[0].command == "git status"
+
+
+def test_parse_zsh_history_project_paths_callback_raises(tmp_path):
+    from unittest.mock import patch
+
+    temp_file = tmp_path / "zsh_project_paths_raise_test"
+    temp_file.write_text("legacy cmd\n")
+
+    def bad_callback():
+        raise RuntimeError("resolver blew up")
+
+    # A raising project_paths callback must not abort the parse, legacy
+    # commands should still come through with project-path enrichment
+    # simply skipped for this run.
+    commands = parse_zsh_history(str(temp_file), project_paths=bad_callback)
+    assert len(commands) == 1
+    assert commands[0].command == "legacy cmd"
+
+
+def test_parse_all_histories_db_lookup_error_does_not_raise(tmp_path):
+    from unittest.mock import MagicMock
+    import sqlite3
+
+    temp_file = tmp_path / "zsh_history_db_error_test"
+    temp_file.write_text(": 1748851200:0;git status\n")
+
+    db = MagicMock()
+    db.get_all_commands_lookup.side_effect = sqlite3.OperationalError("database is locked")
+
+    # A failing lookup must not abort ingestion, it should just proceed
+    # without timestamp-locking against prior runs.
+    commands = parse_all_histories([str(temp_file)], db=db)
+    assert len(commands) == 1
+    assert commands[0].command == "git status"
