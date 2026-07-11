@@ -303,6 +303,18 @@ def generate_answer(query: str, sessions: List[Session], ai_client) -> Optional[
             model_name = getattr(ai_client, "model_name", "")
         request_timeout_seconds = getattr(ai_client, "request_timeout_seconds", 30.0)
 
+    # config.json is loaded via json.load() with no per-key type validation
+    # (see config.py:load_config), so a hand-edited config could set this to
+    # null or a string. dict.get()'s default only covers a missing key, not
+    # a present-but-invalid one, and _send_llm_request does `timeout + 1.0`
+    # on the raw value -- a non-numeric timeout crashes that with an
+    # uncaught TypeError before the request is even sent. Fall back to the
+    # same 30.0 default for any non-numeric value, including bool (which is
+    # technically a numbers.Real subclass in Python but not a meaningful
+    # timeout here).
+    if isinstance(request_timeout_seconds, bool) or not isinstance(request_timeout_seconds, (int, float)):
+        request_timeout_seconds = 30.0
+
     if not provider or provider == "disabled":
         return "AI capabilities are currently disabled."
 

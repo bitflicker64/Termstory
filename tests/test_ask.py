@@ -409,7 +409,7 @@ def test_generate_answer_uses_shared_max_tokens_and_config_timeout(monkeypatch):
 
 def test_generate_answer_timeout_defaults_to_30_when_unset(monkeypatch):
     """When ai_client has no request_timeout_seconds key at all, the
-    fallback must still be 30.0, behavior unchanged for existing users
+    fallback must still be 30.0 -- behavior unchanged for existing users
     who haven't set this in their config."""
     received = {}
 
@@ -437,6 +437,101 @@ def test_generate_answer_timeout_defaults_to_30_when_unset(monkeypatch):
     }
 
     generate_answer("What did I do?", sessions, ai_client)
+    assert received["timeout"] == 30.0
+
+
+def test_generate_answer_null_timeout_config_falls_back_to_30(monkeypatch):
+    """A hand-edited config.json with `"request_timeout_seconds": null`
+    must not crash generate_answer. Without the guard, `timeout=None`
+    reaches _send_llm_request, which does `timeout + 1.0` and raises an
+    uncaught TypeError before the request is even sent."""
+    received = {}
+
+    def mock_urlopen(req, timeout=None):
+        received["timeout"] = timeout
+        resp_payload = {"choices": [{"message": {"content": "ok"}}]}
+        return MockResponse(json.dumps(resp_payload).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    sessions = [
+        Session(id=1, start_time=1700000000, end_time=1700000100, duration_seconds=100, project_id=1, commands=[
+            Command(timestamp=1700000000, command="npm run deploy", session_id=1, project_id=1)
+        ])
+    ]
+    ai_client = {
+        "active_provider": "groq",
+        "request_timeout_seconds": None,
+        "providers": {
+            "groq": {"api_key": "test-key", "api_base_url": "https://api.groq.com/openai/v1", "model_name": "llama3"}
+        }
+    }
+
+    res = generate_answer("What did I do?", sessions, ai_client)
+    assert res == "ok"
+    assert received["timeout"] == 30.0
+
+
+def test_generate_answer_string_timeout_config_falls_back_to_30(monkeypatch):
+    """A hand-edited config.json with a string value for
+    request_timeout_seconds (e.g. `"30"` typed as text, or a typo like
+    `"thirty"`) must not crash generate_answer either."""
+    received = {}
+
+    def mock_urlopen(req, timeout=None):
+        received["timeout"] = timeout
+        resp_payload = {"choices": [{"message": {"content": "ok"}}]}
+        return MockResponse(json.dumps(resp_payload).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    sessions = [
+        Session(id=1, start_time=1700000000, end_time=1700000100, duration_seconds=100, project_id=1, commands=[
+            Command(timestamp=1700000000, command="npm run deploy", session_id=1, project_id=1)
+        ])
+    ]
+    ai_client = {
+        "active_provider": "groq",
+        "request_timeout_seconds": "thirty",
+        "providers": {
+            "groq": {"api_key": "test-key", "api_base_url": "https://api.groq.com/openai/v1", "model_name": "llama3"}
+        }
+    }
+
+    res = generate_answer("What did I do?", sessions, ai_client)
+    assert res == "ok"
+    assert received["timeout"] == 30.0
+
+
+def test_generate_answer_bool_timeout_config_falls_back_to_30(monkeypatch):
+    """bool is a subclass of int in Python, so `isinstance(x, (int, float))`
+    alone would let `request_timeout_seconds: true` slip through as
+    timeout=1 (True == 1) -- a silent, near-instant timeout. Must be
+    explicitly excluded and fall back to 30.0."""
+    received = {}
+
+    def mock_urlopen(req, timeout=None):
+        received["timeout"] = timeout
+        resp_payload = {"choices": [{"message": {"content": "ok"}}]}
+        return MockResponse(json.dumps(resp_payload).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    sessions = [
+        Session(id=1, start_time=1700000000, end_time=1700000100, duration_seconds=100, project_id=1, commands=[
+            Command(timestamp=1700000000, command="npm run deploy", session_id=1, project_id=1)
+        ])
+    ]
+    ai_client = {
+        "active_provider": "groq",
+        "request_timeout_seconds": True,
+        "providers": {
+            "groq": {"api_key": "test-key", "api_base_url": "https://api.groq.com/openai/v1", "model_name": "llama3"}
+        }
+    }
+
+    res = generate_answer("What did I do?", sessions, ai_client)
+    assert res == "ok"
     assert received["timeout"] == 30.0
 
 
