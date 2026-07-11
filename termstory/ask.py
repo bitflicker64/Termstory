@@ -6,7 +6,7 @@ from typing import List, Optional, Dict, Tuple
 
 from termstory.models import Session
 from termstory.config import get_db_path
-from termstory.ai import _send_llm_request
+from termstory.ai import _send_llm_request, _DEFAULT_MAX_TOKENS
 from termstory.sanitizer import sanitize_session_commands, redact_command
 
 # BM25 tuning constants
@@ -289,6 +289,7 @@ def generate_answer(query: str, sessions: List[Session], ai_client) -> Optional[
             api_key = ai_client.get("api_key") or ""
             api_base_url = ai_client.get("api_base_url") or ""
             model_name = ai_client.get("model_name") or ""
+        request_timeout_seconds = ai_client.get("request_timeout_seconds", 30.0)
     else:
         provider = getattr(ai_client, "provider", None) or getattr(ai_client, "active_provider", "disabled")
         providers = getattr(ai_client, "providers", None)
@@ -300,6 +301,7 @@ def generate_answer(query: str, sessions: List[Session], ai_client) -> Optional[
             api_key = getattr(ai_client, "api_key", "")
             api_base_url = getattr(ai_client, "api_base_url", "")
             model_name = getattr(ai_client, "model_name", "")
+        request_timeout_seconds = getattr(ai_client, "request_timeout_seconds", 30.0)
 
     if not provider or provider == "disabled":
         return "AI capabilities are currently disabled."
@@ -370,7 +372,7 @@ def generate_answer(query: str, sessions: List[Session], ai_client) -> Optional[
         api_base_url=api_base_url,
         model_name=model_name,
         provider=provider,
-        max_tokens=1500,
-        timeout=30.0,
+        max_tokens=_DEFAULT_MAX_TOKENS,
+        timeout=request_timeout_seconds,
     )
     return result

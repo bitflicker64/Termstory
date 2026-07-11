@@ -366,6 +366,80 @@ def test_generate_answer_success(monkeypatch):
     assert res == "You deployed the website project."
 
 
+def test_generate_answer_uses_shared_max_tokens_and_config_timeout(monkeypatch):
+    """max_tokens must come from ai._DEFAULT_MAX_TOKENS (not a local 1500
+    literal), and timeout must be threaded through from the ai_client's
+    request_timeout_seconds config value rather than a hardcoded 30.0."""
+    from termstory.ai import _DEFAULT_MAX_TOKENS
+
+    received = {}
+
+    def mock_urlopen(req, timeout=None):
+        received["max_tokens"] = json.loads(req.data.decode("utf-8"))["max_tokens"]
+        received["timeout"] = timeout
+        resp_payload = {"choices": [{"message": {"content": "ok"}}]}
+        return MockResponse(json.dumps(resp_payload).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    sessions = [
+        Session(id=1, start_time=1700000000, end_time=1700000100, duration_seconds=100, project_id=1, commands=[
+            Command(timestamp=1700000000, command="npm run deploy", session_id=1, project_id=1)
+        ])
+    ]
+    # A non-default timeout (45.0, not the old hardcoded 30.0) to prove it's
+    # actually threaded through from config rather than ignored.
+    ai_client = {
+        "active_provider": "groq",
+        "request_timeout_seconds": 45.0,
+        "providers": {
+            "groq": {
+                "api_key": "test-key",
+                "api_base_url": "https://api.groq.com/openai/v1",
+                "model_name": "llama3"
+            }
+        }
+    }
+
+    res = generate_answer("What did I do?", sessions, ai_client)
+    assert res == "ok"
+    assert received["max_tokens"] == _DEFAULT_MAX_TOKENS
+    assert received["timeout"] == 45.0
+
+
+def test_generate_answer_timeout_defaults_to_30_when_unset(monkeypatch):
+    """When ai_client has no request_timeout_seconds key at all, the
+    fallback must still be 30.0, behavior unchanged for existing users
+    who haven't set this in their config."""
+    received = {}
+
+    def mock_urlopen(req, timeout=None):
+        received["timeout"] = timeout
+        resp_payload = {"choices": [{"message": {"content": "ok"}}]}
+        return MockResponse(json.dumps(resp_payload).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    sessions = [
+        Session(id=1, start_time=1700000000, end_time=1700000100, duration_seconds=100, project_id=1, commands=[
+            Command(timestamp=1700000000, command="npm run deploy", session_id=1, project_id=1)
+        ])
+    ]
+    ai_client = {
+        "active_provider": "groq",
+        "providers": {
+            "groq": {
+                "api_key": "test-key",
+                "api_base_url": "https://api.groq.com/openai/v1",
+                "model_name": "llama3"
+            }
+        }
+    }
+
+    generate_answer("What did I do?", sessions, ai_client)
+    assert received["timeout"] == 30.0
+
+
 def test_generate_answer_truncates_large_session(monkeypatch):
     """Sessions with >40 commands should be truncated in the prompt."""
     called_prompts = []
@@ -616,4 +690,3 @@ def test_generate_answer_redacts_github_pat_in_commit(monkeypatch):
     assert res == "ok"
     sent_prompt = called_prompts[0]
     assert "ghp_ASKSECRET1234567890abcdef" not in sent_prompt
-
