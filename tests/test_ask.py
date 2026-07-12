@@ -535,6 +535,103 @@ def test_generate_answer_bool_timeout_config_falls_back_to_30(monkeypatch):
     assert received["timeout"] == 30.0
 
 
+def test_generate_answer_zero_timeout_config_falls_back_to_30(monkeypatch):
+    """`termstory config set request_timeout_seconds 0` genuinely stores
+    the int 0 (see cli.py:config_set's int-conversion branch). timeout=0
+    puts the socket in non-blocking mode, so every ask request fails
+    instantly with EINPROGRESS regardless of network conditions."""
+    received = {}
+
+    def mock_urlopen(req, timeout=None):
+        received["timeout"] = timeout
+        resp_payload = {"choices": [{"message": {"content": "ok"}}]}
+        return MockResponse(json.dumps(resp_payload).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    sessions = [
+        Session(id=1, start_time=1700000000, end_time=1700000100, duration_seconds=100, project_id=1, commands=[
+            Command(timestamp=1700000000, command="npm run deploy", session_id=1, project_id=1)
+        ])
+    ]
+    ai_client = {
+        "active_provider": "groq",
+        "request_timeout_seconds": 0,
+        "providers": {
+            "groq": {"api_key": "test-key", "api_base_url": "https://api.groq.com/openai/v1", "model_name": "llama3"}
+        }
+    }
+
+    res = generate_answer("What did I do?", sessions, ai_client)
+    assert res == "ok"
+    assert received["timeout"] == 30.0
+
+
+def test_generate_answer_negative_timeout_config_falls_back_to_30(monkeypatch):
+    """A negative request_timeout_seconds makes ai.py's
+    join_timeout = timeout + 1.0 go negative, so the join loop's
+    elapsed-time check is already true on its very first iteration,
+    it never actually waits for the worker thread."""
+    received = {}
+
+    def mock_urlopen(req, timeout=None):
+        received["timeout"] = timeout
+        resp_payload = {"choices": [{"message": {"content": "ok"}}]}
+        return MockResponse(json.dumps(resp_payload).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    sessions = [
+        Session(id=1, start_time=1700000000, end_time=1700000100, duration_seconds=100, project_id=1, commands=[
+            Command(timestamp=1700000000, command="npm run deploy", session_id=1, project_id=1)
+        ])
+    ]
+    ai_client = {
+        "active_provider": "groq",
+        "request_timeout_seconds": -5,
+        "providers": {
+            "groq": {"api_key": "test-key", "api_base_url": "https://api.groq.com/openai/v1", "model_name": "llama3"}
+        }
+    }
+
+    res = generate_answer("What did I do?", sessions, ai_client)
+    assert res == "ok"
+    assert received["timeout"] == 30.0
+
+
+def test_generate_answer_infinite_timeout_config_falls_back_to_30(monkeypatch):
+    """float('inf') > 0 is True, so a bare positivity check alone
+    wouldn't catch it. urlopen(timeout=float('inf')) raises OverflowError,
+    which isn't in the worker thread's caught exception tuple, so it
+    would die silently in the background instead of returning an
+    answer or a clean error."""
+    received = {}
+
+    def mock_urlopen(req, timeout=None):
+        received["timeout"] = timeout
+        resp_payload = {"choices": [{"message": {"content": "ok"}}]}
+        return MockResponse(json.dumps(resp_payload).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    sessions = [
+        Session(id=1, start_time=1700000000, end_time=1700000100, duration_seconds=100, project_id=1, commands=[
+            Command(timestamp=1700000000, command="npm run deploy", session_id=1, project_id=1)
+        ])
+    ]
+    ai_client = {
+        "active_provider": "groq",
+        "request_timeout_seconds": float("inf"),
+        "providers": {
+            "groq": {"api_key": "test-key", "api_base_url": "https://api.groq.com/openai/v1", "model_name": "llama3"}
+        }
+    }
+
+    res = generate_answer("What did I do?", sessions, ai_client)
+    assert res == "ok"
+    assert received["timeout"] == 30.0
+
+
 def test_generate_answer_truncates_large_session(monkeypatch):
     """Sessions with >40 commands should be truncated in the prompt."""
     called_prompts = []

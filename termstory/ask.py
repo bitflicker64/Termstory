@@ -303,16 +303,34 @@ def generate_answer(query: str, sessions: List[Session], ai_client) -> Optional[
             model_name = getattr(ai_client, "model_name", "")
         request_timeout_seconds = getattr(ai_client, "request_timeout_seconds", 30.0)
 
-    # config.json is loaded via json.load() with no per-key type validation
-    # (see config.py:load_config), so a hand-edited config could set this to
-    # null or a string. dict.get()'s default only covers a missing key, not
-    # a present-but-invalid one, and _send_llm_request does `timeout + 1.0`
-    # on the raw value -- a non-numeric timeout crashes that with an
-    # uncaught TypeError before the request is even sent. Fall back to the
-    # same 30.0 default for any non-numeric value, including bool (which is
-    # technically a numbers.Real subclass in Python but not a meaningful
-    # timeout here).
-    if isinstance(request_timeout_seconds, bool) or not isinstance(request_timeout_seconds, (int, float)):
+    # config.json is loaded via json.load() with no per-key type/range
+    # validation (see config.py:load_config), and `termstory config set
+    # request_timeout_seconds <value>` will happily store 0, a negative
+    # number, or (if the stored value has ever been a float) "inf". Each
+    # of those reaches ai.py's timeout handling differently and badly:
+    #   - non-numeric (None/str): timeout + 1.0 raises an uncaught
+    #     TypeError outside the worker thread's try/except, crashing
+    #     generate_answer entirely.
+    #   - bool: a subclass of int in Python, so isinstance(x, (int, float))
+    #     alone lets it through as timeout=1/0 (True==1/False==0).
+    #   - 0: urlopen puts the socket in non-blocking mode, so every
+    #     request fails instantly with EINPROGRESS regardless of network
+    #     conditions.
+    #   - negative: join_timeout = timeout + 1.0 goes negative, so the
+    #     join loop's elapsed-time check is already true on its first
+    #     iteration -- it never actually waits for the worker.
+    #   - inf/nan: urlopen(timeout=float('inf')) raises OverflowError,
+    #     which isn't in the worker's caught exception tuple, so it dies
+    #     silently in the background thread instead of returning an
+    #     answer or a clean error.
+    # Falls back to the same 30.0 default for any value outside
+    # (0, +inf) rather than trying to enumerate every bad case above.
+    if (
+        isinstance(request_timeout_seconds, bool)
+        or not isinstance(request_timeout_seconds, (int, float))
+        or not math.isfinite(request_timeout_seconds)
+        or request_timeout_seconds <= 0
+    ):
         request_timeout_seconds = 30.0
 
     if not provider or provider == "disabled":
