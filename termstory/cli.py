@@ -199,7 +199,7 @@ def search_history(
         except (ValueError, OverflowError) as e:
             Console(stderr=True).print(f"[bold red]Error: Invalid date '{since}'. Expected YYYY-MM-DD.[/]")
             raise typer.Exit(code=1)
-            
+
     until_ts = None
     if until:
         try:
