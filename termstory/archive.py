@@ -6,6 +6,9 @@ from termstory.database import _safe_rollback_and_reraise
 from termstory.database import Database
 from termstory.date_utils import get_current_time
 
+# Keep below SQLite's default SQLITE_MAX_VARIABLE_NUMBER (999).
+_SQLITE_IN_CHUNK_SIZE = 900
+
 def is_timeframe_older_than(timeframe_id: str, tf_type: str, cutoff_date: date) -> bool:
     """Check if a macro_summary timeframe is older than cutoff_date."""
     if tf_type == 'date':
@@ -111,8 +114,8 @@ def archive_old_data(main_db_path: str, archive_db_path: str, days: int) -> Dict
         if proj_ids:
             projects_to_archive = []
             proj_ids_list = list(proj_ids)
-            for i in range(0, len(proj_ids_list), 900):
-                chunk = proj_ids_list[i:i+900]
+            for i in range(0, len(proj_ids_list), _SQLITE_IN_CHUNK_SIZE):
+                chunk = proj_ids_list[i:i + _SQLITE_IN_CHUNK_SIZE]
                 proj_placeholders = ",".join("?" for _ in chunk)
                 cursor.execute(f"SELECT id, name, path, first_seen, last_seen, project_context, created_at FROM main.projects WHERE id IN ({proj_placeholders})", chunk)
                 projects_to_archive.extend(cursor.fetchall())
