@@ -86,10 +86,10 @@ def test_custom_termstoryignore(tmp_path):
         mock_expanduser.side_effect = lambda x: str(ignore_file) if x == '~/.termstoryignore' else str(tmp_path / "nonexistent")
         
         # Clear existing patterns and reload
-        original_patterns = sanitizer.CUSTOM_REDACTION_PATTERNS.copy()
-        sanitizer.CUSTOM_REDACTION_PATTERNS.clear()
+        original_patterns = sanitizer.CUSTOM_REDACTION_PATTERNS
+        sanitizer.CUSTOM_REDACTION_PATTERNS = tuple()
         
-        sanitizer.load_custom_ignore_rules()
+        sanitizer.CUSTOM_REDACTION_PATTERNS = sanitizer.load_custom_ignore_rules()
         
         assert len(sanitizer.CUSTOM_REDACTION_PATTERNS) == 2
         
@@ -167,3 +167,30 @@ def test_redact_command_handles_commit_message_form():
         "rotate password ***d!"
     )
 
+
+def test_custom_redaction_patterns_race_condition():
+    import sys
+    import threading
+    
+    if "termstory.sanitizer" in sys.modules:
+        del sys.modules["termstory.sanitizer"]
+        
+    errors = []
+    def import_sanitizer():
+        try:
+            import termstory.sanitizer
+        except Exception as e:
+            errors.append(e)
+        
+    threads = []
+    for _ in range(20):
+        t = threading.Thread(target=import_sanitizer)
+        threads.append(t)
+        t.start()
+        
+    for t in threads:
+        t.join()
+        
+    assert not errors, f"Exceptions occurred in threads: {errors}"
+    import termstory.sanitizer
+    assert isinstance(termstory.sanitizer.CUSTOM_REDACTION_PATTERNS, tuple)

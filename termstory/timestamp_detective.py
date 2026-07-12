@@ -63,6 +63,9 @@ Usage
 """
 
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 import re
 import glob
 import getpass
@@ -139,8 +142,8 @@ class TimestampDetective:
             ts_mtime = int(stat.st_mtime)
             if self._is_valid_timestamp(ts_mtime):
                 return ts_mtime
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("timestamp_detective probe failed: %s", e)
         return None
 
     def _get_brew_prefix(self) -> Optional[str]:
@@ -158,7 +161,8 @@ class TimestampDetective:
                 capture_output=True, text=True, timeout=5
             )
             self._brew_prefix = res.stdout.strip() if res.returncode == 0 else ""
-        except Exception:
+        except Exception as e:
+            logger.debug("timestamp_detective brew prefix probe failed: %s", e)
             self._brew_prefix = ""
         return self._brew_prefix or None
 
@@ -175,7 +179,8 @@ class TimestampDetective:
                 capture_output=True, text=True, timeout=5
             )
             self._npm_global_root = res.stdout.strip() if res.returncode == 0 else ""
-        except Exception:
+        except Exception as e:
+            logger.debug("timestamp_detective npm root probe failed: %s", e)
             self._npm_global_root = ""
         return self._npm_global_root or None
 
@@ -240,8 +245,8 @@ class TimestampDetective:
                         })
                     except ValueError:
                         pass
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("timestamp_detective probe failed: %s", e)
 
         self._git_log_cache[repo_path] = commits
         return commits
@@ -347,7 +352,8 @@ class TimestampDetective:
                     import shlex
                     try:
                         tokens = shlex.split(cmd)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug("shlex split failed: %s", e)
                         tokens = cmd.split()
                     
                     target = ""
@@ -378,7 +384,8 @@ class TimestampDetective:
                     import shlex
                     try:
                         tokens = shlex.split(cmd)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug("shlex split failed: %s", e)
                         tokens = cmd.split()
                         
                     if len(tokens) > 1:
@@ -770,8 +777,8 @@ class TimestampDetective:
                 ts = self._get_file_timestamp(dist_path)
                 if ts:
                     return ts
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("timestamp_detective probe failed: %s", e)
         except ImportError:
             pass
 
@@ -868,8 +875,8 @@ class TimestampDetective:
             ts = int(dt.timestamp())
             if self._is_valid_timestamp(ts):
                 return (ts, f"docker image inspect: {tag}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("timestamp_detective probe failed: %s", e)
 
         return None
 
@@ -979,8 +986,8 @@ class TimestampDetective:
                     ts = self._parse_git_log_date(res.stdout)
                     if ts and self._is_valid_timestamp(ts):
                         return (ts, f"brew log: {formula}")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("timestamp_detective probe failed: %s", e)
 
             # Fallback: scan the macOS installer system log for this formula
             ts = self.detect_macos_syslog(formula)
@@ -991,7 +998,8 @@ class TimestampDetective:
         if re.match(r'^(?:sudo|su|ssh)(?:\s|$)', cmd):
             try:
                 username = getpass.getuser()
-            except Exception:
+            except Exception as e:
+                logger.debug("getpass user failed: %s", e)
                 username = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
             if username:
                 try:
@@ -1003,8 +1011,8 @@ class TimestampDetective:
                         ts = self._parse_last_login(res.stdout)
                         if ts and self._is_valid_timestamp(ts):
                             return (ts, f"last login: {username}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("timestamp_detective probe failed: %s", e)
 
         return None
 
@@ -1099,7 +1107,8 @@ class TimestampDetective:
                     ts = int(dt.timestamp())
                 else:
                     ts = int(datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S").timestamp())
-            except Exception:
+            except Exception as e:
+                logger.debug("timestamp parse failed: %s", e)
                 continue
             if self._is_valid_timestamp(ts) and (best_ts is None or ts > best_ts):
                 best_ts = ts
@@ -1137,7 +1146,8 @@ class TimestampDetective:
                 result = detector(command, virtual_cwd)
                 if result is not None:
                     return result
-            except Exception:
+            except Exception as e:
+                logger.debug("Detector error: %s", e)
                 # Silently swallow individual detector errors to keep the
                 # pipeline running for the remaining commands
                 continue

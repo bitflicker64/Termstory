@@ -107,7 +107,7 @@ def test_cli_config_commands(tmp_path, monkeypatch):
 
 def test_cli_reset_commands(monkeypatch):
     called = []
-    def mock_perform_reset():
+    def mock_perform_reset(*args, **kwargs):
         called.append(True)
         
     monkeypatch.setattr("termstory.cli.perform_reset", mock_perform_reset)
@@ -394,7 +394,7 @@ def test_cli_reset_cleanup_rc_files(tmp_path, monkeypatch):
     bashrc_file.write_text(original_bashrc_content)
     
     runner = CliRunner()
-    result = runner.invoke(app, ["reset"])
+    result = runner.invoke(app, ["reset", "--yes"])
     assert result.exit_code == 0
     
     # Check zshrc
@@ -421,7 +421,7 @@ def test_cli_error_states(tmp_path, monkeypatch):
     # 1. search with invalid --since date
     result = runner.invoke(app, ["search", "query", "--since", "invalid-date"])
     assert result.exit_code == 1
-    assert "Could not parse date" in result.stdout or "Could not parse date" in result.stderr
+    assert "Invalid date" in result.stdout or "Invalid date" in result.stderr
     
     # 2. project with unknown name
     db = Database(str(db_file))

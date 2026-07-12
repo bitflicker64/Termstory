@@ -197,7 +197,7 @@ def search_history(
         try:
             since_ts = int(date_parser.parse(since).timestamp())
         except (ValueError, OverflowError) as e:
-            Console(stderr=True).print(f"[bold red]Error: Could not parse date '{since}': {e}[/]")
+            Console(stderr=True).print(f"[bold red]Error: Invalid date '{since}'. Expected YYYY-MM-DD.[/]")
             raise typer.Exit(code=1)
             
     until_ts = None
@@ -205,7 +205,7 @@ def search_history(
         try:
             until_ts = int(date_parser.parse(until).timestamp())
         except (ValueError, OverflowError) as e:
-            Console(stderr=True).print(f"[bold red]Error: Could not parse date '{until}': {e}[/]")
+            Console(stderr=True).print(f"[bold red]Error: Invalid date '{until}'. Expected YYYY-MM-DD.[/]")
             raise typer.Exit(code=1)
             
     tag_list = None
@@ -807,11 +807,12 @@ def cleanup_shell_marker():
             except Exception:
                 pass
 
-def perform_reset():
+def perform_reset(auto_confirm: bool = False, dry_run: bool = False):
     """Reset all TermStory state, configuration, and database files on disk"""
     import shutil
     import os
     from termstory.config import get_app_dir
+    from rich.prompt import Prompt
 
     dirs_to_clean = set()
 
@@ -832,6 +833,34 @@ def perform_reset():
             dirs_to_clean.add(os.path.join(os.environ["XDG_DATA_HOME"], "termstory"))
         dirs_to_clean.add(os.path.expanduser("~/.local/share/termstory"))
 
+    existing_paths = []
+    for db_dir in dirs_to_clean:
+        if os.path.exists(db_dir):
+            existing_paths.append(db_dir)
+            
+    ignore_file = os.path.expanduser("~/.termstoryignore")
+    if os.path.exists(ignore_file):
+        existing_paths.append(ignore_file)
+
+    if not existing_paths:
+        console.print("[yellow]No TermStory data found to reset.[/yellow]")
+        cleanup_shell_marker()
+        return
+        
+    console.print("[bold red]WARNING: The following paths will be permanently deleted:[/bold red]")
+    for p in existing_paths:
+        console.print(f"  - {p}")
+        
+    if dry_run:
+        console.print("\n[yellow]Dry run complete. No files were deleted.[/yellow]")
+        return
+
+    if not auto_confirm:
+        response = Prompt.ask("\nAre you sure you want to delete all TermStory data?", choices=["y", "yes", "n", "no"], default="n")
+        if response.lower() not in ["y", "yes"]:
+            console.print("[yellow]Reset aborted.[/yellow]")
+            return
+
     for db_dir in dirs_to_clean:
         if os.path.exists(db_dir):
             try:
@@ -843,7 +872,6 @@ def perform_reset():
                 pass
                 
     # 4. Remove global ignore file
-    ignore_file = os.path.expanduser("~/.termstoryignore")
     if os.path.exists(ignore_file):
         try:
             os.unlink(ignore_file)
@@ -944,7 +972,7 @@ def show_ui(
     app_tui.run()
     
     if getattr(app_tui, "was_reset", False):
-        perform_reset()
+        perform_reset(auto_confirm=True)
     else:
         try:
             from termstory.config import load_config, save_config
@@ -965,9 +993,12 @@ def show_ui(
             Console(stderr=True).print(f"[dim]Note: failed to persist onboarding reminder flag: {e}[/dim]")
 
 @app.command("reset")
-def reset_cmd():
+def reset_cmd(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be deleted without actually deleting")
+):
     """Reset all TermStory state, configuration, and database"""
-    perform_reset()
+    perform_reset(auto_confirm=yes, dry_run=dry_run)
 
 
 @app.command("optimize")
@@ -1426,6 +1457,7 @@ def main(
     ctx: typer.Context,
     date: Optional[str] = typer.Option(None, "--date", help="Date override (YYYY-MM-DD) for commands"),
     reset: bool = typer.Option(False, "--reset", help="Reset all TermStory state, configuration, and database"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt for reset"),
     version: Optional[bool] = typer.Option(
         None,
         "--version",
@@ -1436,7 +1468,7 @@ def main(
 ):
     """TermStory - local shell history parsing and session summaries"""
     if reset:
-        perform_reset()
+        perform_reset(auto_confirm=yes)
         raise typer.Exit()
 
     if date:

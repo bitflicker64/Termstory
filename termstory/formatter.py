@@ -1333,7 +1333,7 @@ def format_stats_output(db) -> str:
     sorted_projects = sorted(breakdown.items(), key=lambda x: x[1]["total_duration"], reverse=True)
     
     table = Table(box=None, show_header=True, padding=(0, 2))
-    table.add_column("Project", style="cyan", header_style="bold cyan")
+    table.add_column("Project", style="cyan", header_style="bold cyan", overflow="fold")
     table.add_column("Commands", justify="right", style="green")
     table.add_column("Duration", justify="right", style="green")
     table.add_column("Sessions", justify="right", style="green")
@@ -1395,21 +1395,32 @@ def format_stats_output(db) -> str:
             top_hours_parts.append(f"{display_h} {am_pm} ({count} cmds)")
     top_hours_str = ", ".join(top_hours_parts) if top_hours_parts else "N/A"
     
+    from rich.console import Console
+    from rich.text import Text
+    _measure_console = Console()
+    
+    def get_markup_width(s: str) -> int:
+        return _measure_console.measure(Text.from_markup(s)).maximum
+
+    heatmap_width = max(30, get_markup_width(heatmap_str))
+    punch_card_width = max(32, get_markup_width(punch_card))
+    lang_width = max(get_markup_width(l) for l in lang_lines) if lang_lines else 21
+    
     # Build complete report
     output_lines = [
         "📊 [bold]Deep History Statistics & Telemetry[/]",
         "",
         "[bold cyan]Activity Heatmap (Last 30 Days)[/]",
-        "[dim]──────────────────────────────[/]",
+        f"[dim]{'─' * heatmap_width}[/]",
         f"  {heatmap_str}",
         "",
         "[bold cyan]Peak Hours (Command Distribution)[/]",
-        "[dim]────────────────────────────────[/]",
+        f"[dim]{'─' * punch_card_width}[/]",
         f"  {punch_card}",
         f"  Top Active Hours: {top_hours_str}",
         "",
         "[bold cyan]Language Distribution[/]",
-        "[dim]─────────────────────[/]",
+        f"[dim]{'─' * lang_width}[/]",
         lang_output,
         "",
         "[bold cyan]Project Breakdown[/]",
