@@ -198,13 +198,102 @@ def calculate_streak(sessions: List[Session]) -> int:
     if (today - current_date).days > 1:
         return 0
         
-    for d in sorted_dates[1:]:
-        if (current_date - d).days == 1:
+    for i in range(1, len(sorted_dates)):
+        prev_date = sorted_dates[i]
+        diff = (current_date - prev_date).days
+        if diff == 1:
             streak += 1
-            current_date = d
-        elif (current_date - d).days > 1:
+            current_date = prev_date
+        else:
             break
+            
     return streak
+
+def calculate_necromancer_score(sessions: List[Session]) -> int:
+    """
+    Calculate how many times the user resurrected a 'dead' project.
+    A project is dead if it was untouched for > 180 days (6 months).
+    Resurrection counts if the session was meaningful (> 5 mins or > 10 commands).
+    """
+    if not sessions:
+        return 0
+        
+    # Sort sessions chronologically
+    sorted_sessions = sorted(sessions, key=lambda s: s.start_time)
+    
+    last_seen_by_project = {}
+    score = 0
+    
+    for s in sorted_sessions:
+        if s.project_id is None:
+            continue
+            
+        session_dt = datetime.fromtimestamp(s.start_time)
+        
+        if s.project_id in last_seen_by_project:
+            last_seen_dt = last_seen_by_project[s.project_id]
+            days_diff = (session_dt - last_seen_dt).days
+            
+            # Check for resurrection: > 180 days dead + meaningful session
+            if days_diff > 180:
+                is_meaningful = False
+                if s.duration_seconds and s.duration_seconds > 300:
+                    is_meaningful = True
+                elif s.commands and len(s.commands) > 10:
+                    is_meaningful = True
+                    
+                if is_meaningful:
+                    score += 1
+                    
+        # Update last seen
+        end_ts = s.end_time if s.end_time else (s.start_time + (s.duration_seconds or 0))
+        last_seen_by_project[s.project_id] = datetime.fromtimestamp(end_ts)
+        
+    return score
+
+def calculate_vampire_index(sessions: List[Session]) -> float:
+    """Calculate the percentage of sessions that occur between midnight and 5 AM."""
+    if not sessions:
+        return 0.0
+    
+    vampire_sessions = 0
+    for s in sessions:
+        dt = datetime.fromtimestamp(s.start_time)
+        if 0 <= dt.hour < 5:
+            vampire_sessions += 1
+            
+    return round((vampire_sessions / len(sessions)) * 100, 1)
+
+def assign_rpg_class(commands: List['Command']) -> str:
+    """Assign an RPG class based on command history patterns."""
+    if not commands:
+        return "Level 1 Novice"
+        
+    counts = {"regex": 0, "docker": 0, "git": 0, "scripting": 0}
+    
+    for c in commands:
+        cmd = c.command.lower()
+        if any(x in cmd for x in ["awk", "sed", "grep"]):
+            counts["regex"] += 1
+        elif any(x in cmd for x in ["docker", "kubectl", "compose"]):
+            counts["docker"] += 1
+        elif "git " in cmd:
+            counts["git"] += 1
+        elif any(x in cmd for x in ["python", "node", "npm"]):
+            counts["scripting"] += 1
+            
+    best_class = max(counts.items(), key=lambda x: x[1])
+    if best_class[1] == 0:
+        return "Level 10 Keyboard Warrior"
+        
+    class_map = {
+        "regex": "Level 12 Regex Sorcerer",
+        "docker": "The Docker Demolitionist",
+        "git": "Version Control Vanguard",
+        "scripting": "Scripting Shaman"
+    }
+    return class_map[best_class[0]]
+
 
 def analyze_all(db=None) -> Dict:
     """Analyze all recorded history to produce total counts, most active periods,
