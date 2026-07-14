@@ -206,6 +206,19 @@ def calculate_streak(sessions: List[Session]) -> int:
             break
     return streak
 
+def calculate_vampire_index(sessions: List[Session]) -> float:
+    """Calculate the percentage of sessions that occur between midnight and 5 AM."""
+    if not sessions:
+        return 0.0
+    
+    vampire_sessions = 0
+    for s in sessions:
+        dt = datetime.fromtimestamp(s.start_time)
+        if 0 <= dt.hour < 5:
+            vampire_sessions += 1
+            
+    return round((vampire_sessions / len(sessions)) * 100, 1)
+
 def analyze_all(db=None) -> Dict:
     """Analyze all recorded history to produce total counts, most active periods,
     most used projects, and current coding streak.
