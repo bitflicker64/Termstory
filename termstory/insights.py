@@ -206,6 +206,49 @@ def calculate_streak(sessions: List[Session]) -> int:
             break
     return streak
 
+def calculate_necromancer_score(sessions: List[Session]) -> int:
+    """
+    Calculate how many times the user resurrected a 'dead' project.
+    A project is dead if it was untouched for > 180 days (6 months).
+    Resurrection counts if the session was meaningful (> 5 mins or > 10 commands).
+    """
+    if not sessions:
+        return 0
+        
+    # Sort sessions chronologically
+    sorted_sessions = sorted(sessions, key=lambda s: s.start_time)
+    
+    last_seen_by_project = {}
+    score = 0
+    
+    for s in sorted_sessions:
+        if s.project_id is None:
+            continue
+            
+        session_dt = datetime.fromtimestamp(s.start_time)
+        
+        if s.project_id in last_seen_by_project:
+            last_seen_dt = last_seen_by_project[s.project_id]
+            days_diff = (session_dt - last_seen_dt).days
+            
+            # Check for resurrection: > 180 days dead + meaningful session
+            if days_diff > 180:
+                is_meaningful = False
+                if s.duration_seconds and s.duration_seconds > 300:
+                    is_meaningful = True
+                elif s.commands and len(s.commands) > 10:
+                    is_meaningful = True
+                    
+                if is_meaningful:
+                    score += 1
+                    
+        # Update last seen
+        end_ts = s.end_time if s.end_time else (s.start_time + (s.duration_seconds or 0))
+        last_seen_by_project[s.project_id] = datetime.fromtimestamp(end_ts)
+        
+    return score
+
+
 def analyze_all(db=None) -> Dict:
     """Analyze all recorded history to produce total counts, most active periods,
     most used projects, and current coding streak.
