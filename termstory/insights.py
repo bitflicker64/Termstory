@@ -206,6 +206,47 @@ def calculate_streak(sessions: List[Session]) -> int:
             break
     return streak
 
+def assign_rpg_class(sessions: List[Session]) -> str:
+    """Assign an RPG class based on command frequency."""
+    if not sessions:
+        return "Level 1 Village Peasant"
+        
+    cmd_counts = {}
+    for s in sessions:
+        for cmd in s.commands:
+            base_cmd = cmd.split()[0] if cmd.split() else ""
+            if not base_cmd:
+                continue
+            cmd_counts[base_cmd] = cmd_counts.get(base_cmd, 0) + 1
+            
+    if not cmd_counts:
+        return "Level 1 Village Peasant"
+        
+    total_cmds = sum(cmd_counts.values())
+    level = min(100, max(1, total_cmds // 50))
+    
+    top_cmd = max(cmd_counts.items(), key=lambda x: x[1])[0]
+    
+    class_map = {
+        "docker": "Docker Demolitionist",
+        "git": "Version Control Paladin",
+        "grep": "Regex Sorcerer",
+        "python": "Python Pyromancer",
+        "node": "NodeJS Necromancer",
+        "npm": "Package Potion Master",
+        "kubectl": "Kubernetes Knight",
+        "vim": "Vim Vampire",
+        "nvim": "Neovim Ninja",
+        "cargo": "Rust Ranger",
+        "go": "Go Gladiator",
+        "ls": "Directory Druid",
+        "cd": "Pathfinder Rogue"
+    }
+    
+    archetype = class_map.get(top_cmd, f"Scripting Shaman ({top_cmd})")
+    
+    return f"Level {level} {archetype}"
+
 def analyze_all(db=None) -> Dict:
     """Analyze all recorded history to produce total counts, most active periods,
     most used projects, and current coding streak.
