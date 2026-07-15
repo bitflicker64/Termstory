@@ -6,8 +6,6 @@ import os
 import random
 from termstory.database import Database
 from termstory.models import Project, Session, Command
-import pytest
-
 def writer_worker(db_path, worker_id, num_sessions=50, commands_per_session=100):
     """Write commands per worker simulating long multi-year history logs"""
     db = Database(db_path)
@@ -65,7 +63,7 @@ def writer_worker(db_path, worker_id, num_sessions=50, commands_per_session=100)
             else:
                 raise
         except Exception as e:
-            print(f"Writer {worker_id} session {s} error: {e}")
+            pass
 
 def reader_worker(db_path, worker_id, num_queries=50):
     """Concurrent reads during writes"""
@@ -84,11 +82,11 @@ def reader_worker(db_path, worker_id, num_queries=50):
             c.fetchone()
             conn.close()
             
-            # Get sessions (range query)
-            db.get_range_sessions(int(time.time()) - 86400 * 365, int(time.time()))
+            # Get sessions (range query) covers all 3 years
+            db.get_range_sessions(int(time.time()) - 86400 * 365 * 3, int(time.time()))
             
         except Exception as e:
-            print(f"Reader {worker_id} query {q} error: {e}")
+            pass
         time.sleep(0.005)  # Small delay
 
 def test_massive_history_ingestion(tmp_path):
@@ -141,9 +139,11 @@ def test_massive_history_ingestion(tmp_path):
     
     # Test FTS search still works
     results = db.search_sessions("massive stress test")
+    assert len(results) > 0, "FTS should return results after concurrent ingestion"
     
-    assert cmd_count >= (num_writers * sessions_per_writer * commands_per_session) * 0.95, "Most commands should be ingested"
-    assert sess_count >= (num_writers * sessions_per_writer) * 0.95
-    assert proj_count >= (num_writers * sessions_per_writer) * 0.95
+    # 99% tolerance allows for rare WAL SQLite transient locks dropping a session during extreme concurrency
+    assert cmd_count >= (num_writers * sessions_per_writer * commands_per_session) * 0.99, "Most commands should be ingested"
+    assert sess_count >= (num_writers * sessions_per_writer) * 0.99
+    assert proj_count >= (num_writers * sessions_per_writer) * 0.99
     
     conn.close()
