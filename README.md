@@ -65,7 +65,8 @@ Learn more about TermStory by exploring the detailed documentation below:
 
 ## Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to get started, set up your development environment, and submit pull requests.
+- We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to get started, set up your development environment, and submit pull requests.
+- Please read our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Uninstall
 

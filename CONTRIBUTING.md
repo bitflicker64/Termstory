@@ -2,6 +2,9 @@
 
 Thank you for your interest in contributing to TermStory! Here is a brief guide to help you get started.
 
+## Community Standards
+Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before contributing to help maintain a welcoming and respectful community.
+
 ## Dev Setup
 
 1. Clone the repository:
