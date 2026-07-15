@@ -201,6 +201,34 @@ def test_assign_rpg_class():
     assert r2["class_name"] == "Docker Demolitionist"
 
 
+def test_assign_daily_rpg_class():
+    from termstory.insights import assign_daily_rpg_class
+    
+    # Test empty sessions
+    assert assign_daily_rpg_class([]) == "Level 1 Village Peasant"
+    
+    # Test single command
+    s1 = Session(
+        id=1, start_time=0, end_time=100, duration_seconds=100, project_id=1,
+        commands=[
+            Command(timestamp=0, command="kubectl get pods")
+        ]
+    )
+    r1 = assign_daily_rpg_class([s1])
+    assert r1 == "Level 1 Kubernetes Knight"
+    
+    # Test top-cmd fallback and stripping basename
+    s2 = Session(
+        id=2, start_time=0, end_time=100, duration_seconds=100, project_id=1,
+        commands=[
+            Command(timestamp=0, command="~/.local/bin/foo bar"),
+            Command(timestamp=10, command="foo baz")
+        ]
+    )
+    r2 = assign_daily_rpg_class([s2])
+    assert r2 == "Level 1 Scripting Shaman (foo)"
+
+
 def test_calculate_project_necromancer_score():
     from termstory.insights import calculate_project_necromancer_score
     from termstory.formatter import format_necromancer_score

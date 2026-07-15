@@ -51,7 +51,7 @@ from termstory.formatter import _is_noise_command, clean_command_to_memory, gene
 from termstory.date_utils import get_current_time
 from termstory.config import load_config, save_config
 from termstory.ai import generate_ai_summary, generate_timeframe_summary, generate_daily_chronicle, generate_wrapped_summary
-from termstory.insights import calculate_focus_score, calculate_time_of_day_distribution, assign_rpg_class
+from termstory.insights import calculate_focus_score, calculate_time_of_day_distribution, assign_daily_rpg_class
 
 def is_worker_cancelled() -> bool:
     try:
@@ -180,9 +180,9 @@ def calculate_dashboard_stats(sessions: List[Session], projects: List[Project], 
         latest_ts = max(s.end_time for s in sessions)
         last_ingestion_str = datetime.fromtimestamp(latest_ts).strftime("%b %d %H:%M")
 
-    from termstory.insights import calculate_vampire_coder_index, assign_rpg_class
+    from termstory.insights import calculate_vampire_coder_index, assign_daily_rpg_class
     vamp_index = calculate_vampire_coder_index(sessions)
-    rpg_res = assign_rpg_class(sessions)
+    rpg_class_str = assign_daily_rpg_class(sessions)
 
     return {
         "total_time": total_time_str,
@@ -192,7 +192,7 @@ def calculate_dashboard_stats(sessions: List[Session], projects: List[Project], 
         "heatmap": heatmap,
         "last_ingestion": last_ingestion_str,
         "vampire_index": vamp_index,
-        "rpg_class": rpg_res["class_name"],
+        "rpg_class": rpg_class_str,
     }
 
 
@@ -899,7 +899,7 @@ class DetailsCanvas(VerticalScroll):
         operator = get_operator_handle()
         fs = calculate_focus_score(sessions)
         tod = calculate_time_of_day_distribution(sessions)
-        rpg_class = assign_rpg_class(sessions)
+        rpg_class = assign_daily_rpg_class(sessions)
         
         peak_velocity = "morning grinds"
         if tod.get("afternoon", 0) >= tod.get("morning", 0) and tod.get("afternoon", 0) >= tod.get("evening", 0):
@@ -931,7 +931,7 @@ class DetailsCanvas(VerticalScroll):
         header_lines.append(f"[bold cyan]{avatar_lines[6]}[/]     [bold cyan]ACTIVE REPOS:[/]      [bold]{active_projects_count} Workspaces[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[7]}[/]     [bold cyan]FOCUS SCORE:[/]     [bold green]{fs:.1f}/10.0[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[8]}[/]     [bold cyan]PEAK VELOCITY:[/]    [dim]{peak_velocity}[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]DAILY CLASS:[/]      [dim]{rpg_class}[/dim][/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]DAILY CLASS:[/]      [dim]{rpg_class}[/dim]")
         header_lines.append(f"[bold cyan]{avatar_lines[10]}[/]     [bold cyan]COMMITS:[/]         [dim]{total_commits}[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[11]}[/]     [bold cyan]SYSTEM ENGINE:[/]   [dim]Online & Synchronized[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[12]}[/]     [bold cyan]====================================================[/]")
@@ -1143,7 +1143,7 @@ class DetailsCanvas(VerticalScroll):
         
         fs = calculate_focus_score(sessions)
         tod = calculate_time_of_day_distribution(sessions)
-        rpg_class = assign_rpg_class(sessions)
+        rpg_class = assign_daily_rpg_class(sessions)
         
         peak_velocity = "morning grinds"
         if tod.get("afternoon", 0) >= tod.get("morning", 0) and tod.get("afternoon", 0) >= tod.get("evening", 0):
@@ -1164,11 +1164,11 @@ class DetailsCanvas(VerticalScroll):
         header_lines.append(f"[bold cyan]{avatar_lines[6]}[/]     [bold cyan]ACTIVE REPOS:[/]      [bold]{active_projects_count} Workspaces[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[7]}[/]     [bold cyan]FOCUS SCORE:[/]     [bold green]{fs:.1f}/10.0[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[8]}[/]     [bold cyan]PEAK VELOCITY:[/]    [dim]{peak_velocity}[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]DAILY CLASS:[/]      [dim]{rpg_class}[/dim][/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[10]}[/]     [bold cyan]ACTIVE DAYS:[/]     [dim]{active_days} Days[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[11]}[/]     [bold cyan]SYSTEM ENGINE:[/]   [dim]Online & Synchronized[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[12]}[/]     [bold cyan]====================================================[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[13]}[/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]DAILY CLASS:[/]      [dim]{rpg_class}[/dim]")
+        header_lines.append(f"[bold cyan]{avatar_lines[10]}[/]     [bold cyan]COMMITS:[/]          [dim]{total_commits}[/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[11]}[/]     [bold cyan]ACTIVE DAYS:[/]     [dim]{active_days} Days[/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[12]}[/]     [bold cyan]SYSTEM ENGINE:[/]   [dim]Online & Synchronized[/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[13]}[/]     [bold cyan]====================================================[/]")
         
         self.mount(Static("\n".join(header_lines) + "\n\n", markup=True))
         
@@ -1326,7 +1326,7 @@ class DetailsCanvas(VerticalScroll):
         
         fs = calculate_focus_score(sessions)
         tod = calculate_time_of_day_distribution(sessions)
-        rpg_class = assign_rpg_class(sessions)
+        rpg_class = assign_daily_rpg_class(sessions)
         
         peak_velocity = "morning grinds"
         if tod.get("afternoon", 0) >= tod.get("morning", 0) and tod.get("afternoon", 0) >= tod.get("evening", 0):
@@ -1363,7 +1363,7 @@ class DetailsCanvas(VerticalScroll):
         header_lines.append(f"[bold cyan]{avatar_lines[6]}[/]     [bold cyan]ACTIVE SESSIONS:[/] [bold]{len(sessions)}[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[7]}[/]     [bold cyan]FOCUS SCORE:[/]     [bold green]{fs:.1f}/10.0[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[8]}[/]     [bold cyan]PEAK TIME:[/]       [dim]{peak_velocity}[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]DAILY CLASS:[/]      [dim]{rpg_class}[/dim][/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]DAILY CLASS:[/]      [dim]{rpg_class}[/dim]")
         header_lines.append(f"[bold cyan]{avatar_lines[10]}[/]     [bold cyan]COMMITS:[/]         [dim]{sum(len(s.commits) for s in sessions)}[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[11]}[/]     [bold cyan]SYSTEM ENGINE:[/]   [dim]Online & Synchronized[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[12]}[/]     [bold cyan]====================================================[/]")

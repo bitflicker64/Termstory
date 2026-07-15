@@ -206,39 +206,79 @@ def calculate_streak(sessions: List[Session]) -> int:
             break
     return streak
 
-def assign_rpg_class(sessions: List[Session]) -> str:
+def assign_daily_rpg_class(sessions: List[Session]) -> str:
     """Assign an RPG class based on command frequency."""
+    import os
     if not sessions:
         return "Level 1 Village Peasant"
         
     cmd_counts = {}
     for s in sessions:
         for cmd in s.commands:
-            base_cmd = cmd.split()[0] if cmd.split() else ""
-            if not base_cmd:
+            cmd_text = cmd.command.strip()
+            if not cmd_text:
                 continue
+            
+            lower_cmd = cmd_text.lower()
+            first_word = cmd_text.split()[0]
+            base_cmd = os.path.basename(first_word).lower()
+            
+            # Special logic for pipes
+            if "|" in cmd_text:
+                base_cmd = "grep" # fallback for regex sorcerer logic
+            
+            # Check expanded commands inside the command text
+            for x in ["docker-compose", "docker", "podman", "git", "gh", "npm", "yarn", "pnpm", "npx", "python3", "python", "pytest", "poetry", "pip", "sqlite3", "psql", "mysql", "mongo", "prisma", "sql", "make", "cmake", "gcc", "clang", "cargo", "rustc", "go", "grep", "awk", "sed"]:
+                if x in lower_cmd.split():
+                    base_cmd = x
+                    break
+                    
             cmd_counts[base_cmd] = cmd_counts.get(base_cmd, 0) + 1
             
     if not cmd_counts:
         return "Level 1 Village Peasant"
         
-    total_cmds = sum(cmd_counts.values())
-    level = min(100, max(1, total_cmds // 50))
-    
     top_cmd = max(cmd_counts.items(), key=lambda x: x[1])[0]
+    dominant_count = cmd_counts[top_cmd]
+    
+    # Normalize level based on dominant-class share
+    level = min(100, max(1, dominant_count // 5))
     
     class_map = {
         "docker": "Docker Demolitionist",
+        "docker-compose": "Docker Demolitionist",
+        "podman": "Docker Demolitionist",
         "git": "Version Control Paladin",
+        "gh": "Version Control Paladin",
         "grep": "Regex Sorcerer",
+        "awk": "Regex Sorcerer",
+        "sed": "Regex Sorcerer",
         "python": "Python Pyromancer",
-        "node": "NodeJS Necromancer",
-        "npm": "Package Potion Master",
+        "python3": "Python Pyromancer",
+        "pytest": "Python Pyromancer",
+        "poetry": "Python Pyromancer",
+        "pip": "Package Potion Master",
+        "npm": "Frontend Bard",
+        "yarn": "Frontend Bard",
+        "pnpm": "Frontend Bard",
+        "npx": "Frontend Bard",
+        "sqlite3": "Database Necromancer",
+        "psql": "Database Necromancer",
+        "mysql": "Database Necromancer",
+        "mongo": "Database Necromancer",
+        "prisma": "Database Necromancer",
+        "sql": "Database Necromancer",
+        "make": "Systems Ranger",
+        "cmake": "Systems Ranger",
+        "gcc": "Systems Ranger",
+        "clang": "Systems Ranger",
+        "cargo": "Rust Ranger",
+        "rustc": "Rust Ranger",
+        "go": "Go Gladiator",
         "kubectl": "Kubernetes Knight",
         "vim": "Vim Vampire",
         "nvim": "Neovim Ninja",
-        "cargo": "Rust Ranger",
-        "go": "Go Gladiator",
+        "node": "NodeJS Necromancer",
         "ls": "Directory Druid",
         "cd": "Pathfinder Rogue"
     }
