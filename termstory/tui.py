@@ -50,8 +50,8 @@ from termstory.project import disambiguate_project_names
 from termstory.formatter import _is_noise_command, clean_command_to_memory, generate_daily_activity_punch_card, get_operator_handle, get_github_avatar_ascii
 from termstory.date_utils import get_current_time
 from termstory.config import load_config, save_config
-from termstory.ai import generate_ai_summary, generate_timeframe_summary, generate_daily_chronicle, generate_wrapped_summary
-from termstory.insights import calculate_focus_score, calculate_time_of_day_distribution, calculate_necromancer_score
+from termstory.ai import generate_ai_summary, generate_timeframe_summary, generate_wrapped_summary
+from termstory.insights import calculate_focus_score, calculate_time_of_day_distribution, calculate_project_necromancer_score
 
 def is_worker_cancelled() -> bool:
     try:
@@ -880,203 +880,209 @@ class DetailsCanvas(VerticalScroll):
         timeframe_type: Optional[str] = None
     ) -> None:
         """STATE A: Time Summary View (Today/Week/Month or overall)"""
-        self.remove_children()
+        try:
+            self.remove_children()
         
-        if len(sessions) == 0:
-            self.mount(Static(Text.from_markup(
-                "\n\n  [bold cyan]Welcome to TermStory![/bold cyan]\n\n"
-                "  We couldn't find any shell history yet. Try running some terminal commands, or check your macOS Privacy permissions."
-            )))
-            return
-        total_time_seconds = sum(s.duration_seconds for s in sessions)
-        total_time_str = format_duration(total_time_seconds)
+            if len(sessions) == 0:
+                self.mount(Static(Text.from_markup(
+                    "\n\n  [bold cyan]Welcome to TermStory![/bold cyan]\n\n"
+                    "  We couldn't find any shell history yet. Try running some terminal commands, or check your macOS Privacy permissions."
+                )))
+                return
+            total_time_seconds = sum(s.duration_seconds for s in sessions)
+            total_time_str = format_duration(total_time_seconds)
         
-        active_project_ids = {s.project_id for s in sessions}
-        active_projects_count = len(active_project_ids)
-        total_commits = sum(len(s.commits) for s in sessions)
+            active_project_ids = {s.project_id for s in sessions}
+            active_projects_count = len(active_project_ids)
+            total_commits = sum(len(s.commits) for s in sessions)
         
-        # Build side-by-side header block just like the daily chronicle
-        operator = get_operator_handle()
-        fs = calculate_focus_score(sessions)
-        tod = calculate_time_of_day_distribution(sessions)
-        necro_score = calculate_necromancer_score(sessions)
+            # Build side-by-side header block just like the daily chronicle
+            operator = get_operator_handle()
+            fs = calculate_focus_score(sessions)
+            tod = calculate_time_of_day_distribution(sessions)
+            necro_score = calculate_project_necromancer_score(sessions, projects)
         
-        peak_velocity = "morning grinds"
-        if tod.get("afternoon", 0) >= tod.get("morning", 0) and tod.get("afternoon", 0) >= tod.get("evening", 0):
-            peak_velocity = "afternoon compilation grinds"
-        elif tod.get("evening", 0) >= tod.get("morning", 0) and tod.get("evening", 0) >= tod.get("afternoon", 0):
-            peak_velocity = "late night grinds"
+            peak_velocity = "morning grinds"
+            if tod.get("afternoon", 0) >= tod.get("morning", 0) and tod.get("afternoon", 0) >= tod.get("evening", 0):
+                peak_velocity = "afternoon compilation grinds"
+            elif tod.get("evening", 0) >= tod.get("morning", 0) and tod.get("evening", 0) >= tod.get("afternoon", 0):
+                peak_velocity = "late night grinds"
             
-        ai_enabled = self.app.config.get("ai_enabled", False)
-        provider = self.app.config.get("active_provider", "disabled")
-        status_part = "Narrative Concluded" if (ai_enabled and provider != "disabled") else "Offline / Local Only"
+            ai_enabled = self.app.config.get("ai_enabled", False)
+            provider = self.app.config.get("active_provider", "disabled")
+            status_part = "Narrative Concluded" if (ai_enabled and provider != "disabled") else "Offline / Local Only"
         
-        # Fetch GitHub avatar ASCII lines (28x14)
-        avatar_lines = get_github_avatar_ascii(
-            operator, 
-            width=28, 
-            height=14, 
-            on_resolved=lambda: self.app.call_from_thread(self.app.refresh_details_canvas)
-        )
+            # Fetch GitHub avatar ASCII lines (28x14)
+            avatar_lines = get_github_avatar_ascii(
+                operator, 
+                width=28, 
+                height=14, 
+                on_resolved=lambda: self.app.call_from_thread(self.app.refresh_details_canvas)
+            )
         
-        active_days_count = len({s.date_str for s in sessions if s.start_time})
+            len({s.date_str for s in sessions if s.start_time})
         
-        header_lines = []
-        header_lines.append(f"[bold cyan]{avatar_lines[0]}[/]     [bold cyan]📖 termstory // {title.upper()}[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[1]}[/]     [bold cyan]====================================================[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[2]}[/]     [bold cyan]OPERATOR:[/]        [bold cyan]@{operator.lstrip('@')}[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[3]}[/]     [bold cyan]TIMEFRAME:[/]       [bold]{title}[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[4]}[/]     [bold cyan]STATUS:[/]          [dim]{status_part}[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[5]}[/]     [bold cyan]FOCUS TIME:[/]      [bold]{total_time_str}[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[6]}[/]     [bold cyan]ACTIVE REPOS:[/]      [bold]{active_projects_count} Workspaces[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[7]}[/]     [bold cyan]FOCUS SCORE:[/]     [bold green]{fs:.1f}/10.0[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[8]}[/]     [bold cyan]PEAK VELOCITY:[/]    [dim]{peak_velocity}[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]NECROMANCER:[/]      [dim]{necro_score} dead projects revived[/dim][/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[10]}[/]     [bold cyan]COMMITS:[/]         [dim]{total_commits}[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[11]}[/]     [bold cyan]SYSTEM ENGINE:[/]   [dim]Online & Synchronized[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[12]}[/]     [bold cyan]====================================================[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[13]}[/]")
+            header_lines = []
+            header_lines.append(f"[bold cyan]{avatar_lines[0]}[/]     [bold cyan]📖 termstory // {title.upper()}[/]")
+            header_lines.append(f"[bold cyan]{avatar_lines[1]}[/]     [bold cyan]====================================================[/]")
+            header_lines.append(f"[bold cyan]{avatar_lines[2]}[/]     [bold cyan]OPERATOR:[/]        [bold cyan]@{operator.lstrip('@')}[/]")
+            header_lines.append(f"[bold cyan]{avatar_lines[3]}[/]     [bold cyan]TIMEFRAME:[/]       [bold]{title}[/]")
+            header_lines.append(f"[bold cyan]{avatar_lines[4]}[/]     [bold cyan]STATUS:[/]          [dim]{status_part}[/]")
+            header_lines.append(f"[bold cyan]{avatar_lines[5]}[/]     [bold cyan]FOCUS TIME:[/]      [bold]{total_time_str}[/]")
+            header_lines.append(f"[bold cyan]{avatar_lines[6]}[/]     [bold cyan]ACTIVE REPOS:[/]      [bold]{active_projects_count} Workspaces[/]")
+            header_lines.append(f"[bold cyan]{avatar_lines[7]}[/]     [bold cyan]FOCUS SCORE:[/]     [bold green]{fs:.1f}/10.0[/]")
+            header_lines.append(f"[bold cyan]{avatar_lines[8]}[/]     [bold cyan]PEAK VELOCITY:[/]    [dim]{peak_velocity}[/]")
+            header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]NECROMANCER:[/]      [dim]{necro_score} dead projects revived[/dim]")
+            header_lines.append(f"[bold cyan]{avatar_lines[10]}[/]     [bold cyan]COMMITS:[/]         [dim]{total_commits}[/]")
+            header_lines.append(f"[bold cyan]{avatar_lines[11]}[/]     [bold cyan]SYSTEM ENGINE:[/]   [dim]Online & Synchronized[/]")
+            header_lines.append(f"[bold cyan]{avatar_lines[12]}[/]     [bold cyan]====================================================[/]")
+            header_lines.append(f"[bold cyan]{avatar_lines[13]}[/]")
         
-        self.mount(Static("\n".join(header_lines) + "\n\n"))
+            self.mount(Static("\n".join(header_lines) + "\n\n"))
         
-        # 2. Time Distribution Bar
-        elements = [Text.from_markup("[bold]Time Distribution[/bold]\n")]
-        display_names = disambiguate_project_names(projects)
-        project_seconds = defaultdict(int)
-        for s in sessions:
-            proj_name = "Other"
-            if s.project_id is not None and s.project_id in display_names:
-                proj_name = display_names[s.project_id]
-                if proj_name == "General / No Project":
-                    proj_name = "Other"
-            project_seconds[proj_name] += s.duration_seconds
+            # 2. Time Distribution Bar
+            elements = [Text.from_markup("[bold]Time Distribution[/bold]\n")]
+            display_names = disambiguate_project_names(projects)
+            project_seconds = defaultdict(int)
+            for s in sessions:
+                proj_name = "Other"
+                if s.project_id is not None and s.project_id in display_names:
+                    proj_name = display_names[s.project_id]
+                    if proj_name == "General / No Project":
+                        proj_name = "Other"
+                project_seconds[proj_name] += s.duration_seconds
             
-        bar, legend = make_stacked_bar(project_seconds, total_time_seconds, width=60)
-        elements.append(Text.from_markup(f"{bar}\n\n{legend}\n\n"))
+            bar, legend = make_stacked_bar(project_seconds, total_time_seconds, width=60)
+            elements.append(Text.from_markup(f"{bar}\n\n{legend}\n\n"))
         
-        # Mount the static parts (Rich renderables only)
-        self.mount(Static(Group(*elements)))
+            # Mount the static parts (Rich renderables only)
+            self.mount(Static(Group(*elements)))
         
-        # Mount the Configure AI button only when AI is not yet configured
-        self.query_children(".configure-ai-btn").remove()
-        ai_enabled = self.app.config.get("ai_enabled", False)
-        provider = self.app.config.get("active_provider", "disabled")
+            # Mount the Configure AI button only when AI is not yet configured
+            self.query_children(".configure-ai-btn").remove()
+            ai_enabled = self.app.config.get("ai_enabled", False)
+            provider = self.app.config.get("active_provider", "disabled")
         
-        if not ai_enabled or provider == "disabled":
-            btn_configure = Button("⚙️ Configure AI")
-            btn_configure.classes = "configure-ai-btn"
-            self.mount(btn_configure)
+            if not ai_enabled or provider == "disabled":
+                btn_configure = Button("⚙️ Configure AI")
+                btn_configure.classes = "configure-ai-btn"
+                self.mount(btn_configure)
         
-        if ai_enabled and provider != "disabled" and timeframe_id and timeframe_type in ("month", "date", "overall"):
-            # A. Timeframe Summary Section
-            exec_widgets = [Static("[bold yellow]━━━ AI Timeframe Summary ━━━[/bold yellow]\n")]
+            if ai_enabled and provider != "disabled" and timeframe_id and timeframe_type in ("month", "date", "overall"):
+                # A. Timeframe Summary Section
+                exec_widgets = [Static("[bold yellow]━━━ AI Timeframe Summary ━━━[/bold yellow]\n")]
             
-            stats_summary = compile_timeframe_stats_for_ai(sessions, projects)
-            self.app._temp_stats_summary = stats_summary
+                stats_summary = compile_timeframe_stats_for_ai(sessions, projects)
+                self.app._temp_stats_summary = stats_summary
             
-            if timeframe_id in getattr(self.app, "generating_reviews", set()):
-                exec_widgets.append(Static("⏳ [italic yellow]Generating Timeframe Summary... please wait[/italic yellow]\n"))
-            else:
-                cached_exec = self.app.db.get_macro_summary(timeframe_id)
-                if cached_exec:
-                    exec_widgets.append(Static(f"{escape(cached_exec)}\n"))
-                    try:
-                        btn_regen = Button("⟳ Regenerate Timeframe Summary", id=f"btn-exec-{timeframe_id}-{timeframe_type}")
-                        btn_regen.tooltip = "Re-run the AI summarizer for this period."
-                        btn_regen.classes = "exec-btn"
-                        exec_widgets.append(btn_regen)
-                    except Exception as e:
-                        logger.debug("TUI UI exception suppressed: %s", e)
+                if timeframe_id in getattr(self.app, "generating_reviews", set()):
+                    exec_widgets.append(Static("⏳ [italic yellow]Generating Timeframe Summary... please wait[/italic yellow]\n"))
                 else:
-                    exec_widgets.append(Static("[dim]Ask AI to write a high-level summary of your work for this period:[/dim]"))
-                    try:
-                        btn = Button("✨ Generate Timeframe Summary", id=f"btn-exec-{timeframe_id}-{timeframe_type}")
-                        btn.tooltip = "Ask AI to write a high-level summary of your work."
-                        btn.classes = "exec-btn"
-                        exec_widgets.append(btn)
-                    except Exception as e:
-                        logger.debug("TUI UI exception suppressed: %s", e)
+                    cached_exec = self.app.db.get_macro_summary(timeframe_id)
+                    if cached_exec:
+                        exec_widgets.append(Static(f"{escape(cached_exec)}\n"))
+                        try:
+                            btn_regen = Button("⟳ Regenerate Timeframe Summary", id=f"btn-exec-{timeframe_id}-{timeframe_type}")
+                            btn_regen.tooltip = "Re-run the AI summarizer for this period."
+                            btn_regen.classes = "exec-btn"
+                            exec_widgets.append(btn_regen)
+                        except Exception as e:
+                            logger.debug("TUI UI exception suppressed: %s", e)
+                    else:
+                        exec_widgets.append(Static("[dim]Ask AI to write a high-level summary of your work for this period:[/dim]"))
+                        try:
+                            btn = Button("✨ Generate Timeframe Summary", id=f"btn-exec-{timeframe_id}-{timeframe_type}")
+                            btn.tooltip = "Ask AI to write a high-level summary of your work."
+                            btn.classes = "exec-btn"
+                            exec_widgets.append(btn)
+                        except Exception as e:
+                            logger.debug("TUI UI exception suppressed: %s", e)
                 
-            self.mount(Vertical(*exec_widgets, classes="exec-container"))
+                self.mount(Vertical(*exec_widgets, classes="exec-container"))
             
-            # B. Bulk Auto-Summarize Section
-            missing_sessions = [s for s in sessions if not s.ai_summary]
-            if missing_sessions:
-                bulk_widgets = []
-                bulk_progress = getattr(self.app, "bulk_running_timeframes", {})
+                # B. Bulk Auto-Summarize Section
+                missing_sessions = [s for s in sessions if not s.ai_summary]
+                if missing_sessions:
+                    bulk_widgets = []
+                    bulk_progress = getattr(self.app, "bulk_running_timeframes", {})
                 
-                if timeframe_id in bulk_progress:
-                    current, total = bulk_progress[timeframe_id]
-                    bulk_widgets.append(Static(f"⏳ [bold yellow]Auto-summarizing sessions: {current}/{total} done...[/bold yellow]\n", id=f"bulk-status-{timeframe_id}"))
-                else:
-                    bulk_widgets.append(Static(f"[dim]{len(missing_sessions)} sessions still need AI stories. Generate them all at once:[/dim]"))
-                    try:
-                        btn = Button(f"🚀 Auto-Summarize {len(missing_sessions)} Sessions", id=f"btn-bulk-{timeframe_id}-{timeframe_type}")
-                        btn.classes = "bulk-btn"
-                        bulk_widgets.append(btn)
-                    except Exception as e:
-                        logger.debug("TUI UI exception suppressed: %s", e)
-                self.mount(Vertical(*bulk_widgets, classes="bulk-container"))
+                    if timeframe_id in bulk_progress:
+                        current, total = bulk_progress[timeframe_id]
+                        bulk_widgets.append(Static(f"⏳ [bold yellow]Auto-summarizing sessions: {current}/{total} done...[/bold yellow]\n", id=f"bulk-status-{timeframe_id}"))
+                    else:
+                        bulk_widgets.append(Static(f"[dim]{len(missing_sessions)} sessions still need AI stories. Generate them all at once:[/dim]"))
+                        try:
+                            btn = Button(f"🚀 Auto-Summarize {len(missing_sessions)} Sessions", id=f"btn-bulk-{timeframe_id}-{timeframe_type}")
+                            btn.classes = "bulk-btn"
+                            bulk_widgets.append(btn)
+                        except Exception as e:
+                            logger.debug("TUI UI exception suppressed: %s", e)
+                    self.mount(Vertical(*bulk_widgets, classes="bulk-container"))
                 
-        # 4. Activity Feed
-        if timeframe_type != "month":
-            feed_widgets = [Static("[bold]Activity Feed[/bold]", classes="section-title")]
+            # 4. Activity Feed
+            if timeframe_type != "month":
+                feed_widgets = [Static("[bold]Activity Feed[/bold]", classes="section-title")]
             
-            # Limit feed to recent 30 sessions for month/overall overview to avoid UI lag
-            sorted_sessions = sorted(sessions, key=lambda s: s.start_time)
-            is_limited = False
-            if timeframe_type in ("month", "overall") and len(sorted_sessions) > 30:
-                sorted_sessions = sorted_sessions[-30:]
-                is_limited = True
+                # Limit feed to recent 30 sessions for month/overall overview to avoid UI lag
+                sorted_sessions = sorted(sessions, key=lambda s: s.start_time)
+                is_limited = False
+                if timeframe_type in ("month", "overall") and len(sorted_sessions) > 30:
+                    sorted_sessions = sorted_sessions[-30:]
+                    is_limited = True
                 
-            if is_limited:
-                feed_widgets.append(Static(f"[dim italic]Showing the 30 most recent sessions of this timeframe:[/dim italic]\n"))
+                if is_limited:
+                    feed_widgets.append(Static("[dim italic]Showing the 30 most recent sessions of this timeframe:[/dim italic]\n"))
                 
-            project_map = {p.id: p for p in projects if p.id is not None}
+                project_map = {p.id: p for p in projects if p.id is not None}
             
-            for s in sorted_sessions:
-                proj = project_map.get(s.project_id)
-                proj_name = display_names.get(s.project_id, "Other") if proj else "Other"
-                if proj_name == "General / No Project":
-                    proj_name = "Other"
+                for s in sorted_sessions:
+                    proj = project_map.get(s.project_id)
+                    proj_name = display_names.get(s.project_id, "Other") if proj else "Other"
+                    if proj_name == "General / No Project":
+                        proj_name = "Other"
                     
-                dur_str = format_duration(s.duration_seconds)
-                start_time_str = s.start_time_formatted
+                    dur_str = format_duration(s.duration_seconds)
+                    start_time_str = s.start_time_formatted
                 
-                item_text = Text()
-                item_text.append(f"• {start_time_str} ", style="dim")
-                item_text.append(f"{proj_name} ", style="bold cyan" if proj_name != "Other" else "bold green")
-                item_text.append(f"({dur_str})\n", style="dim")
+                    item_text = Text()
+                    item_text.append(f"• {start_time_str} ", style="dim")
+                    item_text.append(f"{proj_name} ", style="bold cyan" if proj_name != "Other" else "bold green")
+                    item_text.append(f"({dur_str})\n", style="dim")
                 
-                feed_widgets.append(Static(item_text))
+                    feed_widgets.append(Static(item_text))
                 
-                # Show summary or generate button
-                if getattr(s, "is_generating_story", False):
-                    if s.ai_summary:
+                    # Show summary or generate button
+                    if getattr(s, "is_generating_story", False):
+                        if s.ai_summary:
+                            feed_widgets.append(Static(f"  └─ ✨ {escape(strip_ansi(s.ai_summary))}"))
+                        feed_widgets.append(Static("  └─ ⏳ [italic yellow]Thinking...[/italic yellow]\n"))
+                    elif s.ai_summary:
                         feed_widgets.append(Static(f"  └─ ✨ {escape(strip_ansi(s.ai_summary))}"))
-                    feed_widgets.append(Static("  └─ ⏳ [italic yellow]Thinking...[/italic yellow]\n"))
-                elif s.ai_summary:
-                    feed_widgets.append(Static(f"  └─ ✨ {escape(strip_ansi(s.ai_summary))}"))
-                    if ai_enabled and provider != "disabled" and not getattr(s, "recent_generation", False):
-                        btn = Button("⟳ Regenerate", id=f"btn-gen-session-{s.id}")
-                        btn.classes = "gen-story-btn small-btn"
-                        row = Horizontal(Static("      "), btn, classes="btn-row")
-                        feed_widgets.append(row)
+                        if ai_enabled and provider != "disabled" and not getattr(s, "recent_generation", False):
+                            btn = Button("⟳ Regenerate", id=f"btn-gen-session-{s.id}")
+                            btn.classes = "gen-story-btn small-btn"
+                            row = Horizontal(Static("      "), btn, classes="btn-row")
+                            feed_widgets.append(row)
+                        else:
+                            feed_widgets.append(Static("\n"))
                     else:
-                        feed_widgets.append(Static("\n"))
-                else:
-                    if ai_enabled and provider != "disabled":
-                        btn = Button("✨ Generate Story", id=f"btn-gen-session-{s.id}")
-                        btn.classes = "gen-story-btn"
-                        row = Horizontal(Static("  └─ "), btn, classes="btn-row")
-                        feed_widgets.append(row)
-                    else:
-                        # fallback to heuristic summary
-                        heur = get_session_memory_str(s)
-                        feed_widgets.append(Static(f"  └─ {escape(heur)}\n"))
+                        if ai_enabled and provider != "disabled":
+                            btn = Button("✨ Generate Story", id=f"btn-gen-session-{s.id}")
+                            btn.classes = "gen-story-btn"
+                            row = Horizontal(Static("  └─ "), btn, classes="btn-row")
+                            feed_widgets.append(row)
+                        else:
+                            # fallback to heuristic summary
+                            heur = get_session_memory_str(s)
+                            feed_widgets.append(Static(f"  └─ {escape(heur)}\n"))
                         
-            self.mount(Vertical(*feed_widgets, classes="feed-container"))
+                self.mount(Vertical(*feed_widgets, classes="feed-container"))
 
+        except Exception as e:
+            print(f"!!! EXCEPTION IN RENDER TIME SUMMARY: {e} !!!")
+            import traceback
+            traceback.print_exc()
+            raise
     def render_wrapped_view(
         self,
         season_name: str,
@@ -1131,7 +1137,6 @@ class DetailsCanvas(VerticalScroll):
             
         ai_enabled = self.app.config.get("ai_enabled", False)
         provider = self.app.config.get("active_provider", "disabled")
-        status_part = "Narrative Concluded" if (ai_enabled and provider != "disabled") else "Offline / Local Only"
         
         # Fetch GitHub avatar ASCII lines (28x14)
         avatar_lines = get_github_avatar_ascii(
@@ -1143,7 +1148,7 @@ class DetailsCanvas(VerticalScroll):
         
         fs = calculate_focus_score(sessions)
         tod = calculate_time_of_day_distribution(sessions)
-        necro_score = calculate_necromancer_score(sessions)
+        necro_score = calculate_project_necromancer_score(sessions, projects)
         
         peak_velocity = "morning grinds"
         if tod.get("afternoon", 0) >= tod.get("morning", 0) and tod.get("afternoon", 0) >= tod.get("evening", 0):
@@ -1151,7 +1156,7 @@ class DetailsCanvas(VerticalScroll):
         elif tod.get("evening", 0) >= tod.get("morning", 0) and tod.get("evening", 0) >= tod.get("afternoon", 0):
             peak_velocity = "late night grinds"
             
-        total_commits = sum(len(s.commits) for s in sessions)
+        sum(len(s.commits) for s in sessions)
         total_time_str = format_duration(sum(s.duration_seconds for s in sessions))
         
         header_lines = []
@@ -1164,7 +1169,7 @@ class DetailsCanvas(VerticalScroll):
         header_lines.append(f"[bold cyan]{avatar_lines[6]}[/]     [bold cyan]ACTIVE REPOS:[/]      [bold]{active_projects_count} Workspaces[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[7]}[/]     [bold cyan]FOCUS SCORE:[/]     [bold green]{fs:.1f}/10.0[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[8]}[/]     [bold cyan]PEAK VELOCITY:[/]    [dim]{peak_velocity}[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]NECROMANCER:[/]      [dim]{necro_score} dead projects revived[/dim][/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]NECROMANCER:[/]      [dim]{necro_score} dead projects revived[/dim]")
         header_lines.append(f"[bold cyan]{avatar_lines[10]}[/]     [bold cyan]ACTIVE DAYS:[/]     [dim]{active_days} Days[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[11]}[/]     [bold cyan]SYSTEM ENGINE:[/]   [dim]Online & Synchronized[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[12]}[/]     [bold cyan]====================================================[/]")
@@ -1191,7 +1196,7 @@ class DetailsCanvas(VerticalScroll):
         if net_change < 0:
             net_growth_str = f"📉 {net_change:,} Lines (The codebase lost weight)"
         elif net_change == 0:
-            net_growth_str = f"➖ 0 Lines (No net change)"
+            net_growth_str = "➖ 0 Lines (No net change)"
         else:
             net_growth_str = f"📈 +{net_change:,} Lines (The codebase grew)"
             
@@ -1203,9 +1208,9 @@ class DetailsCanvas(VerticalScroll):
             longest_t = Text(f"├── 🕸️  Longest Lifespan: `{longest_branch}` (12 Days)")
             shortest_t = Text(f"└── 💥 Shortest Sprint:  `{shortest_branch}` (4 Hours)")
         else:
-            branches_merged_str = f"0 Productive Features Coalesced"
-            longest_t = Text(f"├── 🕸️  Longest Lifespan: N/A")
-            shortest_t = Text(f"└── 💥 Shortest Sprint:  N/A")
+            branches_merged_str = "0 Productive Features Coalesced"
+            longest_t = Text("├── 🕸️  Longest Lifespan: N/A")
+            shortest_t = Text("└── 💥 Shortest Sprint:  N/A")
             
         matrix_text = Text()
         matrix_text.append("Lines Inserted:  ")
@@ -1326,7 +1331,7 @@ class DetailsCanvas(VerticalScroll):
         
         fs = calculate_focus_score(sessions)
         tod = calculate_time_of_day_distribution(sessions)
-        necro_score = calculate_necromancer_score(sessions)
+        necro_score = calculate_project_necromancer_score(sessions, projects)
         
         peak_velocity = "morning grinds"
         if tod.get("afternoon", 0) >= tod.get("morning", 0) and tod.get("afternoon", 0) >= tod.get("evening", 0):
@@ -1363,7 +1368,7 @@ class DetailsCanvas(VerticalScroll):
         header_lines.append(f"[bold cyan]{avatar_lines[6]}[/]     [bold cyan]ACTIVE SESSIONS:[/] [bold]{len(sessions)}[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[7]}[/]     [bold cyan]FOCUS SCORE:[/]     [bold green]{fs:.1f}/10.0[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[8]}[/]     [bold cyan]PEAK TIME:[/]       [dim]{peak_velocity}[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]NECROMANCER:[/]      [dim]{necro_score} dead projects revived[/dim][/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]NECROMANCER:[/]      [dim]{necro_score} dead projects revived[/dim]")
         header_lines.append(f"[bold cyan]{avatar_lines[10]}[/]     [bold cyan]COMMITS:[/]         [dim]{sum(len(s.commits) for s in sessions)}[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[11]}[/]     [bold cyan]SYSTEM ENGINE:[/]   [dim]Online & Synchronized[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[12]}[/]     [bold cyan]====================================================[/]")
@@ -1785,7 +1790,7 @@ class GhostTyperScreen(ModalScreen[None]):
             
         self.current_char_idx = 0
         self.current_typed_command = ""
-        self.lines.append(f"[bold green]operator@termstory[/bold green]:[bold blue]~[/bold blue]$ ")
+        self.lines.append("[bold green]operator@termstory[/bold green]:[bold blue]~[/bold blue]$ ")
         self.update_console()
         self.typing_timer = self.set_interval(0.03, self.type_character)
          
@@ -2716,7 +2721,7 @@ class TermStoryWorkspace(App):
             fallback_files = [
                 (f"{top_proj.lower()}/main.py", 0.5, "Core Logic"),
                 (f"{top_proj.lower()}/utils.py", 0.3, "Core Logic"),
-                (f"tests/test_main.py", 0.2, "Testing")
+                ("tests/test_main.py", 0.2, "Testing")
             ]
             for fn, ratio, focus_layer in fallback_files:
                 file_sec = int(total_time_seconds * ratio * 0.6)
@@ -2732,7 +2737,7 @@ class TermStoryWorkspace(App):
         tool_keywords_list = " ".join(f"[{t}]" for t in sorted(found_tools)) if found_tools else "[git] [python3] [pytest]"
 
         
-        net_change = additions - deletions
+        additions - deletions
         if additions + deletions > 0 and deletions > additions * 1.2:
             archetype = "The Code Executioner (Net-Negative LOC)"
         elif additions > deletions * 1.2:
