@@ -887,8 +887,8 @@ def perform_reset(auto_confirm: bool = False, dry_run: bool = False):
         try:
             response = input("\nAre you sure you want to delete all TermStory data? (y/n): ").strip().lower()
         except (KeyboardInterrupt, EOFError):
-            console.print()
-            response = "n"  # Treat interruption as abort
+            console.print("\n[red]Reset cancelled by user interruption.[/red]")
+            raise typer.Exit(code=1)
         if response not in ("y", "yes"):
             console.print("[yellow]Reset aborted.[/yellow]")
             return
