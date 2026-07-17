@@ -869,12 +869,12 @@ class TestResolveAll(unittest.TestCase):
             self.assertGreaterEqual(ts_mid, min(ts_a, ts_b))
             self.assertLessEqual(ts_mid, max(ts_a, ts_b))
 
-    def test_project_paths_callback_raises_still_resolves_legacy(self):
-        """Simulates the parser-post-callback-failure scenario: project_paths=[].
+    def test_empty_project_paths_still_resolves_legacy(self):
+        """Ensure resolve_all() still returns legacy commands when project_paths is empty.
 
-        When the parser's project_paths callback raises, it catches the exception
-        and passes an empty list to TimestampDetective. resolve_all() must still
-        return all commands without dropping or crashing.
+        This mirrors the parser's post-callback-failure state: after catching a
+        project_paths callback exception, the parser passes an empty list to
+        TimestampDetective. The Detective must not drop or crash on any commands.
         """
         detective = make_detective(search_root=self.tmp, project_paths=[])
         items = make_items("ls -la", "echo hello", "pwd")
@@ -891,6 +891,7 @@ class TestResolveAll(unittest.TestCase):
             self.assertIn("detected_ts", item)
             self.assertIn("detected_source", item)
             self.assertIn("is_legacy_still", item)
+            self.assertTrue(item["is_legacy_still"])
 
 
 # ---------------------------------------------------------------------------
