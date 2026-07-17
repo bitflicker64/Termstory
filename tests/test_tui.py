@@ -157,6 +157,29 @@ def test_clean_command_to_memory():
     # 3. Multi-command chain
     assert clean_command_to_memory("git add . && git commit -m 'Release v0.1'") == "Release v0.1"
 
+    # 4. Advanced git commands
+    # Interactive rebase
+    assert clean_command_to_memory("git rebase -i HEAD~3") == "Interactive rebase of last 3 commits"
+    assert clean_command_to_memory("git rebase -i HEAD~1") == "Interactive rebase of last commit"
+    assert clean_command_to_memory("git rebase -i HEAD~10") == "Interactive rebase of last 10 commits"
+
+    # Normal rebase
+    assert clean_command_to_memory("git rebase main") == "Rebase onto main"
+    assert clean_command_to_memory("git rebase develop") == "Rebase onto develop"
+    assert clean_command_to_memory("git rebase origin/main") == "Rebase onto origin/main"
+
+    # Cherry-pick
+    assert clean_command_to_memory("git cherry-pick abc123") == "Cherry-pick commit"
+    assert clean_command_to_memory("git cherry-pick 7ab93fd") == "Cherry-pick commit"
+    assert clean_command_to_memory("git cherry-pick feature_commit") == "Cherry-pick commit"
+
+    # Reset variants
+    assert clean_command_to_memory("git reset --hard HEAD~1") == "Hard reset to previous commit"
+    assert clean_command_to_memory("git reset --hard HEAD~3") == "Hard reset 3 commits back"
+    assert clean_command_to_memory("git reset --soft HEAD~2") == "Soft reset 2 commits back"
+    assert clean_command_to_memory("git reset --mixed HEAD~1") == "Mixed reset to previous commit"
+    assert clean_command_to_memory("git reset HEAD~2") == "Reset 2 commits back"
+
 
 def test_deduplicate_sessions():
     s1 = Session(id=1, start_time=1000, end_time=2000, duration_seconds=1000, project_id=1)
