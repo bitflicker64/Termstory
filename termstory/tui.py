@@ -404,15 +404,10 @@ class HelpScreen(ModalScreen[None]):
         
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-close-help":
-            # set_timer(0.0, ...) schedules the dismiss on the next event
-            # loop tick, fully outside the Button.Pressed dispatch chain.
-            # Textual 8.x raises ScreenError if AwaitComplete.pre_await runs
-            # inside the screen's message pump, which call_after_refresh
-            # can't escape.
-            self.set_timer(0.0, self.dismiss)
+            self.dismiss_later()
 
     def action_dismiss_none(self) -> None:
-        self.set_timer(0.0, self.dismiss)
+        self.dismiss_later()
 
 
 class OnboardingScreen(ModalScreen[dict]):
@@ -426,6 +421,10 @@ class OnboardingScreen(ModalScreen[dict]):
         ("ctrl+d", "choose_disabled", "Keep Local Only (No AI)"),
         ("escape", "dismiss_none", "Close"),
     ]
+    
+    def dismiss_later(self, result=None) -> None:
+        """Dismiss this modal screen on the next tick with a non-zero delay."""
+        self.set_timer(0.001, lambda: (self.dismiss(result), None)[1])
     
     def __init__(self, current_config: dict):
         super().__init__()
@@ -539,10 +538,10 @@ class OnboardingScreen(ModalScreen[dict]):
         self.config["ai_enabled"] = False
         self.config["active_provider"] = "disabled"
         self.config["has_seen_onboarding"] = True
-        self.set_timer(0.0, lambda: self.dismiss(self.config))
+        self.dismiss_later(self.config)
 
     def action_dismiss_none(self) -> None:
-        self.set_timer(0.0, lambda: self.dismiss(None))
+        self.dismiss_later(None)
         
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id
@@ -599,21 +598,14 @@ class OnboardingScreen(ModalScreen[dict]):
             self.config["ai_enabled"] = True
             self.config["active_provider"] = self.selected_provider
             self.config["has_seen_onboarding"] = True
-
-            # Schedule dismiss out-of-band of this message handler. Using
-            # call_after_refresh(self.dismiss, ...) is not enough by itself
-            # because the AwaitComplete's pre_await callback raises
-            # ScreenError if awaited from inside the screen's message context
-            # (Textual 8.x). set_timer runs on the next tick outside the
-            # Button.Pressed dispatch chain.
-            self.set_timer(0.0, lambda: self.dismiss(self.config))
+            self.dismiss_later(self.config)
         elif button_id == "btn-disable-ai":
             github_username = self.query_one("#input-github-username").value.strip().lstrip('@')
             self.config["github_username"] = github_username
             self.config["ai_enabled"] = False
             self.config["active_provider"] = "disabled"
             self.config["has_seen_onboarding"] = True
-            self.set_timer(0.0, lambda: self.dismiss(self.config))
+            self.dismiss_later(self.config)
 
 
 
@@ -1624,6 +1616,10 @@ class ResetConfirmScreen(ModalScreen):
         Binding("escape", "cancel_reset", "Cancel"),
     ]
     
+    def dismiss_later(self, result=None) -> None:
+        """Dismiss this modal screen on the next tick with a non-zero delay."""
+        self.set_timer(0.001, lambda: (self.dismiss(result), None)[1])
+    
     def compose(self) -> ComposeResult:
         yield Static(
             "\n\n"
@@ -1639,10 +1635,10 @@ class ResetConfirmScreen(ModalScreen):
         )
     
     def action_confirm_reset(self) -> None:
-        self.set_timer(0.0, lambda: self.dismiss(True))
+        self.dismiss_later(True)
 
     def action_cancel_reset(self) -> None:
-        self.set_timer(0.0, lambda: self.dismiss(False))
+        self.dismiss_later(False)
 
 
 class MatrixDefragScreen(ModalScreen[None]):
@@ -1652,8 +1648,12 @@ class MatrixDefragScreen(ModalScreen[None]):
         Binding("q", "close_matrix", "Close", show=True),
     ]
 
+    def dismiss_later(self, result=None) -> None:
+        """Dismiss this modal screen on the next tick with a non-zero delay."""
+        self.set_timer(0.001, lambda: (self.dismiss(result), None)[1])
+
     def action_close_matrix(self) -> None:
-        self.set_timer(0.0, self.dismiss)
+        self.dismiss_later()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1743,8 +1743,12 @@ class GhostTyperScreen(ModalScreen[None]):
         Binding("q", "close_typing", "Stop Playback", show=True),
     ]
 
+    def dismiss_later(self, result=None) -> None:
+        """Dismiss this modal screen on the next tick with a non-zero delay."""
+        self.set_timer(0.001, lambda: (self.dismiss(result), None)[1])
+
     def action_close_typing(self) -> None:
-        self.set_timer(0.0, self.dismiss)
+        self.dismiss_later()
     
     def __init__(self, commands: List[str], *args, **kwargs):
         super().__init__(*args, **kwargs)

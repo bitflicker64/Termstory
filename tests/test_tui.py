@@ -1042,61 +1042,66 @@ async def test_tui_deep_search_scope_escape():
 
 @pytest.mark.asyncio
 async def test_tui_api_key_validation():
-    """Verify OnboardingScreen's API key validation: empty key shows error,
-    selecting ollama (which doesn't need API key) allows screen dismissal.
+    """End-to-end regression test for Issue #288: verify the real Save & Enable
+    button path works under Textual 8.x without freezing.
 
-    Uses structural invocation (call save flow functions directly) rather
-    than pilot.click("btn-save") to avoid Textual 8.x AwaitComplete
-    pre_await callback chain raising ScreenError. Push screen without
-    awaiting so push_screen's underlying future doesn't block."""
-    from termstory.tui import OnboardingScreen
-    # Provide a config that defaults to groq with no api key
-    screen = OnboardingScreen({"active_provider": "groq", "providers": {}})
+    Uses a fake non-empty API key; the onboarding code only validates that
+    the field is non-empty and never contacts the provider during save."""
+    import tempfile
+    import os
+    from termstory.database import Database
+    from termstory.models import Project, Session, Command
 
-    # We need an app context to mount the screen
-    from textual.app import App
-    class DummyApp(App):
-        pass
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = os.path.join(tmp_dir, "test.db")
+        db = Database(db_path)
+        db.init_db()
 
-    app = DummyApp()
-    async with app.run_test() as pilot:
-        # Push the screen. Do not await push_screen so the underlying
-        # dismiss future isn't awaited downstream (Textual 8.x pre_await
-        # chain).
-        app.push_screen(screen)
-        await pilot.pause()
+        now_ts = int(time.time())
+        p = Project(id=1, name="Proj A", path="~/proj-a", first_seen=now_ts, last_seen=now_ts, session_count=1, total_time=0)
+        cmd = Command(timestamp=now_ts, command="git diff", exit_code=0, session_id=1, project_id=1)
+        s = Session(id=1, start_time=now_ts, end_time=now_ts, duration_seconds=0, project_id=1, commands=[cmd], ai_summary=None)
+        db.save_data([p], [s], [cmd])
 
-        # Verify initial state of error label
-        error_label = screen.query_one("#error-api-key")
-        assert error_label.styles.display == "none"
+        app = TermStoryWorkspace(
+            db,
+            days_limit=30,
+            config_override={
+                "has_seen_onboarding": False,
+                "ai_enabled": False,
+                "active_provider": "groq",
+                "providers": {}
+            }
+        )
 
-        # Run the save flow directly with empty API key (groq branch).
-        # Simulates what on_button_pressed would do.
-        screen.selected_provider = "groq"
-        # Drive validation path directly: come from on_button_pressed
-        # without going through ActionChain — set the saved flag manually
-        # for visibility check.
-        error_label.update("API Key cannot be empty.")
-        error_label.styles.display = "block"
-        await pilot.pause()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
 
-        # Verify error label visible
-        assert error_label.styles.display == "block"
-        assert len(app.screen_stack) > 1  # Screen did not dismiss
+            # OnboardingScreen should be visible because has_seen_onboarding=False
+            assert isinstance(app.screen, OnboardingScreen)
+            onboarding = app.screen
 
-        # Switch to ollama — set selected_provider to bypass API key check
-        screen.selected_provider = "ollama"
-        # Mutate config as the save branch would, but DON'T call dismiss
-        # (Textual 8.x AwaitComplete hang). The test's purpose is to verify
-        # the validation flow, not the dismiss mechanics.
-        screen.config["active_provider"] = "ollama"
-        await pilot.pause()
+            # Set a fake non-empty API key — no real network call is made.
+            api_key_input = onboarding.query_one("#input-api-key")
+            api_key_input.value = "gsk_test_key"
+            await pilot.pause()
 
-        # Manually pop the screen from test context (works fine — we proved
-        # this in probe). Verifies the dismissal post-condition.
-        screen.dismiss()
-        await pilot.pause()
-        assert len(app.screen_stack) == 1
+            # Press the actual Save & Enable button directly.
+            save_btn = onboarding.query_one("#btn-save")
+            save_btn.press()
+
+            # Wait for the dismissal timer to fire and the screen to pop.
+            for _ in range(50):
+                if not isinstance(app.screen, OnboardingScreen):
+                    break
+                await pilot.pause()
+
+            # Verify the modal dismissed and the result reached the app.
+            assert not isinstance(app.screen, OnboardingScreen)
+            assert app.config["has_seen_onboarding"] is True
+            assert app.config["ai_enabled"] is True
+            assert app.config["active_provider"] == "groq"
+            assert app.config["providers"]["groq"]["api_key"] == "gsk_test_key"
 
 @pytest.mark.asyncio
 async def test_tui_worker_cancellation(monkeypatch):
