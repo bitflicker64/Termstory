@@ -409,6 +409,10 @@ class HelpScreen(ModalScreen[None]):
     def action_dismiss_none(self) -> None:
         self.dismiss_later()
 
+    def dismiss_later(self, result=None) -> None:
+        """Dismiss this modal screen on the next tick with a non-zero delay."""
+        self.set_timer(0.001, lambda: (self.dismiss(result), None)[1])
+
 
 class OnboardingScreen(ModalScreen[dict]):
     """Modal screen displaying trust warning and AI configuration options."""
