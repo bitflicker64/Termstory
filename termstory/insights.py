@@ -373,6 +373,9 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
 
         chaotic_sessions = []
 
+        # 1. Filter out candidate late-night sessions in memory
+        candidate_sessions = []
+        candidate_ids = []
         for row in session_rows:
             s_id, start, end, duration, p_id = row
             try:
@@ -381,19 +384,38 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
                 continue
             hour = dt.hour
 
-            # Late night check: 11 PM (23) to 5 AM (5)
             is_late_night = (hour >= 23 or hour < 5)
             if not is_late_night:
                 continue
 
-            # Fetch commands for this session
-            cursor.execute("""
-                SELECT command, exit_code
+            candidate_sessions.append((s_id, start, end, duration, p_id, hour))
+            candidate_ids.append(s_id)
+
+        if not candidate_ids:
+            return []
+
+        # 2. Bulk fetch commands for all candidate sessions
+        commands_by_session = defaultdict(list)
+        _SQLITE_IN_CHUNK_SIZE = 900
+        for i in range(0, len(candidate_ids), _SQLITE_IN_CHUNK_SIZE):
+            chunk = candidate_ids[i:i + _SQLITE_IN_CHUNK_SIZE]
+            placeholders = ",".join("?" for _ in chunk)
+            cursor.execute(f"""
+                SELECT session_id, command, exit_code
                 FROM commands
-                WHERE session_id = ?
+                WHERE session_id IN ({placeholders})
                 ORDER BY timestamp ASC
-            """, (s_id,))
-            cmd_rows = cursor.fetchall()
+            """, chunk)
+            for row in cursor.fetchall():
+                c_s_id, cmd, exit_code = row
+                commands_by_session[c_s_id].append((cmd, exit_code))
+
+        # 3. Evaluate chaos scoring in memory
+        chaotic_candidates = []
+        project_ids_needing_commits = set()
+        for row in candidate_sessions:
+            s_id, start, end, duration, p_id, hour = row
+            cmd_rows = commands_by_session.get(s_id, [])
             if not cmd_rows:
                 continue
 
@@ -402,12 +424,7 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
             failed_count = len(failed_cmds)
             total_count = len(commands)
 
-            # Chaos score heuristics:
-            # 1. Total command count >= 10 (working intensely)
-            # 2. Failed command count >= 3 (struggling)
-            # 3. Running git commit --amend or similar desperate commands
             has_desperate_command = any("amend" in cmd or "revert" in cmd or "force" in cmd or "reset" in cmd for cmd in commands)
-
             is_chaotic = (total_count >= 10 or failed_count >= 3 or has_desperate_command)
 
             if is_chaotic:
@@ -415,28 +432,66 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
                 if p_name == "General / No Project" or not p_name:
                     p_name = "Other"
 
-                # Fetch commits in session
-                commits = []
-                if p_id is not None:
-                    cursor.execute("""
-                        SELECT message
-                        FROM commits
-                        WHERE project_id = ? AND timestamp >= ? AND timestamp <= ?
-                        ORDER BY timestamp ASC
-                    """, (p_id, start - 300, end + 600 if end is not None else start + 3600))
-                    commits = [r[0] for r in cursor.fetchall()]
-
-                chaotic_sessions.append({
+                chaotic_candidates.append({
                     "session_id": s_id,
                     "start_time": start,
                     "end_time": end,
                     "duration_seconds": duration,
                     "project_name": p_name,
+                    "project_id": p_id,
                     "commands": commands,
                     "failed_commands": failed_cmds,
-                    "commits": commits,
                     "hour": hour
                 })
+                if p_id is not None:
+                    project_ids_needing_commits.add(p_id)
+
+        # 4. Bulk-fetch commits within precise session windows to avoid over-fetching
+        commits_by_project = defaultdict(list)
+        sessions_with_project = [s for s in chaotic_candidates if s["project_id"] is not None]
+        if sessions_with_project:
+            # Chunking sessions_with_project to keep parameter count below SQLite limits (e.g., max 250 sessions = 750 parameters)
+            chunk_size = 250
+            for i in range(0, len(sessions_with_project), chunk_size):
+                chunk = sessions_with_project[i:i + chunk_size]
+                clauses = []
+                query_args = []
+                for session in chunk:
+                    start = session["start_time"]
+                    end = session["end_time"]
+                    min_ts = start - 300
+                    max_ts = end + 600 if end is not None else start + 3600
+                    clauses.append("(project_id = ? AND timestamp >= ? AND timestamp <= ?)")
+                    query_args.extend([session["project_id"], min_ts, max_ts])
+                
+                if clauses:
+                    cursor.execute(f"""
+                        SELECT project_id, timestamp, message
+                        FROM commits
+                        WHERE {" OR ".join(clauses)}
+                        ORDER BY timestamp ASC
+                    """, query_args)
+                    for c_row in cursor.fetchall():
+                        c_pid, c_ts, c_msg = c_row
+                        commits_by_project[c_pid].append((c_ts, c_msg))
+
+        # 5. Filter and associate commits in memory
+        for session in chaotic_candidates:
+            p_id = session["project_id"]
+            start = session["start_time"]
+            end = session["end_time"]
+
+            commits = []
+            if p_id is not None:
+                max_ts = end + 600 if end is not None else start + 3600
+                min_ts = start - 300
+                for c_ts, c_msg in commits_by_project[p_id]:
+                    if min_ts <= c_ts <= max_ts:
+                        commits.append(c_msg)
+
+            session["commits"] = commits
+            del session["project_id"]
+            chaotic_sessions.append(session)
 
         return chaotic_sessions
     finally:
