@@ -160,14 +160,15 @@ def detect_project_language_from_files(path: str) -> Optional[str]:
     """Helper to check common config files on disk to infer project language."""
     if not path:
         return None
-    if path in _LANG_CACHE:
-        return _LANG_CACHE[path]
+    expanded = os.path.expanduser(path)
+    if expanded in _LANG_CACHE:
+        return _LANG_CACHE[expanded]
         
-    if not os.path.isdir(path):
+    if not os.path.isdir(expanded):
         _LANG_CACHE[path] = None
         return None
         
-    path_lower = path.lower()
+    path_lower = expanded.lower()
     for prefix in ["/mnt", "/volumes/smb", "\\\\"]:
         if path_lower.startswith(prefix):
             _LANG_CACHE[path] = None
@@ -189,14 +190,14 @@ def detect_project_language_from_files(path: str) -> Optional[str]:
     
     for filename, lang in checks:
         try:
-            if os.path.exists(os.path.join(path, filename)):
+            if os.path.exists(os.path.join(expanded, filename)):
                 _LANG_CACHE[path] = lang
                 return lang
         except Exception:
             pass
             
     try:
-        for f in os.listdir(path):
+        for f in os.listdir(expanded):
             if f.endswith(".csproj") or f.endswith(".sln"):
                 _LANG_CACHE[path] = "C#"
                 return "C#"
