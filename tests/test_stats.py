@@ -152,7 +152,7 @@ def clear_cache():
 
 
 def test_detect_language_with_tilde_expansion(tmp_path, monkeypatch):
-    monkeypatch.setattr("os.path.expanduser", lambda path: str(tmp_path) if path == "~" else path)
+    monkeypatch.setattr("os.path.expanduser", lambda path: str(tmp_path / path[2:]) if path.startswith("~/") else path)
     proj_dir = tmp_path / "Projects" / "my-python-project"
     proj_dir.mkdir(parents=True)
     (proj_dir / "pyproject.toml").touch()
