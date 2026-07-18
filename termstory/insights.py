@@ -446,38 +446,34 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
                 if p_id is not None:
                     project_ids_needing_commits.add(p_id)
 
-        # 4. Find global bounds and bulk-fetch commits
+        # 4. Bulk-fetch commits within precise session windows to avoid over-fetching
         commits_by_project = defaultdict(list)
-        if project_ids_needing_commits:
-            overall_min_ts = None
-            overall_max_ts = None
-            for session in chaotic_candidates:
-                if session["project_id"] is not None:
+        sessions_with_project = [s for s in chaotic_candidates if s["project_id"] is not None]
+        if sessions_with_project:
+            # Chunking sessions_with_project to keep parameter count below SQLite limits (e.g., max 250 sessions = 750 parameters)
+            chunk_size = 250
+            for i in range(0, len(sessions_with_project), chunk_size):
+                chunk = sessions_with_project[i:i + chunk_size]
+                clauses = []
+                query_args = []
+                for session in chunk:
                     start = session["start_time"]
                     end = session["end_time"]
                     min_ts = start - 300
                     max_ts = end + 600 if end is not None else start + 3600
-                    if overall_min_ts is None or min_ts < overall_min_ts:
-                        overall_min_ts = min_ts
-                    if overall_max_ts is None or max_ts > overall_max_ts:
-                        overall_max_ts = max_ts
-
-            project_ids_list = list(project_ids_needing_commits)
-            for i in range(0, len(project_ids_list), _SQLITE_IN_CHUNK_SIZE):
-                chunk = project_ids_list[i:i + _SQLITE_IN_CHUNK_SIZE]
-                placeholders = ",".join("?" for _ in chunk)
-                query_args = chunk + [overall_min_ts, overall_max_ts]
-                cursor.execute(f"""
-                    SELECT project_id, timestamp, message
-                    FROM commits
-                    WHERE project_id IN ({placeholders})
-                      AND timestamp >= ?
-                      AND timestamp <= ?
-                    ORDER BY timestamp ASC
-                """, query_args)
-                for c_row in cursor.fetchall():
-                    c_pid, c_ts, c_msg = c_row
-                    commits_by_project[c_pid].append((c_ts, c_msg))
+                    clauses.append("(project_id = ? AND timestamp >= ? AND timestamp <= ?)")
+                    query_args.extend([session["project_id"], min_ts, max_ts])
+                
+                if clauses:
+                    cursor.execute(f"""
+                        SELECT project_id, timestamp, message
+                        FROM commits
+                        WHERE {" OR ".join(clauses)}
+                        ORDER BY timestamp ASC
+                    """, query_args)
+                    for c_row in cursor.fetchall():
+                        c_pid, c_ts, c_msg = c_row
+                        commits_by_project[c_pid].append((c_ts, c_msg))
 
         # 5. Filter and associate commits in memory
         for session in chaotic_candidates:
