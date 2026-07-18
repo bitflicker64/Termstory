@@ -42,6 +42,8 @@ def generate_notebook(
     lines = []
     
     def format_time(ts: int) -> str:
+        if ts is None:
+            return "In progress"
         t_str = datetime.fromtimestamp(ts).strftime("%I:%M %p")
         if t_str.startswith("0"):
             t_str = t_str[1:]
