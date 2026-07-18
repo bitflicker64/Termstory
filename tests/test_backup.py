@@ -84,3 +84,37 @@ def test_backup_rotation(tmp_path, monkeypatch):
     import glob
     remaining = glob.glob(os.path.join(backup_dir, "termstory_backup_*.db"))
     assert len(remaining) == 10
+
+
+def test_backup_survives_rotation_failure(tmp_path, monkeypatch):
+    db_file = tmp_path / "test_rotation_failure.db"
+    db_path = str(db_file)
+    monkeypatch.setenv("DB_PATH", db_path)
+    monkeypatch.setattr("termstory.config.get_db_path", lambda: db_path)
+    monkeypatch.setattr("termstory.backup.get_db_path", lambda: db_path)
+
+    db = Database(db_path)
+    db.init_db()
+
+    class MockDatetime:
+        counter = 0
+        @classmethod
+        def now(cls):
+            cls.counter += 1
+            from datetime import datetime as dt
+            return dt(2026, 6, 18, 19, 0, cls.counter)
+
+    monkeypatch.setattr("termstory.backup.datetime", MockDatetime)
+
+    # Fill past the rotation threshold so cleanup runs and hits the failing os.remove.
+    for _ in range(11):
+        backup_db()
+
+    def boom(_path):
+        raise PermissionError("cannot delete backup")
+
+    monkeypatch.setattr("termstory.backup.os.remove", boom)
+
+    # Rotation now fails, but the backup itself must still succeed and return a path.
+    backup_path = backup_db()
+    assert os.path.isfile(backup_path)
