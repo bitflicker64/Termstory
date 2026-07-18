@@ -166,7 +166,7 @@ def detect_project_language_from_files(path: str) -> Optional[str]:
     if path in _LANG_CACHE:
         return _LANG_CACHE[path]
         
-    if not os.path.isdir(path):
+    if not os.path.isdir(os.path.expanduser(path)):
         _LANG_CACHE[path] = None
         return None
         
@@ -192,14 +192,14 @@ def detect_project_language_from_files(path: str) -> Optional[str]:
     
     for filename, lang in checks:
         try:
-            if os.path.exists(os.path.join(path, filename)):
+            if os.path.exists(os.path.join(os.path.expanduser(path), filename)):
                 _LANG_CACHE[path] = lang
                 return lang
         except Exception:
             logger.debug("Failed to check for config file %s in %s", filename, path, exc_info=True)
             
     try:
-        for f in os.listdir(path):
+        for f in os.listdir(os.path.expanduser(path)):
             if f.endswith(".csproj") or f.endswith(".sln"):
                 _LANG_CACHE[path] = "C#"
                 return "C#"
