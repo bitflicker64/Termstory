@@ -227,6 +227,9 @@ def test_generate_and_open_report(tmp_path, monkeypatch):
         
     assert "<title>TermStory Web Report</title>" in html
     assert "const reportData = " in html
+    assert 'id="session-window-notice"' in html
+    assert "if (sessionWindow?.truncated)" in html
+    assert "Showing ${sessionWindow.returned} of ${sessionWindow.total} sessions." in html
 
 def test_cli_web_subcommand(tmp_path, monkeypatch):
     db_file = tmp_path / "cli_web.db"

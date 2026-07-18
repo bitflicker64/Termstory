@@ -480,6 +480,18 @@ def generate_and_open_report(
             color: var(--text-secondary);
             font-size: 0.9rem;
         }}
+        .session-window-notice {{
+            display: none;
+            margin: -16px 0 28px;
+            padding: 12px 16px;
+            border-left: 3px solid var(--accent-color);
+            background: var(--panel-bg);
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }}
+        .session-window-notice.visible {{
+            display: block;
+        }}
 
         /* Glassmorphism panel */
         .panel {{
@@ -851,6 +863,8 @@ def generate_and_open_report(
                 <div style="margin-top: 2px;">Last Ingested: <span id="last-ingested-date">-</span></div>
             </div>
         </header>
+
+        <div id="session-window-notice" class="session-window-notice" role="status" aria-live="polite"></div>
         
         <div class="kpi-grid">
             <div class="panel kpi-card">
@@ -1179,6 +1193,13 @@ def generate_and_open_report(
             document.getElementById('kpi-commands').textContent = reportData.stats.total_commands;
             document.getElementById('kpi-projects').textContent = reportData.stats.total_projects;
             document.getElementById('kpi-streak').textContent = `${{reportData.stats.streak}} Days`;
+
+            const sessionWindow = reportData.session_window;
+            if (sessionWindow?.truncated) {{
+                const notice = document.getElementById('session-window-notice');
+                notice.textContent = `Showing ${{sessionWindow.returned}} of ${{sessionWindow.total}} sessions.`;
+                notice.classList.add('visible');
+            }}
             
             const searchInput = document.getElementById('search-bar');
             searchInput.addEventListener('input', (e) => {{
