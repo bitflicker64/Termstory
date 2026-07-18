@@ -43,8 +43,8 @@ def backup_db() -> str:
             oldest = backups.pop(0)
             if os.path.exists(oldest):
                 os.remove(oldest)
-    except Exception:
-        pass  # Rotation failure should not crash the backup process
+    except OSError:
+        logger.warning("Backup rotation failed", exc_info=True)  # Log but don't crash backup
 
     return backup_path
 
