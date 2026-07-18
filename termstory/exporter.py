@@ -3,6 +3,7 @@ import json
 import os
 import sys
 from datetime import datetime, timedelta, timezone
+from termstory import date_utils
 from typing import List, Dict, Any, Optional
 from dateutil import parser as date_parser
 
@@ -40,7 +41,7 @@ def parse_since(since_str: Optional[str]) -> Optional[int]:
     since_str = since_str.strip()
     if since_str.isdigit():
         days = int(since_str)
-        now = datetime.now()
+        now = date_utils.get_current_time()
         dt = now - timedelta(days=days)
         # Start of that day
         start_of_day = datetime.combine(dt.date(), datetime.min.time())
