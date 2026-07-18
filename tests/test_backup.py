@@ -1,3 +1,4 @@
+import logging
 import os
 import pytest
 from termstory.backup import backup_db, restore_db
@@ -86,7 +87,7 @@ def test_backup_rotation(tmp_path, monkeypatch):
     assert len(remaining) == 10
 
 
-def test_backup_survives_rotation_failure(tmp_path, monkeypatch):
+def test_backup_survives_rotation_failure(tmp_path, monkeypatch, caplog):
     db_file = tmp_path / "test_rotation_failure.db"
     db_path = str(db_file)
     monkeypatch.setenv("DB_PATH", db_path)
@@ -116,5 +117,14 @@ def test_backup_survives_rotation_failure(tmp_path, monkeypatch):
     monkeypatch.setattr("termstory.backup.os.remove", boom)
 
     # Rotation now fails, but the backup itself must still succeed and return a path.
-    backup_path = backup_db()
+    with caplog.at_level(logging.ERROR, logger="termstory.backup"):
+        backup_path = backup_db()
+
     assert os.path.isfile(backup_path)
+
+    # The rotation failure must be logged, not silently swallowed. A regression
+    # back to `except OSError: pass` would drop this record and fail here.
+    assert any(
+        "Failed to rotate old backups" in record.message
+        for record in caplog.records
+    )
