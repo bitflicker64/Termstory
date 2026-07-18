@@ -68,6 +68,8 @@ def classify_command(cmd_text: str) -> str:
 
 def format_time(timestamp: int) -> str:
     """Format Unix timestamp to 12-hour local time format without leading zeroes, e.g. '9:00 AM'"""
+    if timestamp is None:
+        return "In progress"
     dt = datetime.fromtimestamp(timestamp)
     time_str = dt.strftime("%I:%M %p")
     if time_str.startswith("0"):
