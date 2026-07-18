@@ -24,8 +24,8 @@ def advanced_search(
         if fts and query:
             try:
                 return _search_new_fts5(conn, query, project_filter, since_ts, until_ts, tag_filters)
-            except sqlite3.OperationalError as e:
-                logger.warning("FTS5 advanced search failed, falling back: %s", e)
+            except sqlite3.OperationalError:
+                logger.warning("FTS5 advanced search failed, falling back", exc_info=True)
 
         # Check if FTS5 is enabled
         fts_enabled = False
@@ -38,8 +38,8 @@ def advanced_search(
         if fts_enabled and query:
             try:
                 return _search_fts5(conn, query, project_filter, since_ts, until_ts, tag_filters)
-            except sqlite3.OperationalError as e:
-                logger.warning("FTS5 search failed, falling back: %s", e)
+            except sqlite3.OperationalError:
+                logger.warning("FTS5 search failed, falling back", exc_info=True)
                 
         return _search_standard(conn, query, project_filter, since_ts, until_ts, tag_filters)
     finally:
