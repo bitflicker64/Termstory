@@ -28,6 +28,12 @@ def test_get_web_data_empty_db(tmp_path):
     assert data["stats"]["streak"] == 0
     assert len(data["projects"]) == 0
     assert len(data["sessions"]) == 0
+    assert data["session_window"] == {
+        "limit": 1000,
+        "returned": 0,
+        "total": 0,
+        "truncated": False,
+    }
     assert len(data["highlights"]) == 0
 
 
@@ -151,6 +157,44 @@ def test_get_web_data_populated_db(tmp_path):
     assert len(data["highlights"]) == 1
     assert data["highlights"][0]["project_name"] == "Project A"
     assert data["highlights"][0]["ai_summary"] == "Started project A"
+
+
+def test_get_web_data_does_not_truncate_unfiltered_sessions_at_30(tmp_path):
+    db = Database(str(tmp_path / "sessions.db"))
+    db.init_db()
+
+    now = int(datetime(2026, 6, 14, 12, 0, 0).timestamp())
+    project = Project(
+        id=1,
+        name="Project A",
+        path="/path/to/a",
+        first_seen=now,
+        last_seen=now,
+        session_count=31,
+        total_time=31,
+    )
+    sessions = [
+        Session(
+            id=index + 1,
+            start_time=now + index,
+            end_time=now + index + 1,
+            duration_seconds=1,
+            project_id=1,
+        )
+        for index in range(31)
+    ]
+    db.save_data([project], sessions, [])
+
+    data = get_web_data(db)
+
+    assert len(data["sessions"]) == 31
+    assert data["session_window"] == {
+        "limit": 1000,
+        "returned": 31,
+        "total": 31,
+        "truncated": False,
+    }
+
 
 def test_generate_and_open_report(tmp_path, monkeypatch):
     db_file = tmp_path / "report.db"
@@ -292,6 +336,13 @@ def test_swarm_audit_fixes(tmp_path, monkeypatch):
     assert data["stats"]["total_sessions"] == 1005
     assert data["stats"]["total_commands"] == 1005
     assert data["stats"]["total_projects"] == 1
+    assert len(data["sessions"]) == 1000
+    assert data["session_window"] == {
+        "limit": 1000,
+        "returned": 1000,
+        "total": 1005,
+        "truncated": True,
+    }
     
     # Verify daily activity heatmap calculations work and are populated
     today_str = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
@@ -321,4 +372,3 @@ def test_swarm_audit_fixes(tmp_path, monkeypatch):
     assert "const reportData =" in html
     # Check if our backslash command exists intact in the JSON
     assert "backslash \\\\" in html
-
