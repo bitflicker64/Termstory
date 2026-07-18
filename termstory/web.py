@@ -58,9 +58,9 @@ def get_web_data(db: Database, start_ts: Optional[int] = None, end_ts: Optional[
             
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
-            query += " ORDER BY start_time DESC LIMIT 1000"
+            query += " ORDER BY start_time DESC LIMIT 2000"
         else:
-            query += " ORDER BY start_time DESC LIMIT 30"
+            query += " ORDER BY start_time DESC LIMIT 200"
             
         cursor.execute(query, params)
         session_ids = [row[0] for row in cursor.fetchall()]
