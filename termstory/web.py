@@ -940,6 +940,7 @@ def generate_and_open_report(
         }}
 
         function formatTime(timestamp) {{
+            if (timestamp === null || timestamp === undefined) return "Active";
             const date = new Date(timestamp * 1000);
             return date.toLocaleTimeString(undefined, {{ hour: '2-digit', minute: '2-digit' }});
         }}
