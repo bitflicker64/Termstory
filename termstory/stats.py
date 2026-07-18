@@ -165,13 +165,13 @@ def detect_project_language_from_files(path: str) -> Optional[str]:
         return _LANG_CACHE[expanded]
         
     if not os.path.isdir(expanded):
-        _LANG_CACHE[path] = None
+        _LANG_CACHE[expanded] = None
         return None
         
     path_lower = expanded.lower()
     for prefix in ["/mnt", "/volumes/smb", "\\\\"]:
         if path_lower.startswith(prefix):
-            _LANG_CACHE[path] = None
+            _LANG_CACHE[expanded] = None
             return None
             
     checks = [
@@ -191,7 +191,7 @@ def detect_project_language_from_files(path: str) -> Optional[str]:
     for filename, lang in checks:
         try:
             if os.path.exists(os.path.join(expanded, filename)):
-                _LANG_CACHE[path] = lang
+                _LANG_CACHE[expanded] = lang
                 return lang
         except Exception:
             pass
@@ -199,15 +199,15 @@ def detect_project_language_from_files(path: str) -> Optional[str]:
     try:
         for f in os.listdir(expanded):
             if f.endswith(".csproj") or f.endswith(".sln"):
-                _LANG_CACHE[path] = "C#"
+                _LANG_CACHE[expanded] = "C#"
                 return "C#"
             if f == "Makefile":
-                _LANG_CACHE[path] = "C/C++"
+                _LANG_CACHE[expanded] = "C/C++"
                 return "C/C++"
     except Exception:
         pass
         
-    _LANG_CACHE[path] = None
+    _LANG_CACHE[expanded] = None
     return None
 
 def language_detection(db: Database) -> Dict[str, float]:
