@@ -1,6 +1,9 @@
+import logging
 import sqlite3
 from typing import List, Dict, Optional
 from termstory.database import Database
+
+logger = logging.getLogger(__name__)
 
 def advanced_search(
     db: Database,
@@ -21,8 +24,8 @@ def advanced_search(
         if fts and query:
             try:
                 return _search_new_fts5(conn, query, project_filter, since_ts, until_ts, tag_filters)
-            except sqlite3.OperationalError:
-                pass
+            except sqlite3.OperationalError as e:
+                logger.warning("FTS5 advanced search failed, falling back: %s", e)
 
         # Check if FTS5 is enabled
         fts_enabled = False
@@ -35,8 +38,8 @@ def advanced_search(
         if fts_enabled and query:
             try:
                 return _search_fts5(conn, query, project_filter, since_ts, until_ts, tag_filters)
-            except sqlite3.OperationalError:
-                pass
+            except sqlite3.OperationalError as e:
+                logger.warning("FTS5 search failed, falling back: %s", e)
                 
         return _search_standard(conn, query, project_filter, since_ts, until_ts, tag_filters)
     finally:
