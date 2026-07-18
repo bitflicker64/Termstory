@@ -923,6 +923,7 @@ def generate_and_open_report(
         }}
 
         function formatDuration(seconds) {{
+            if (seconds === null || seconds === undefined) return "Ongoing";
             if (seconds <= 0) return "0s";
             if (seconds < 60) return `${{seconds}}s`;
             const hours = Math.floor(seconds / 3600);
