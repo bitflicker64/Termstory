@@ -412,7 +412,6 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
 
         # 3. Evaluate chaos scoring in memory
         chaotic_candidates = []
-        project_ids_needing_commits = set()
         for row in candidate_sessions:
             s_id, start, end, duration, p_id, hour = row
             cmd_rows = commands_by_session.get(s_id, [])
@@ -443,11 +442,10 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
                     "failed_commands": failed_cmds,
                     "hour": hour
                 })
-                if p_id is not None:
-                    project_ids_needing_commits.add(p_id)
 
         # 4. Bulk-fetch commits within precise session windows to avoid over-fetching
         commits_by_project = defaultdict(list)
+        seen_commits = set()
         sessions_with_project = [s for s in chaotic_candidates if s["project_id"] is not None]
         if sessions_with_project:
             # Chunking sessions_with_project to keep parameter count below SQLite limits (e.g., max 250 sessions = 750 parameters)
@@ -473,7 +471,11 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
                     """, query_args)
                     for c_row in cursor.fetchall():
                         c_pid, c_ts, c_msg = c_row
-                        commits_by_project[c_pid].append((c_ts, c_msg))
+                        commit_key = (c_pid, c_ts, c_msg)
+                        if commit_key not in seen_commits:
+                            seen_commits.add(commit_key)
+                            commits_by_project[c_pid].append((c_ts, c_msg))
+
 
         # 5. Filter and associate commits in memory
         for session in chaotic_candidates:

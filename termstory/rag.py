@@ -90,10 +90,13 @@ def get_embeddings(texts: List[str], model_name: str = "all-MiniLM-L6-v2") -> An
             "The 'sentence-transformers' package is required for semantic search. "
             "Please install it using: pip install sentence-transformers"
         )
-    with _model_cache_lock:
-        if model_name not in _model_cache:
-            _model_cache[model_name] = SentenceTransformer(model_name)
-        model = _model_cache[model_name]
+    model = _model_cache.get(model_name)
+    if model is None:
+        new_model = SentenceTransformer(model_name)
+        with _model_cache_lock:
+            if model_name not in _model_cache:
+                _model_cache[model_name] = new_model
+            model = _model_cache[model_name]
     return model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
 
 
