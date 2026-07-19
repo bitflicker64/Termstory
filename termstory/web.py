@@ -58,9 +58,9 @@ def get_web_data(db: Database, start_ts: Optional[int] = None, end_ts: Optional[
             
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
-            query += " ORDER BY start_time DESC LIMIT 1000"
+            query += " ORDER BY start_time DESC LIMIT 500"
         else:
-            query += " ORDER BY start_time DESC LIMIT 30"
+            query += " ORDER BY start_time DESC LIMIT 500"
             
         cursor.execute(query, params)
         session_ids = [row[0] for row in cursor.fetchall()]
@@ -930,6 +930,7 @@ def generate_and_open_report(
         }}
 
         function formatDuration(seconds) {{
+            if (seconds === null || seconds === undefined) return "Ongoing";
             if (seconds <= 0) return "0s";
             if (seconds < 60) return `${{seconds}}s`;
             const hours = Math.floor(seconds / 3600);

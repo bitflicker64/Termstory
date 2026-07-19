@@ -22,7 +22,7 @@ A clear and concise description of what you expected to happen.
 - OS: [e.g., macOS, Linux, Windows]
 - Shell: [e.g., zsh, bash, fish]
 - Python Version: [e.g., 3.10]
-- TermStory Version: [e.g., 0.1.0]
+- TermStory Version: [e.g., 0.6.4]
 
 ## Additional Context
 Add any other context about the problem here.

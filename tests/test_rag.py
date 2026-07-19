@@ -248,3 +248,46 @@ def test_cli_search_semantic_missing_query(tmp_path, monkeypatch):
     result = runner.invoke(app, ["search", "--semantic"])
     assert result.exit_code == 1
     assert "semantic search requires a search query" in result.output.lower()
+
+
+def test_get_embeddings_caching(monkeypatch):
+    from termstory.rag import get_embeddings, clear_model_cache
+    
+    # Ensure it behaves as if sentence_transformers is available
+    monkeypatch.setattr("termstory.rag.SENTENCE_TRANSFORMERS_AVAILABLE", True)
+    
+    instantiation_count = 0
+    created_models = []
+    
+    class SpySentenceTransformer(MockSentenceTransformer):
+        def __init__(self, model_name: str):
+            nonlocal instantiation_count
+            instantiation_count += 1
+            super().__init__(model_name)
+            created_models.append(self)
+
+    monkeypatch.setattr("termstory.rag.SentenceTransformer", SpySentenceTransformer, raising=False)
+    
+    # Clear cache for isolated test run
+    clear_model_cache()
+    
+    try:
+        # First call with model A
+        res1 = get_embeddings(["hello"], model_name="model_a")
+        assert instantiation_count == 1
+        
+        # Second call with same model A
+        res2 = get_embeddings(["world"], model_name="model_a")
+        assert instantiation_count == 1  # Should reuse cached instance
+        
+        # Third call with different model B
+        res3 = get_embeddings(["hello"], model_name="model_b")
+        assert instantiation_count == 2  # Should load and cache new model
+        
+        # Fourth call with model B
+        res4 = get_embeddings(["world"], model_name="model_b")
+        assert instantiation_count == 2  # Should reuse cached instance
+        
+    finally:
+        clear_model_cache()
+

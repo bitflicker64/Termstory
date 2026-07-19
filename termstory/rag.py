@@ -2,6 +2,8 @@ import math
 import re
 from typing import List, Dict, Optional, Tuple, Any
 
+import threading
+
 # Try to import sentence_transformers and numpy as optional dependencies
 try:
     from sentence_transformers import SentenceTransformer
@@ -10,6 +12,19 @@ try:
 except ImportError:
     SENTENCE_TRANSFORMERS_AVAILABLE = False
     np = None
+
+# Cache for loaded SentenceTransformer models to avoid expensive reloading
+_model_cache = {}
+_model_cache_lock = threading.Lock()
+
+
+def clear_model_cache():
+    """
+    Clears the cached sentence-transformer models.
+    """
+    with _model_cache_lock:
+        _model_cache.clear()
+
 
 
 class BM25:
@@ -66,13 +81,22 @@ def tokenize(text: str) -> List[str]:
 def get_embeddings(texts: List[str], model_name: str = "all-MiniLM-L6-v2") -> Any:
     """
     Generates sentence embeddings using the sentence-transformers library.
+    
+    This function caches loaded model instances by model_name to avoid expensive
+    reloading on repeated calls.
     """
     if not SENTENCE_TRANSFORMERS_AVAILABLE:
         raise ImportError(
             "The 'sentence-transformers' package is required for semantic search. "
             "Please install it using: pip install sentence-transformers"
         )
-    model = SentenceTransformer(model_name)
+    model = _model_cache.get(model_name)
+    if model is None:
+        new_model = SentenceTransformer(model_name)
+        with _model_cache_lock:
+            if model_name not in _model_cache:
+                _model_cache[model_name] = new_model
+            model = _model_cache[model_name]
     return model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
 
 
