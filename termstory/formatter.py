@@ -66,7 +66,7 @@ def classify_command(cmd_text: str) -> str:
             
     return first_token
 
-def format_time(timestamp: int) -> str:
+def format_time(timestamp: Optional[int]) -> str:
     """Format Unix timestamp to 12-hour local time format without leading zeroes, e.g. '9:00 AM'"""
     if timestamp is None:
         return "In progress"
