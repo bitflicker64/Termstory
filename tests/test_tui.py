@@ -1041,7 +1041,7 @@ async def test_tui_deep_search_scope_escape():
             assert "Timeline" in str(new_timeline_root.label)
 
 @pytest.mark.asyncio
-async def test_tui_api_key_validation():
+async def test_tui_api_key_validation(monkeypatch):
     """End-to-end regression test for Issue #288: verify the real Save & Enable
     button path works under Textual 8.x without freezing.
 
@@ -1051,6 +1051,12 @@ async def test_tui_api_key_validation():
     import os
     from termstory.database import Database
     from termstory.models import Project, Session, Command
+
+    saved_configs = []
+    def mock_save_config(config):
+        saved_configs.append(config)
+
+    monkeypatch.setattr("termstory.tui.save_config", mock_save_config)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         db_path = os.path.join(tmp_dir, "test.db")
@@ -1090,9 +1096,13 @@ async def test_tui_api_key_validation():
             save_btn = onboarding.query_one("#btn-save")
             save_btn.press()
 
-            # Wait for the dismissal timer to fire and the screen to pop.
+            # Wait for both the dismissal timer to fire AND the push_screen
+            # callback (handle_onboarding_result) to update app.config.
             for _ in range(50):
-                if not isinstance(app.screen, OnboardingScreen):
+                if (
+                    not isinstance(app.screen, OnboardingScreen)
+                    and app.config.get("has_seen_onboarding")
+                ):
                     break
                 await pilot.pause()
 
@@ -1102,6 +1112,11 @@ async def test_tui_api_key_validation():
             assert app.config["ai_enabled"] is True
             assert app.config["active_provider"] == "groq"
             assert app.config["providers"]["groq"]["api_key"] == "gsk_test_key"
+
+            # Ensure save_config was called with the new config but never
+            # wrote to the developer's real ~/.termstory/config.json.
+            assert len(saved_configs) == 1
+            assert saved_configs[0]["has_seen_onboarding"] is True
 
 @pytest.mark.asyncio
 async def test_tui_worker_cancellation(monkeypatch):

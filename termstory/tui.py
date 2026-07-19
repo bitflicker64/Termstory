@@ -362,7 +362,28 @@ def get_session_memory_str(session: Session) -> str:
 # 2. TUI WIDGETS & SCREENS
 # ==========================================
 
-class HelpScreen(ModalScreen[None]):
+class _DeferredDismissMixin:
+    """Mixin providing a deferred screen dismissal to avoid Textual 8.x modal freeze.
+
+    Calling dismiss() directly during a button/action handler can trigger a
+    ZeroDivisionError inside Textual 8.x's pre_await machinery. Scheduling the
+    dismiss on the next event-loop tick via set_timer(0.001, ...) works around
+    the bug while preserving the same user-visible behavior.
+    """
+    def dismiss_later(self, result=None) -> None:
+        """Dismiss this modal on the next event-loop tick.
+
+        Uses a **0.001 s** (not 0.0 s) delay.  In Textual 8.x,
+        ``set_timer(0.0, ...)`` re-enters ``pre_await`` during modal
+        dismissal and crashes with a ``ZeroDivisionError``; a non-zero
+        delay ensures the timer fires on a clean tick.
+        """
+        def _do_dismiss():
+            self.dismiss(result)
+        self.set_timer(0.001, _do_dismiss)
+
+
+class HelpScreen(_DeferredDismissMixin, ModalScreen[None]):
     """Modal screen displaying all keyboard shortcuts."""
     
     BINDINGS = [
@@ -409,12 +430,8 @@ class HelpScreen(ModalScreen[None]):
     def action_dismiss_none(self) -> None:
         self.dismiss_later()
 
-    def dismiss_later(self, result=None) -> None:
-        """Dismiss this modal screen on the next tick with a non-zero delay."""
-        self.set_timer(0.001, lambda: (self.dismiss(result), None)[1])
 
-
-class OnboardingScreen(ModalScreen[dict]):
+class OnboardingScreen(_DeferredDismissMixin, ModalScreen[dict]):
     """Modal screen displaying trust warning and AI configuration options."""
     
     BINDINGS = [
@@ -425,10 +442,6 @@ class OnboardingScreen(ModalScreen[dict]):
         ("ctrl+d", "choose_disabled", "Keep Local Only (No AI)"),
         ("escape", "dismiss_none", "Close"),
     ]
-    
-    def dismiss_later(self, result=None) -> None:
-        """Dismiss this modal screen on the next tick with a non-zero delay."""
-        self.set_timer(0.001, lambda: (self.dismiss(result), None)[1])
     
     def __init__(self, current_config: dict):
         super().__init__()
@@ -1611,7 +1624,7 @@ class DetailsCanvas(VerticalScroll):
 # 3. RESET CONFIRMATION MODAL
 # ==========================================
 
-class ResetConfirmScreen(ModalScreen):
+class ResetConfirmScreen(_DeferredDismissMixin, ModalScreen):
     """Confirmation dialog before resetting TermStory data."""
     
     BINDINGS = [
@@ -1619,10 +1632,6 @@ class ResetConfirmScreen(ModalScreen):
         Binding("n", "cancel_reset", "No, Cancel"),
         Binding("escape", "cancel_reset", "Cancel"),
     ]
-    
-    def dismiss_later(self, result=None) -> None:
-        """Dismiss this modal screen on the next tick with a non-zero delay."""
-        self.set_timer(0.001, lambda: (self.dismiss(result), None)[1])
     
     def compose(self) -> ComposeResult:
         yield Static(
@@ -1645,16 +1654,12 @@ class ResetConfirmScreen(ModalScreen):
         self.dismiss_later(False)
 
 
-class MatrixDefragScreen(ModalScreen[None]):
+class MatrixDefragScreen(_DeferredDismissMixin, ModalScreen[None]):
     """Cyberpunk Matrix Defrag animation overlay."""
     BINDINGS = [
         Binding("escape", "close_matrix", "Close", show=True),
         Binding("q", "close_matrix", "Close", show=True),
     ]
-
-    def dismiss_later(self, result=None) -> None:
-        """Dismiss this modal screen on the next tick with a non-zero delay."""
-        self.set_timer(0.001, lambda: (self.dismiss(result), None)[1])
 
     def action_close_matrix(self) -> None:
         self.dismiss_later()
@@ -1740,16 +1745,12 @@ class MatrixDefragScreen(ModalScreen[None]):
             self.set_timer(0.8, self.dismiss)
 
 
-class GhostTyperScreen(ModalScreen[None]):
+class GhostTyperScreen(_DeferredDismissMixin, ModalScreen[None]):
     """Cyberpunk Ghost Typer playback simulator."""
     BINDINGS = [
         Binding("escape", "close_typing", "Stop Playback", show=True),
         Binding("q", "close_typing", "Stop Playback", show=True),
     ]
-
-    def dismiss_later(self, result=None) -> None:
-        """Dismiss this modal screen on the next tick with a non-zero delay."""
-        self.set_timer(0.001, lambda: (self.dismiss(result), None)[1])
 
     def action_close_typing(self) -> None:
         self.dismiss_later()
