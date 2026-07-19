@@ -476,6 +476,3 @@ def test_detect_late_night_chaotic_sessions_no_duplicate_commits(tmp_path):
 
 
 
-
-
-

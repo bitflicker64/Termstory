@@ -476,7 +476,6 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
                             seen_commits.add(commit_key)
                             commits_by_project[c_pid].append((c_ts, c_msg))
 
-
         # 5. Filter and associate commits in memory
         for session in chaotic_candidates:
             p_id = session["project_id"]
