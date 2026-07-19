@@ -2133,7 +2133,8 @@ class TermStoryWorkspace(App):
         
     def copy_to_clipboard(self, text: str) -> None:
         """Robust OS-level clipboard writer using system commands (e.g. pbcopy on macOS),
-        falling back to Textual's default copy_to_clipboard."""
+        falling back to Textual's default copy_to_clipboard.
+        Operations will timeout after 2 seconds."""
         import sys
         import subprocess
         
@@ -2143,23 +2144,19 @@ class TermStoryWorkspace(App):
         try:
             if sys.platform == 'darwin':
                 # macOS
-                process = subprocess.Popen(['pbcopy'], stdin=subprocess.PIPE, close_fds=True)
-                process.communicate(input=cleaned_text.encode('utf-8'))
+                subprocess.run(['pbcopy'], input=cleaned_text.encode('utf-8'), timeout=2.0, check=True)
             elif sys.platform.startswith('linux'):
                 # Linux (try xclip, then xsel, then wl-copy)
                 for cmd in [['xclip', '-selection', 'clipboard'], ['xsel', '--clipboard', '--input'], ['wl-copy']]:
                     try:
-                        process = subprocess.Popen(cmd, stdin=subprocess.PIPE, close_fds=True)
-                        process.communicate(input=cleaned_text.encode('utf-8'))
-                        if process.returncode == 0:
-                            break
-                    except FileNotFoundError:
+                        subprocess.run(cmd, input=cleaned_text.encode('utf-8'), timeout=2.0, check=True)
+                        break
+                    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
                         continue
             elif sys.platform == 'win32':
                 # Windows
-                process = subprocess.Popen(['clip'], stdin=subprocess.PIPE, close_fds=True)
-                process.communicate(input=cleaned_text.encode('utf-8'))
-        except Exception as e:
+                subprocess.run(['clip'], input=cleaned_text.encode('utf-8'), timeout=2.0, check=True)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
             logger.debug("TUI UI exception suppressed: %s", e)
             
         # Also always fall back to Textual's native copy_to_clipboard (sends OSC 52 sequence)

@@ -752,44 +752,82 @@ async def test_tui_help_screen():
 
 
 def test_tui_copy_to_clipboard(monkeypatch):
+    """Verify that on a successful subprocess.run call the text is copied and
+    the OSC 52 fallback (super().copy_to_clipboard) is also called."""
     from termstory.database import Database
     from termstory.tui import TermStoryWorkspace
     import subprocess
     from textual.app import App
-    
+
     db = Database(":memory:")
     db.init_db()
-    
+
     app = TermStoryWorkspace(
-        db, 
-        days_limit=30, 
-        config_override={"has_seen_onboarding": True, "ai_enabled": False}
+        db,
+        days_limit=30,
+        config_override={"has_seen_onboarding": True, "ai_enabled": False},
     )
-    
-    copied_texts = []
-    
-    class MockProcess:
-        def __init__(self):
-            self.returncode = 0
-        def communicate(self, input):
-            copied_texts.append(input.decode('utf-8'))
-            return (b'', b'')
-            
-    def mock_popen(*args, **kwargs):
-        return MockProcess()
-        
-    monkeypatch.setattr(subprocess, "Popen", mock_popen)
-    
+
+    run_calls = []
+
+    class _FakeCompletedProcess:
+        returncode = 0
+
+    def mock_run(*args, **kwargs):
+        run_calls.append({"args": args, "kwargs": kwargs})
+        return _FakeCompletedProcess()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
     parent_called = []
+
     def mock_parent_copy(self, text):
         parent_called.append(text)
-        
+
     monkeypatch.setattr(App, "copy_to_clipboard", mock_parent_copy)
-    
+
     app.copy_to_clipboard("test-copy-text")
-    
-    assert "test-copy-text" in copied_texts
+
+    # subprocess.run was invoked at least once (OS branch)
+    assert run_calls, "Expected subprocess.run to be called"
+    # OSC 52 fallback always fires
     assert "test-copy-text" in parent_called
+
+
+def test_tui_copy_to_clipboard_timeout(monkeypatch):
+    """Verify that a TimeoutExpired from subprocess.run does not crash the TUI
+    and that the OSC 52 fallback (super().copy_to_clipboard) still runs."""
+    from termstory.database import Database
+    from termstory.tui import TermStoryWorkspace
+    import subprocess
+    from textual.app import App
+
+    db = Database(":memory:")
+    db.init_db()
+
+    app = TermStoryWorkspace(
+        db,
+        days_limit=30,
+        config_override={"has_seen_onboarding": True, "ai_enabled": False},
+    )
+
+    def mock_run_timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=2.0)
+
+    monkeypatch.setattr(subprocess, "run", mock_run_timeout)
+
+    parent_called = []
+
+    def mock_parent_copy(self, text):
+        parent_called.append(text)
+
+    monkeypatch.setattr(App, "copy_to_clipboard", mock_parent_copy)
+
+    # Must not raise — timeout is handled internally
+    app.copy_to_clipboard("timeout-copy-text")
+
+    # OSC 52 fallback must still run even after the subprocess timed out
+    assert "timeout-copy-text" in parent_called
 
 
 @pytest.mark.asyncio
