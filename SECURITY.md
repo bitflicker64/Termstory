@@ -27,7 +27,7 @@ TermStory's privacy guarantee is: **no raw data leaves your machine without pass
 
 ### What the sanitizer does well
 - **Named-prefix secrets** (AWS `AKIA*`, OpenAI `sk-*`, Anthropic `sk-ant-*`, Slack `xoxb-*`, Google `AIzaSy*`, etc.) are caught by specific regex patterns.
-- **Structural patterns** (`--password=`, `export KEY=***) are redacted regardless of the specific value.
+- **Structural patterns** (`--password=`, `export KEY=***`) are redacted regardless of the specific value.
 - **Blacklisted workflows** (`vault`, `aws configure`, `gh auth`, raw token strings, `kubectl create secret`) gate the entire COMMANDS block — none of those raw command strings reach the LLM.
 
 ### Known gaps (by design — documented here, not hidden)
