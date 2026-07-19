@@ -920,7 +920,14 @@ async def test_wrapped_view_generation_and_layout(monkeypatch):
             assert "deletions" in called_args[0]
             assert "merged_prs" in called_args[0]
             
-            cached = db.get_macro_summary("2026-06")
+            cached = None
+            for _ in range(100):
+                cached = db.get_macro_summary("2026-06")
+                if cached is not None:
+                    break
+                await asyncio.sleep(0.05)
+                
+            assert cached is not None
             assert "Mock verdict text." in cached
 
 

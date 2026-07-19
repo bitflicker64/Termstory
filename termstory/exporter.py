@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional
 from dateutil import parser as date_parser
 
 from termstory.database import Database
+from termstory.date_utils import get_current_time
 from termstory.models import Session, Command, Project
 
 _FAR_FUTURE_TS: int = 9_999_999_999 # ~year 2286, safely beyond any real session timestamp
@@ -40,7 +41,7 @@ def parse_since(since_str: Optional[str]) -> Optional[int]:
     since_str = since_str.strip()
     if since_str.isdigit():
         days = int(since_str)
-        now = datetime.now()
+        now = get_current_time()
         dt = now - timedelta(days=days)
         # Start of that day
         start_of_day = datetime.combine(dt.date(), datetime.min.time())

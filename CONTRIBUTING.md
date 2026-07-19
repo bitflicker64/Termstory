@@ -9,7 +9,7 @@ Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before contributing to hel
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-username/termstory.git
+   git clone https://github.com/bitflicker64/Termstory.git
    cd termstory
    ```
 2. Install the package in editable mode with development dependencies:

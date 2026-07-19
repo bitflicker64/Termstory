@@ -410,7 +410,7 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
                 c_s_id, cmd, exit_code = row
                 commands_by_session[c_s_id].append((cmd, exit_code))
 
-        # 3. Evaluate chaos scoring in memory
+       # 3. Evaluate chaos scoring in memory
         chaotic_candidates = []
         project_ids_needing_commits = set()
         for row in candidate_sessions:
@@ -474,6 +474,57 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
                     for c_row in cursor.fetchall():
                         c_pid, c_ts, c_msg = c_row
                         commits_by_project[c_pid].append((c_ts, c_msg))
+
+        # 5. Filter and associate commits in memory
+        for session in chaotic_candidates:
+            p_id = session["project_id"]
+            start = session["start_time"]
+            end = session["end_time"]
+
+            commits = []
+            if p_id is not None:
+                max_ts = end + 600 if end is not None else start + 3600
+                min_ts = start - 300
+                for c_ts, c_msg in commits_by_project[p_id]:
+                    if min_ts <= c_ts <= max_ts:
+                        commits.append(c_msg)
+
+            session["commits"] = commits
+            del session["project_id"]
+            chaotic_sessions.append(session)
+
+        # 4. Bulk-fetch commits within precise session windows to avoid over-fetching
+        commits_by_project = defaultdict(list)
+        seen_commits = set()
+        sessions_with_project = [s for s in chaotic_candidates if s["project_id"] is not None]
+        if sessions_with_project:
+            # Chunking sessions_with_project to keep parameter count below SQLite limits (e.g., max 250 sessions = 750 parameters)
+            chunk_size = 250
+            for i in range(0, len(sessions_with_project), chunk_size):
+                chunk = sessions_with_project[i:i + chunk_size]
+                clauses = []
+                query_args = []
+                for session in chunk:
+                    start = session["start_time"]
+                    end = session["end_time"]
+                    min_ts = start - 300
+                    max_ts = end + 600 if end is not None else start + 3600
+                    clauses.append("(project_id = ? AND timestamp >= ? AND timestamp <= ?)")
+                    query_args.extend([session["project_id"], min_ts, max_ts])
+                
+                if clauses:
+                    cursor.execute(f"""
+                        SELECT project_id, timestamp, message
+                        FROM commits
+                        WHERE {" OR ".join(clauses)}
+                        ORDER BY timestamp ASC
+                    """, query_args)
+                    for c_row in cursor.fetchall():
+                        c_pid, c_ts, c_msg = c_row
+                        commit_key = (c_pid, c_ts, c_msg)
+                        if commit_key not in seen_commits:
+                            seen_commits.add(commit_key)
+                            commits_by_project[c_pid].append((c_ts, c_msg))
 
         # 5. Filter and associate commits in memory
         for session in chaotic_candidates:
