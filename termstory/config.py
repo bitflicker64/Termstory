@@ -1,7 +1,9 @@
 import os
 import json
 import sys
+import logging
 from typing import List, Any
+logger = logging.getLogger(__name__)
 
 def get_app_dir(dir_type: str = "data") -> str:
     """Get the appropriate application directory.
@@ -173,7 +175,16 @@ def load_config() -> dict:
         ],
         "reminder_poll_interval": 300,
         "clustering_threshold": 0.6,
-        "default_branch_names": ["main"]
+        "default_branch_names": ["main"],
+        "project_roots": [
+    "~/Projects",
+    "~/src",
+    "~/Developer",
+    "~/Code",
+    "~/Work",
+    "~",
+],
+        "nfs_timeout_cache_ttl": 60,
     }
     
     config = {}
@@ -190,16 +201,18 @@ def load_config() -> dict:
             ValueError,
             RecursionError,
         ) as e:
-            print(
-                f"Warning: config file '{config_path}' contains invalid data and will be ignored ({e}).",
-                file=sys.stderr,
+            logger.warning(
+                "Config file '%s' contains invalid data and will be ignored (%s).",
+                config_path,
+                e,
             )
             config = {}
 
         except OSError as e:
-            print(
-                f"Warning: could not read config file '{config_path}': {e}",
-                file=sys.stderr,
+            logger.warning(
+                "Could not read config file '%s': %s",
+                config_path,
+            e,
             )
             config = {}
 

@@ -1,3 +1,4 @@
+import pytest
 import os
 from datetime import datetime
 from termstory.date_utils import get_current_time, get_today_range, get_week_range, get_month_range, format_date_range
@@ -96,3 +97,10 @@ def test_timezone_aware_override(monkeypatch):
     monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2026-06-19T12:00:00+05:30")
     ct = get_current_time()
     assert ct.tzinfo is None
+
+def test_parse_date_range_helper_chains_underlying_error():
+    """Invalid input must raise ValueError with the original parse error chained via __cause__."""
+    from termstory.date_utils import parse_date_range_helper
+    with pytest.raises(ValueError) as exc:
+        parse_date_range_helper("not-a-real-date-at-all-zzzzz")
+    assert exc.value.__cause__ is not None, "ValueError must chain the underlying parse error"

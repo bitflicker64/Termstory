@@ -1,10 +1,17 @@
 import sqlite3
+import logging
+
+logger = logging.getLogger(__name__)
+
 import re
 from datetime import timedelta, date
 from typing import Dict
 from termstory.database import _safe_rollback_and_reraise
 from termstory.database import Database
 from termstory.date_utils import get_current_time
+
+# Keep below SQLite's default SQLITE_MAX_VARIABLE_NUMBER (999).
+_SQLITE_IN_CHUNK_SIZE = 900
 
 def is_timeframe_older_than(timeframe_id: str, tf_type: str, cutoff_date: date) -> bool:
     """Check if a macro_summary timeframe is older than cutoff_date."""
@@ -111,8 +118,8 @@ def archive_old_data(main_db_path: str, archive_db_path: str, days: int) -> Dict
         if proj_ids:
             projects_to_archive = []
             proj_ids_list = list(proj_ids)
-            for i in range(0, len(proj_ids_list), 900):
-                chunk = proj_ids_list[i:i+900]
+            for i in range(0, len(proj_ids_list), _SQLITE_IN_CHUNK_SIZE):
+                chunk = proj_ids_list[i:i + _SQLITE_IN_CHUNK_SIZE]
                 proj_placeholders = ",".join("?" for _ in chunk)
                 cursor.execute(f"SELECT id, name, path, first_seen, last_seen, project_context, created_at FROM main.projects WHERE id IN ({proj_placeholders})", chunk)
                 projects_to_archive.extend(cursor.fetchall())
@@ -280,12 +287,13 @@ def archive_old_data(main_db_path: str, archive_db_path: str, days: int) -> Dict
 
         conn.commit()
     except Exception as e:
+        logger.exception("Archive transaction failed")
         _safe_rollback_and_reraise(conn, e)
     finally:
         try:
             conn.execute("DETACH DATABASE archive")
-        except Exception:
-            pass
+        except (sqlite3.Error, OSError) as e:
+            logger.warning("Failed to detach archive database: %s", e)
         conn.close()
 
     # Reclaim disk space via VACUUM
@@ -293,14 +301,14 @@ def archive_old_data(main_db_path: str, archive_db_path: str, days: int) -> Dict
         conn_main = sqlite3.connect(main_db_path)
         conn_main.execute("VACUUM;")
         conn_main.close()
-    except Exception:
-        pass
+    except (sqlite3.Error, OSError) as e:
+        logger.warning("Failed to VACUUM main database: %s", e)
 
     try:
         conn_arch = sqlite3.connect(archive_db_path)
         conn_arch.execute("VACUUM;")
         conn_arch.close()
-    except Exception:
-        pass
+    except (sqlite3.Error, OSError) as e:
+        logger.warning("Failed to VACUUM archive database: %s", e)
 
     return stats

@@ -6,7 +6,7 @@ from typing import List, Optional, Dict, Tuple
 
 from termstory.models import Session
 from termstory.config import get_db_path
-from termstory.ai import _send_llm_request
+from termstory.ai import _send_llm_request, _DEFAULT_MAX_TOKENS
 from termstory.sanitizer import sanitize_session_commands, redact_command
 
 # BM25 tuning constants
@@ -289,6 +289,7 @@ def generate_answer(query: str, sessions: List[Session], ai_client) -> Optional[
             api_key = ai_client.get("api_key") or ""
             api_base_url = ai_client.get("api_base_url") or ""
             model_name = ai_client.get("model_name") or ""
+        request_timeout_seconds = ai_client.get("request_timeout_seconds", 30.0)
     else:
         provider = getattr(ai_client, "provider", None) or getattr(ai_client, "active_provider", "disabled")
         providers = getattr(ai_client, "providers", None)
@@ -300,6 +301,37 @@ def generate_answer(query: str, sessions: List[Session], ai_client) -> Optional[
             api_key = getattr(ai_client, "api_key", "")
             api_base_url = getattr(ai_client, "api_base_url", "")
             model_name = getattr(ai_client, "model_name", "")
+        request_timeout_seconds = getattr(ai_client, "request_timeout_seconds", 30.0)
+
+    # config.json is loaded via json.load() with no per-key type/range
+    # validation (see config.py:load_config), and `termstory config set
+    # request_timeout_seconds <value>` will happily store 0, a negative
+    # number, or (if the stored value has ever been a float) "inf". Each
+    # of those reaches ai.py's timeout handling differently and badly:
+    #   - non-numeric (None/str): timeout + 1.0 raises an uncaught
+    #     TypeError outside the worker thread's try/except, crashing
+    #     generate_answer entirely.
+    #   - bool: a subclass of int in Python, so isinstance(x, (int, float))
+    #     alone lets it through as timeout=1/0 (True==1/False==0).
+    #   - 0: urlopen puts the socket in non-blocking mode, so every
+    #     request fails instantly with EINPROGRESS regardless of network
+    #     conditions.
+    #   - negative: join_timeout = timeout + 1.0 goes negative, so the
+    #     join loop's elapsed-time check is already true on its first
+    #     iteration -- it never actually waits for the worker.
+    #   - inf/nan: urlopen(timeout=float('inf')) raises OverflowError,
+    #     which isn't in the worker's caught exception tuple, so it dies
+    #     silently in the background thread instead of returning an
+    #     answer or a clean error.
+    # Falls back to the same 30.0 default for any value outside
+    # (0, +inf) rather than trying to enumerate every bad case above.
+    if (
+        isinstance(request_timeout_seconds, bool)
+        or not isinstance(request_timeout_seconds, (int, float))
+        or not math.isfinite(request_timeout_seconds)
+        or request_timeout_seconds <= 0
+    ):
+        request_timeout_seconds = 30.0
 
     if not provider or provider == "disabled":
         return "AI capabilities are currently disabled."
@@ -370,7 +402,7 @@ def generate_answer(query: str, sessions: List[Session], ai_client) -> Optional[
         api_base_url=api_base_url,
         model_name=model_name,
         provider=provider,
-        max_tokens=1500,
-        timeout=30.0,
+        max_tokens=_DEFAULT_MAX_TOKENS,
+        timeout=request_timeout_seconds,
     )
     return result

@@ -1,4 +1,7 @@
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 import asyncio
 import json
 from collections import defaultdict
@@ -559,8 +562,8 @@ class OnboardingScreen(ModalScreen[dict]):
                         webbrowser.open(cwd_path.resolve().as_uri())
                     else:
                         webbrowser.open("https://github.com/bitflicker64/Termstory/blob/main/DATA_PRIVACY.md")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("TUI UI exception suppressed: %s", e)
         elif button_id == "btn-save":
             api_key = self.query_one("#input-api-key").value.strip()
             base_url = self.query_one("#input-base-url").value.strip()
@@ -853,7 +856,8 @@ class NarrativeText(Static):
         if self.parse_markup:
             try:
                 self.update(Text.from_markup(full_text, overflow="fold"))
-            except Exception:
+            except Exception as e:
+                logger.debug("TUI Text update failed: %s", e)
                 self.update(Text(full_text, overflow="fold"))
         else:
             self.update(Text(full_text, overflow="fold"))
@@ -979,8 +983,8 @@ class DetailsCanvas(VerticalScroll):
                         btn_regen.tooltip = "Re-run the AI summarizer for this period."
                         btn_regen.classes = "exec-btn"
                         exec_widgets.append(btn_regen)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("TUI UI exception suppressed: %s", e)
                 else:
                     exec_widgets.append(Static("[dim]Ask AI to write a high-level summary of your work for this period:[/dim]"))
                     try:
@@ -988,8 +992,8 @@ class DetailsCanvas(VerticalScroll):
                         btn.tooltip = "Ask AI to write a high-level summary of your work."
                         btn.classes = "exec-btn"
                         exec_widgets.append(btn)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("TUI UI exception suppressed: %s", e)
                 
             self.mount(Vertical(*exec_widgets, classes="exec-container"))
             
@@ -1008,8 +1012,8 @@ class DetailsCanvas(VerticalScroll):
                         btn = Button(f"🚀 Auto-Summarize {len(missing_sessions)} Sessions", id=f"btn-bulk-{timeframe_id}-{timeframe_type}")
                         btn.classes = "bulk-btn"
                         bulk_widgets.append(btn)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("TUI UI exception suppressed: %s", e)
                 self.mount(Vertical(*bulk_widgets, classes="bulk-container"))
                 
         # 4. Activity Feed
@@ -1287,8 +1291,8 @@ class DetailsCanvas(VerticalScroll):
                         btn_regen.tooltip = "Regenerate the behavioral audit and roast."
                         btn_regen.classes = "exec-btn"
                         exec_widgets.append(btn_regen)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("TUI UI exception suppressed: %s", e)
                 else:
                     exec_widgets.append(Static(Text("Generate the AI chronicler's audit to unlock the roast.", style="dim")))
                     
@@ -1297,8 +1301,8 @@ class DetailsCanvas(VerticalScroll):
                         btn.tooltip = "Ask AI to generate a behavioral audit and perceptive roast."
                         btn.classes = "exec-btn"
                         exec_widgets.append(btn)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("TUI UI exception suppressed: %s", e)
         else:
             exec_widgets.append(Static(Text("Offline / Local Only (AI is disabled).", style="dim")))
             
@@ -1703,8 +1707,8 @@ class MatrixDefragScreen(ModalScreen[None]):
             msg = self.status_messages[self.msg_idx]
             progress = int((self.current_index / len(self.grid)) * 100)
             self.query_one("#defrag-status").update(f"[bold green]>> {msg}[/bold green] [bold cyan]{progress}%[/bold cyan]")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("TUI UI exception suppressed: %s", e)
 
     def step_animation(self) -> None:
         import random
@@ -1805,8 +1809,8 @@ class GhostTyperScreen(ModalScreen[None]):
                 lines_to_show[-1] = current_line
             console_widget.update("\n".join(lines_to_show))
             self.query_one("#ghost-console-scroll").scroll_end(animate=False)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("TUI UI exception suppressed: %s", e)
 
 
 # ==========================================
@@ -2146,15 +2150,15 @@ class TermStoryWorkspace(App):
                 # Windows
                 process = subprocess.Popen(['clip'], stdin=subprocess.PIPE, close_fds=True)
                 process.communicate(input=cleaned_text.encode('utf-8'))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("TUI UI exception suppressed: %s", e)
             
         # Also always fall back to Textual's native copy_to_clipboard (sends OSC 52 sequence)
         # to support remote SSH terminals.
         try:
             super().copy_to_clipboard(cleaned_text)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("TUI UI exception suppressed: %s", e)
             
     def compose(self) -> ComposeResult:
         with Grid(id="master-layout"):
@@ -2316,8 +2320,8 @@ class TermStoryWorkspace(App):
                 return
             
             self._show_node_details(selected_node)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("TUI UI exception suppressed: %s", e)
         finally:
             self._refreshing_canvas = False
 
@@ -2433,8 +2437,8 @@ class TermStoryWorkspace(App):
             cursor.execute("DELETE FROM macro_summaries WHERE timeframe_id = ?", (timeframe_id,))
             conn.commit()
             conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("TUI UI exception suppressed: %s", e)
         self.call_from_thread(self.refresh_details_canvas)
         
         if worker.is_cancelled:
@@ -2856,8 +2860,8 @@ class TermStoryWorkspace(App):
                 try:
                     w = self.query_one(f"#bulk-status-{tid}")
                     w.update(f"⏳ [bold yellow]Auto-summarizing sessions: {c}/{t} done...[/bold yellow]\n")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("TUI UI exception suppressed: %s", e)
             self.call_from_thread(update_progress)
             
             if idx < total - 1:

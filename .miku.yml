@@ -6,21 +6,28 @@ area_labels:
     - "termstory/predict.py"
     - "termstory/insights.py"
     - "termstory/hermes_obs.py"
+    - "termstory/templates/**"
   area/storage:
     - "termstory/database.py"
     - "termstory/archive.py"
     - "termstory/backup.py"
     - "termstory/models.py"
     - "termstory/mcp_snapshot.py"
+    - "termstory/exporter.py"
+    - "termstory/git_integration.py"
+    - "termstory/project.py"
   area/cli:
     - "termstory/cli.py"
     - "termstory/__main__.py"
     - "main.py"
     - "termstory/session.py"
+    - "termstory/reminder.py"
   area/tui:
     - "termstory/tui.py"
     - "termstory/formatter.py"
     - "termstory/replay.py"
+    - "termstory/notebook.py"
+    - "termstory/stats.py"
     - "skills/**"
   area/search:
     - "termstory/search.py"
@@ -28,6 +35,10 @@ area_labels:
     - "termstory/timeline.py"
     - "termstory/parser.py"
     - "termstory/sanitizer.py"
+    - "termstory/date_utils.py"
+    - "termstory/timestamp_detective.py"
+  area/web:
+    - "termstory/web.py"
   area/config:
     - "termstory/config.py"
     - "pyproject.toml"
@@ -40,6 +51,8 @@ area_labels:
     - "README*"
     - "CHANGELOG*"
     - "CONTRIBUTING*"
+    - "DATA_PRIVACY*"
+    - "SECURITY*"
   kind/ci:
     - ".github/**"
     - "scripts/**"
@@ -48,3 +61,18 @@ area_labels:
     - "tests/**"
     - "tests/conftest.py"
     - "tests/fixtures/**"
+    - "tests/stress/**"
+    - "termstory/testing.py"
+
+# Termstory uses the star-gate (authors must star the repo to use Miku commands).
+star_gate: true
+
+# Auto-assign the PR author when they open a PR.
+pr_auto_assign: true
+
+# ECSOC26 event support (disabled for termstory)
+ecsoc26: True
+
+# Duplicate issue detection (disabled by default; opt-in via .miku.yml)
+duplicate_detection: true
+

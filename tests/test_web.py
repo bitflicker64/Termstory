@@ -1,5 +1,6 @@
 import os
 import json
+import sqlite3
 import pytest
 from datetime import datetime
 from typer.testing import CliRunner
@@ -28,6 +29,69 @@ def test_get_web_data_empty_db(tmp_path):
     assert len(data["projects"]) == 0
     assert len(data["sessions"]) == 0
     assert len(data["highlights"]) == 0
+
+
+def test_get_web_data_logs_daily_activity_query_errors(monkeypatch, caplog):
+    from termstory import web
+
+    class FakeCursor:
+        def __init__(self, fail=False):
+            self.fail = fail
+
+        def execute(self, query, params=None):
+            if self.fail:
+                raise sqlite3.OperationalError("missing commands table")
+
+        def fetchall(self):
+            return []
+
+    class FakeConnection:
+        def __init__(self, fail=False):
+            self.fail = fail
+
+        def cursor(self):
+            return FakeCursor(fail=self.fail)
+
+        def close(self):
+            pass
+
+    class FakeDatabase:
+        def __init__(self):
+            self.connection_count = 0
+
+        def get_last_ingestion_time(self):
+            return None
+
+        def get_all_projects_with_stats(self):
+            return []
+
+        def get_connection(self):
+            self.connection_count += 1
+            # Connection #1: sessions query (section 3)
+            # Connection #2: AI highlights query (section 4, len(ai_sessions) < 15)
+            # Connection #3: heatmap query (section 5) — the one we want to fail
+            return FakeConnection(fail=self.connection_count == 3)
+
+        def get_sessions_by_ids(self, session_ids):
+            return []
+
+    monkeypatch.setattr(
+        web,
+        "analyze_all",
+        lambda db: {
+            "total_sessions": 0,
+            "total_commands": 0,
+            "total_projects": 0,
+            "streak": 0,
+        },
+    )
+
+    with caplog.at_level("WARNING", logger="termstory.web"):
+        data = web.get_web_data(FakeDatabase())
+
+    assert len(data["daily_activity"]) == 90
+    assert any("daily activity heatmap" in record.message for record in caplog.records)
+
 
 def test_get_web_data_populated_db(tmp_path):
     db_file = tmp_path / "populated.db"
@@ -257,5 +321,4 @@ def test_swarm_audit_fixes(tmp_path, monkeypatch):
     assert "const reportData =" in html
     # Check if our backslash command exists intact in the JSON
     assert "backslash \\\\" in html
-
 

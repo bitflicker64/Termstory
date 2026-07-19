@@ -1,6 +1,9 @@
+import logging
 import sqlite3
 from typing import List, Dict, Optional
 from termstory.database import Database
+
+logger = logging.getLogger(__name__)
 
 def advanced_search(
     db: Database,
@@ -9,7 +12,8 @@ def advanced_search(
     since_ts: Optional[int] = None,
     until_ts: Optional[int] = None,
     tag_filters: Optional[List[str]] = None,
-    fts: bool = False
+    fts: bool = False,
+    limit: Optional[int] = None
 ) -> List[Dict]:
     """
     Advanced search with query, date range (since_ts, until_ts), project, and tag filters.
@@ -20,9 +24,9 @@ def advanced_search(
         
         if fts and query:
             try:
-                return _search_new_fts5(conn, query, project_filter, since_ts, until_ts, tag_filters)
+                return _search_new_fts5(conn, query, project_filter, since_ts, until_ts, tag_filters, limit)
             except sqlite3.OperationalError:
-                pass
+                logger.warning("FTS5 advanced search failed, falling back", exc_info=True)
 
         # Check if FTS5 is enabled
         fts_enabled = False
@@ -34,11 +38,11 @@ def advanced_search(
             
         if fts_enabled and query:
             try:
-                return _search_fts5(conn, query, project_filter, since_ts, until_ts, tag_filters)
+                return _search_fts5(conn, query, project_filter, since_ts, until_ts, tag_filters, limit)
             except sqlite3.OperationalError:
-                pass
+                logger.warning("FTS5 search failed, falling back", exc_info=True)
                 
-        return _search_standard(conn, query, project_filter, since_ts, until_ts, tag_filters)
+        return _search_standard(conn, query, project_filter, since_ts, until_ts, tag_filters, limit)
     finally:
         conn.close()
 
@@ -49,7 +53,8 @@ def _search_new_fts5(
     project_filter: Optional[str],
     since_ts: Optional[int],
     until_ts: Optional[int],
-    tag_filters: Optional[List[str]]
+    tag_filters: Optional[List[str]],
+    limit: Optional[int] = None
 ) -> List[Dict]:
     cursor = conn.cursor()
     
@@ -120,6 +125,9 @@ def _search_new_fts5(
             params.append(f"%{tag}%")
             
     sql += " ORDER BY bm.min_match_type ASC, bm.min_rank ASC, s.start_time DESC"
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
     
     cursor.execute(sql, params)
     rows = cursor.fetchall()
@@ -131,7 +139,8 @@ def _search_fts5(
     project_filter: Optional[str],
     since_ts: Optional[int],
     until_ts: Optional[int],
-    tag_filters: Optional[List[str]]
+    tag_filters: Optional[List[str]],
+    limit: Optional[int] = None
 ) -> List[Dict]:
     cursor = conn.cursor()
     
@@ -186,6 +195,9 @@ def _search_fts5(
             params.append(f"%{tag}%")
             
     sql += " GROUP BY s.id ORDER BY CASE WHEN MIN(f.rank) IS NOT NULL THEN 0 ELSE 1 END, MIN(f.rank) ASC, s.start_time DESC"
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
     
     cursor.execute(sql, params)
     rows = cursor.fetchall()
@@ -197,7 +209,8 @@ def _search_standard(
     project_filter: Optional[str],
     since_ts: Optional[int],
     until_ts: Optional[int],
-    tag_filters: Optional[List[str]]
+    tag_filters: Optional[List[str]],
+    limit: Optional[int] = None
 ) -> List[Dict]:
     cursor = conn.cursor()
     params = []
@@ -247,6 +260,9 @@ def _search_standard(
             params.append(f"%{tag}%")
             
     sql += " ORDER BY s.start_time DESC"
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
     
     cursor.execute(sql, params)
     rows = cursor.fetchall()

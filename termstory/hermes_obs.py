@@ -1,5 +1,8 @@
+import logging
 import os
 import sys
+
+logger = logging.getLogger(__name__)
 
 def modify_config_yaml(file_path, enable=True):
     if not os.path.exists(file_path):
@@ -206,18 +209,19 @@ def run_toggle(env_path=None, config_path=None):
         print("\nCancelled.")
         return
 
-    if response in ('y', 'yes'):
+    if response in ("y", "yes"):
         env_changed = modify_env_file(env_path, enable=True)
         config_changed = modify_config_yaml(config_path, enable=True)
-        
+
         print("\nDeepWiki observability has been enabled.")
         print("Changes made:")
+
         if env_changed:
             print(f"- Added/Updated HERMES_NEMO_RELAY_ATOF_ENABLED=true in {env_path}")
             print(f"- Added/Updated HERMES_NEMO_RELAY_ATIF_ENABLED=true in {env_path}")
         else:
             print("- Environment variables already configured.")
-            
+
         if config_changed:
             print(f"- Added 'observability/nemo_relay' to plugins.enabled in {config_path}")
         else:
@@ -225,17 +229,20 @@ def run_toggle(env_path=None, config_path=None):
 
         print("\nTo revert these changes, run this command again and select 'n'.")
 
-    elif response in ('n', 'no'):
+    elif response in ("n", "no"):
         env_changed = modify_env_file(env_path, enable=False)
         config_changed = modify_config_yaml(config_path, enable=False)
 
         print("\nDeepWiki observability has been disabled.")
         print("Changes made:")
+
         if env_changed:
-            print(f"- Removed HERMES_NEMO_RELAY_ATOF_ENABLED and HERMES_NEMO_RELAY_ATIF_ENABLED from {env_path}")
+            print(
+                f"- Removed HERMES_NEMO_RELAY_ATOF_ENABLED and HERMES_NEMO_RELAY_ATIF_ENABLED from {env_path}"
+            )
         else:
             print("- Environment variables were not present or already removed.")
-            
+
         if config_changed:
             print(f"- Removed 'observability/nemo_relay' from plugins.enabled in {config_path}")
         else:

@@ -1,6 +1,6 @@
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typer.testing import CliRunner
 from termstory.cli import app
 from termstory.database import Database
@@ -107,7 +107,7 @@ def test_cli_config_commands(tmp_path, monkeypatch):
 
 def test_cli_reset_commands(monkeypatch):
     called = []
-    def mock_perform_reset():
+    def mock_perform_reset(*args, **kwargs):
         called.append(True)
         
     monkeypatch.setattr("termstory.cli.perform_reset", mock_perform_reset)
@@ -394,7 +394,7 @@ def test_cli_reset_cleanup_rc_files(tmp_path, monkeypatch):
     bashrc_file.write_text(original_bashrc_content)
     
     runner = CliRunner()
-    result = runner.invoke(app, ["reset"])
+    result = runner.invoke(app, ["reset", "--yes"])
     assert result.exit_code == 0
     
     # Check zshrc
@@ -421,7 +421,7 @@ def test_cli_error_states(tmp_path, monkeypatch):
     # 1. search with invalid --since date
     result = runner.invoke(app, ["search", "query", "--since", "invalid-date"])
     assert result.exit_code == 1
-    assert "Could not parse date" in result.stdout or "Could not parse date" in result.stderr
+    assert "Invalid date" in result.stdout or "Invalid date" in result.stderr
     
     # 2. project with unknown name
     db = Database(str(db_file))
@@ -439,7 +439,27 @@ def test_cli_error_states(tmp_path, monkeypatch):
     result = runner.invoke(app, ["--date", "not-a-date"])
     assert result.exit_code == 1
     assert "Invalid date format" in result.stdout or "Invalid date format" in result.stderr
+def test_global_date_accepts_natural_language(tmp_path, monkeypatch):
+    db_file = tmp_path / "test_date_override.db"
 
+    monkeypatch.setattr("termstory.cli.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.config.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.cli.get_history_files", lambda: [])
+    monkeypatch.setattr("termstory.cli.run_ingestion", lambda db: None)
+    monkeypatch.setattr("termstory.cli.show_ui", lambda: None)
+
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["--date", "yesterday"])
+
+    assert result.exit_code == 0
+    expected = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    assert os.environ.get("TERMSTORY_DATE_OVERRIDE") == expected, (
+    f"Expected override {expected!r}, got {os.environ.get('TERMSTORY_DATE_OVERRIDE')!r}"
+)
+    # The CLI sets TERMSTORY_DATE_OVERRIDE directly, so clean it up
+    # to avoid leaking state into later tests.
+    os.environ.pop("TERMSTORY_DATE_OVERRIDE", None)
 def test_safe_init_db_corrupted(tmp_path, monkeypatch, capsys):
     import sqlite3
     db_file = tmp_path / "corrupt.db"

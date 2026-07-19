@@ -6,6 +6,32 @@ def test_clean_command():
     assert clean_command("   git    status   ") == "git status"
     assert clean_command("echo \\\n  hello \\\n  world") == "echo hello world"
     assert clean_command("   ") is None
+    assert clean_command("docker ps\\") == "docker ps"
+    assert clean_command(r"echo \\\\") == r"echo \\\\"
+
+def test_clean_command_strips_only_unescaped_trailing_backslash():
+    """A single trailing backslash is a line-continuation marker and should be removed.
+
+    An escaped trailing backslash (two backslashes) is a literal backslash in the
+    shell command and must be preserved.
+    """
+    # Unescaped trailing backslash -> strip it (and any surrounding whitespace).
+    assert clean_command("docker ps\\") == "docker ps"
+    assert clean_command("echo \\") == "echo"
+    assert clean_command("echo \\") == "echo"  # whitespace before backslash is also removed
+    assert clean_command("docker ps\\   ") == "docker ps"
+
+    # Escaped trailing backslash -> preserve it.
+    assert clean_command(r"echo \\") == r"echo \\"
+    assert clean_command(r"echo \\  ") == r"echo \\"
+
+    # Even-length trailing backslash run is literal -> keep (Greptile P1b).
+    assert clean_command("ls C:\\") == "ls C:\\"
+    assert clean_command("ls C:\\\\") == "ls C:\\\\"
+
+    # Unbalanced quotes -> a trailing backslash is a literal, keep it (Greptile P1).
+    assert clean_command('echo "C:\\') == 'echo "C:\\'
+    assert clean_command("git commit 'msg\\") == "git commit 'msg\\"
 
 def test_parse_zsh_history_valid_file():
     # Use our fixture
@@ -357,3 +383,49 @@ def test_assign_missing_timestamps_fallback_clamping():
     assert commands[0].timestamp == 1748851190
 
 
+def test_parse_zsh_history_getmtime_oserror_falls_back(tmp_path):
+    from unittest.mock import patch
+
+    temp_file = tmp_path / "zsh_getmtime_fail_test"
+    temp_file.write_text(": 1748851200:0;git status\n")
+
+    # os.path.getmtime raising must not abort the parse, it should fall
+    # back to the current time as the anchor instead of propagating.
+    with patch("termstory.parser.os.path.getmtime", side_effect=OSError("stat failed")):
+        commands = parse_zsh_history(str(temp_file))
+        assert len(commands) == 1
+        assert commands[0].command == "git status"
+
+
+def test_parse_zsh_history_project_paths_callback_raises(tmp_path):
+    from unittest.mock import patch
+
+    temp_file = tmp_path / "zsh_project_paths_raise_test"
+    temp_file.write_text("legacy cmd\n")
+
+    def bad_callback():
+        raise RuntimeError("resolver blew up")
+
+    # A raising project_paths callback must not abort the parse, legacy
+    # commands should still come through with project-path enrichment
+    # simply skipped for this run.
+    commands = parse_zsh_history(str(temp_file), project_paths=bad_callback)
+    assert len(commands) == 1
+    assert commands[0].command == "legacy cmd"
+
+
+def test_parse_all_histories_db_lookup_error_does_not_raise(tmp_path):
+    from unittest.mock import MagicMock
+    import sqlite3
+
+    temp_file = tmp_path / "zsh_history_db_error_test"
+    temp_file.write_text(": 1748851200:0;git status\n")
+
+    db = MagicMock()
+    db.get_all_commands_lookup.side_effect = sqlite3.OperationalError("database is locked")
+
+    # A failing lookup must not abort ingestion, it should just proceed
+    # without timestamp-locking against prior runs.
+    commands = parse_all_histories([str(temp_file)], db=db)
+    assert len(commands) == 1
+    assert commands[0].command == "git status"

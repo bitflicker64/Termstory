@@ -1,6 +1,7 @@
 import os
 import re
 import logging
+import sqlite3
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any, Union, Callable
 from termstory.models import Command
@@ -13,6 +14,52 @@ try:
 except re.error:
     ANSI_ESCAPE_PATTERN = None
 
+def _quotes_balanced(s: str) -> bool:
+    """Return True if single and double quotes are evenly paired (escapes ignored)."""
+    single = double = 0
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == '\\' and i + 1 < len(s):
+            i += 2  # skip the escaped character entirely
+            continue
+        if c == "'":
+            single += 1
+        elif c == '"':
+            double += 1
+        i += 1
+    return single % 2 == 0 and double % 2 == 0
+
+def _strip_trailing_continuation(s: str) -> str:
+    r"""Strip a shell line-continuation marker from the end of a command.
+
+    In shell, a trailing run of N backslashes behaves as:
+      - N even  -> all are escaped literals, keep them (e.g. ``ls C:\`` -> ``ls C:\``)
+      - N odd   -> the final backslash is a line continuation, drop exactly one
+                   (e.g. ``docker ps\`` -> ``docker ps``)
+
+    A backslash run preceded by whitespace (e.g. ``echo \ ``) is treated as a
+    continuation. A run preceded by a path/quote character (e.g. ``ls C:\``)
+    is kept as a literal.
+    """
+    n = len(s)
+    k = 0
+    while k < n and s[n - 1 - k] == "\\":
+        k += 1
+    if k == 0:
+        return s
+    # If the backslash run is preceded by a path/quote character, it is almost
+    # certainly a literal (e.g. `ls C:\`, `cd "foo\`) rather than a continuation
+    # marker, so keep it. Otherwise treat an odd-length run as a line continuation
+    # and drop exactly one backslash.
+    if k < n and s[n - 1 - k] in (":", '"', "'", "/", "\\"):
+        return s
+    if k % 2 == 1:
+        # Drop only the continuation marker (and any trailing whitespace that
+        # preceded it), keep the literal pairs.
+        return s[: n - 1].rstrip()
+    return s
+
 def clean_command(cmd_str: str) -> Optional[str]:
     """Clean the command string: strip whitespace and join multiline commands with spaces"""
     # Strip ansi escape codes
@@ -23,6 +70,13 @@ def clean_command(cmd_str: str) -> Optional[str]:
     
     cleaned = re.sub(r'\\\s*\n', ' ', cleaned)
     cleaned = " ".join(cleaned.split())
+    # Strip a trailing shell line-continuation backslash only when quotes are
+    # balanced. If a command reaches this point with unbalanced quotes, a
+    # remaining terminal backslash is part of a literal argument (e.g. echo "C:\)
+    # and must be preserved. See _strip_trailing_continuation for the even/odd
+    # backslash rule that keeps literal backslashes (ls C:\) intact.
+    if _quotes_balanced(cleaned):
+        cleaned = _strip_trailing_continuation(cleaned)
     if not cleaned:
         return None
         
@@ -186,7 +240,11 @@ def parse_zsh_history(
     # Get file mtime as a common reference point — used in both branches below.
     try:
         file_mtime = int(os.path.getmtime(filepath))
-    except Exception:
+    except OSError:
+        logger.exception(
+            "parse_zsh_history: failed to stat %r for mtime; using current time as anchor.",
+            filepath,
+        )
         file_mtime = int(datetime.now().timestamp())
 
     n_legacy = len(legacy_items)
@@ -249,7 +307,17 @@ def parse_zsh_history(
             try:
                 resolved_paths = project_paths() if callable(project_paths) else project_paths
             except Exception:
-                pass
+                # project_paths is an arbitrary caller-supplied callback (see the
+                # Callable[[], List[str]] type hint), its failure modes aren't
+                # knowable from this file, so this one is intentionally kept
+                # broad rather than narrowed to a specific tuple. It's a nice-to-
+                # have enrichment for the Timestamp Detective, not core parsing,
+                # so we degrade to an empty project list instead of failing the
+                # whole history parse.
+                logger.exception(
+                    "parse_zsh_history: project_paths callback raised; "
+                    "continuing without project-path enrichment."
+                )
         detective = TimestampDetective(
             search_root=os.path.expanduser("~"),
             project_paths=resolved_paths or []
@@ -401,9 +469,13 @@ def parse_bash_history(
         
     try:
         mtime = int(os.path.getmtime(filepath))
-    except Exception:
+    except OSError:
+        logger.exception(
+            "parse_bash_history: failed to stat %r for mtime; using current time as anchor.",
+            filepath,
+        )
         mtime = int(datetime.now().timestamp())
-        
+
     raw_lines = []
     with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
         for line in f:
@@ -691,7 +763,11 @@ def parse_fish_history(
         
     try:
         mtime = int(os.path.getmtime(filepath))
-    except Exception:
+    except OSError:
+        logger.exception(
+            "parse_fish_history: failed to stat %r for mtime; using current time as anchor.",
+            filepath,
+        )
         mtime = int(datetime.now().timestamp())
         
     temp_commands = []
@@ -737,7 +813,11 @@ def parse_powershell_history(
         
     try:
         mtime = int(os.path.getmtime(filepath))
-    except Exception:
+    except OSError:
+        logger.exception(
+            "parse_powershell_history: failed to stat %r for mtime; using current time as anchor.",
+            filepath,
+        )
         mtime = int(datetime.now().timestamp())
         
     raw_lines = []
@@ -780,8 +860,11 @@ def parse_all_histories(
     if db is not None:
         try:
             existing_lookup = db.get_all_commands_lookup()
-        except Exception:
-            pass
+        except (sqlite3.DatabaseError, OSError, RuntimeError):
+            logger.exception(
+                "parse_all_histories: failed to load existing command timestamp lookup; "
+                "continuing without timestamp locking."
+            )
 
     all_commands = []
     for path in filepaths:

@@ -10,6 +10,10 @@ from termstory.models import Session, Command, Project, format_duration
 
 console = Console()
 
+MAX_REPLAY_GAP_SECONDS = 2.0
+INITIAL_REPLAY_PAUSE_SECONDS = 0.5
+
+
 def format_relative_time(seconds: int) -> str:
     sign = "+"
     if seconds < 0:
@@ -126,12 +130,12 @@ def run_replay(db: Database, session_id: Optional[int] = None, speed: float = 1.
                 dt = cmd.timestamp - prev_timestamp
                 # Calculate sleep duration, scale by speed, and cap at max delay
                 wait_time = max(0.0, float(dt)) / speed
-                wait_time = min(wait_time, 2.0) # max 2 seconds delay
+                wait_time = min(wait_time, MAX_REPLAY_GAP_SECONDS)
                 if wait_time > 0:
                     time.sleep(wait_time)
             else:
                 # Small initial pause
-                time.sleep(min(0.5 / speed, 2.0))
+                time.sleep(min(INITIAL_REPLAY_PAUSE_SECONDS / speed, MAX_REPLAY_GAP_SECONDS))
 
             # Calculate relative offset
             offset_sec = cmd.timestamp - session.start_time

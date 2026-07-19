@@ -398,3 +398,39 @@ def test_listdir_timeout_caching(monkeypatch):
     
     assert (t3 - t2) < 0.05  # should be virtually instant
     assert "cached" in str(exc_info.value)
+
+def test_listdir_timeout_caching_custom_ttl(monkeypatch):
+    """Custom nfs_timeout_cache_ttl from config is respected."""
+    import time
+    import pytest
+    import termstory.project as project_module
+    from termstory.project import _listdir_with_timeout, _timed_out_paths
+
+    _timed_out_paths.clear()
+
+    # Patch the module-level constant directly to 1 second
+    monkeypatch.setattr(project_module, "_NFS_TIMEOUT_CACHE_TTL", 1)
+
+    def mock_listdir_hang(path):
+        time.sleep(2.0)
+        return []
+
+    import os
+    monkeypatch.setattr(os, "listdir", mock_listdir_hang)
+
+    # First call times out and caches the path
+    with pytest.raises(TimeoutError):
+        _listdir_with_timeout("/some/custom/ttl/mount", timeout=0.1)
+
+    # Second call should hit cache immediately
+    with pytest.raises(TimeoutError) as exc_info:
+        _listdir_with_timeout("/some/custom/ttl/mount", timeout=0.1)
+    assert "cached" in str(exc_info.value)
+
+    # Wait for the 1-second TTL to expire
+    time.sleep(1.1)
+
+    # Third call should bypass cache and actually attempt listdir again
+    with pytest.raises(TimeoutError) as exc_info2:
+        _listdir_with_timeout("/some/custom/ttl/mount", timeout=0.1)
+    assert "cached" not in str(exc_info2.value)

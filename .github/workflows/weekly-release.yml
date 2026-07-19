@@ -1,0 +1,102 @@
+name: Weekly Release
+
+on:
+  schedule:
+    - cron: '0 9 * * MON'   # every Monday 09:00 UTC
+  workflow_dispatch:        # manual run via gh / Actions tab
+
+permissions:
+  contents: write           # needed to commit version bump + push tag
+
+jobs:
+  maybe-release:
+    name: Bump, tag and push if main moved
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main with full history and tags
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      # Gate 1: only release if the latest CI run on main is green.
+      - name: Confirm latest main CI is green
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          STATUS=$(gh run list --repo "$GITHUB_REPOSITORY" \
+            --workflow CI --branch main --limit 1 --json conclusion \
+            --jq '.[0].conclusion // "none"')
+          echo "Latest CI conclusion: $STATUS"
+          if [ "$STATUS" != "success" ]; then
+            echo "::error::Latest main CI is '$STATUS', not 'success'. Aborting release."
+            exit 1
+          fi
+
+      # Gate 2: only bump if main has new commits since the last v* tag.
+      - name: Detect whether main moved since last release
+        id: diff
+        run: |
+          LAST_TAG=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+          echo "Last version tag: ${LAST_TAG:-<none>}"
+          if [ -z "$LAST_TAG" ]; then
+            echo "No existing version tag — will release."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "base=0.0.0" >> "$GITHUB_OUTPUT"
+          else
+            COUNT=$(git log "${LAST_TAG}..HEAD" --oneline | wc -l | tr -d ' ')
+            echo "Commits since $LAST_TAG: $COUNT"
+            if [ "$COUNT" -eq 0 ]; then
+              echo "Nothing new on main — skipping release."
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              echo "base=${LAST_TAG#v}" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Compute next patch version
+        id: ver
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          BASE="${{ steps.diff.outputs.base }}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE"
+          PATCH=$((10#$PATCH + 1))
+          NEXT="${MAJOR}.${MINOR}.${PATCH}"
+          echo "Next version: $NEXT"
+          echo "version=$NEXT" >> "$GITHUB_OUTPUT"
+
+      - name: Bump version in pyproject.toml
+        id: bump
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          NEXT="${{ steps.ver.outputs.version }}"
+          python - <<'PY'
+          import re, pathlib
+          p = pathlib.Path("pyproject.toml")
+          txt = p.read_text()
+          nxt = "${{ steps.ver.outputs.version }}"
+          new, n = re.subn(r'^(version\s*=\s*)".*?"', rf'\1"{nxt}"', txt, count=1, flags=re.M)
+          assert n == 1, f"version line not found (n={n})"
+          p.write_text(new)
+          print("bumped pyproject.toml to", nxt)
+          PY
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml
+          git commit -m "chore(release): bump version to ${{ steps.ver.outputs.version }}"
+          git tag "v${{ steps.ver.outputs.version }}" -m "Release ${{ steps.ver.outputs.version }}"
+
+      - name: Push commit and tag
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git push origin main
+          git push origin "v${{ steps.ver.outputs.version }}"
+        # The pushed v* tag triggers the existing Release workflow (build + GitHub release + PyPI publish).

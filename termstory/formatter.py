@@ -3,6 +3,7 @@ import os
 import re
 import shlex
 import calendar
+import unicodedata
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from typing import List, Dict, Tuple, Optional, Any
@@ -17,6 +18,18 @@ from rich.text import Text
 from rich.markup import escape
 
 logger = logging.getLogger(__name__)
+
+ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+def display_len(s: str) -> int:
+    s_clean = ansi_escape.sub('', s)
+    length = 0
+    for char in s_clean:
+        if unicodedata.east_asian_width(char) in ('W', 'F'):
+            length += 2
+        else:
+            length += 1
+    return length
 
 DISPLAY_NAMES = {
     "git": "Git",
@@ -53,8 +66,10 @@ def classify_command(cmd_text: str) -> str:
             
     return first_token
 
-def format_time(timestamp: int) -> str:
+def format_time(timestamp: Optional[int]) -> str:
     """Format Unix timestamp to 12-hour local time format without leading zeroes, e.g. '9:00 AM'"""
+    if timestamp is None:
+        return "In progress"
     dt = datetime.fromtimestamp(timestamp)
     time_str = dt.strftime("%I:%M %p")
     if time_str.startswith("0"):
@@ -982,26 +997,32 @@ def get_operator_handle() -> str:
 
     import subprocess
     try:
-        res = subprocess.run(["git", "config", "github.user"], capture_output=True, text=True, check=False)
+        res = subprocess.run(["git", "config", "github.user"], capture_output=True, text=True, check=False, timeout=5)
         user = res.stdout.strip()
         if user:
             return f"@{user}"
+    except subprocess.TimeoutExpired:
+        logger.debug("Timed out getting github.user from git config", exc_info=True)
     except Exception:
         logger.debug("Could not get github.user from git config", exc_info=True)
     try:
-        res = subprocess.run(["git", "config", "remote.origin.url"], capture_output=True, text=True, check=False)
+        res = subprocess.run(["git", "config", "remote.origin.url"], capture_output=True, text=True, check=False, timeout=5)
         url = res.stdout.strip()
         if url:
             match = re.search(r'github\.com[:/]([^/]+)/', url)
             if match:
                 return f"@{match.group(1)}"
+    except subprocess.TimeoutExpired:
+        logger.debug("Timed out getting remote origin URL from git config", exc_info=True)
     except Exception:
         logger.debug("Could not get remote origin URL from git config", exc_info=True)
     try:
-        res = subprocess.run(["git", "config", "user.name"], capture_output=True, text=True, check=False)
+        res = subprocess.run(["git", "config", "user.name"], capture_output=True, text=True, check=False, timeout=5)
         name = res.stdout.strip()
         if name:
             return f"@{name.replace(' ', '-').lower()}"
+    except subprocess.TimeoutExpired:
+        logger.debug("Timed out getting user.name from git config", exc_info=True)
     except Exception:
         logger.debug("Could not get user.name from git config", exc_info=True)
     try:
@@ -1048,19 +1069,7 @@ def boxify_terminal_wrapped(text: str) -> str:
     is_rpg = any("CHARACTER SHEET" in line.upper() or "TELEMETRY" in line.upper() or "[⚔️" in line or "[🎒" in line for line in cleaned_lines)
     width = 58
     
-    import unicodedata
-    import re
-    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-    
-    def display_len(s: str) -> int:
-        s_clean = ansi_escape.sub('', s)
-        length = 0
-        for char in s_clean:
-            if unicodedata.east_asian_width(char) in ('W', 'F'):
-                length += 2
-            else:
-                length += 1
-        return length
+
 
     box_lines = []
     
@@ -1333,7 +1342,7 @@ def format_stats_output(db) -> str:
     sorted_projects = sorted(breakdown.items(), key=lambda x: x[1]["total_duration"], reverse=True)
     
     table = Table(box=None, show_header=True, padding=(0, 2))
-    table.add_column("Project", style="cyan", header_style="bold cyan")
+    table.add_column("Project", style="cyan", header_style="bold cyan", no_wrap=True)
     table.add_column("Commands", justify="right", style="green")
     table.add_column("Duration", justify="right", style="green")
     table.add_column("Sessions", justify="right", style="green")
@@ -1395,25 +1404,47 @@ def format_stats_output(db) -> str:
             top_hours_parts.append(f"{display_h} {am_pm} ({count} cmds)")
     top_hours_str = ", ".join(top_hours_parts) if top_hours_parts else "N/A"
     
-    # Build complete report
+    from rich.console import Console
+    console = Console()
+    
+    def make_divider(width: int) -> str:
+        return "[dim]" + "─" * width + "[/]"
+
+    title_heatmap = "[bold cyan]Activity Heatmap (Last 30 Days)[/]"
+    heatmap_content = f"  {heatmap_str}"
+    heatmap_width = Text.from_markup(heatmap_content).cell_len
+
+    title_peak = "[bold cyan]Peak Hours (Command Distribution)[/]"
+    peak_content = f"  {punch_card}"
+    peak_width = Text.from_markup(peak_content).cell_len
+
+    title_lang = "[bold cyan]Language Distribution[/]"
+    if lang_lines:
+        lang_width = max(Text.from_markup(line).cell_len for line in lang_lines)
+    else:
+        lang_width = len("  No languages detected.")
+
+    title_proj = "[bold cyan]Project Breakdown[/]"
+    proj_width = console.measure(table).maximum
+
     output_lines = [
         "📊 [bold]Deep History Statistics & Telemetry[/]",
         "",
-        "[bold cyan]Activity Heatmap (Last 30 Days)[/]",
-        "[dim]──────────────────────────────[/]",
-        f"  {heatmap_str}",
+        title_heatmap,
+        make_divider(heatmap_width),
+        heatmap_content,
         "",
-        "[bold cyan]Peak Hours (Command Distribution)[/]",
-        "[dim]────────────────────────────────[/]",
-        f"  {punch_card}",
+        title_peak,
+        make_divider(peak_width),
+        peak_content,
         f"  Top Active Hours: {top_hours_str}",
         "",
-        "[bold cyan]Language Distribution[/]",
-        "[dim]─────────────────────[/]",
+        title_lang,
+        make_divider(lang_width),
         lang_output,
         "",
-        "[bold cyan]Project Breakdown[/]",
-        "[dim]─────────────────[/]",
+        title_proj,
+        make_divider(proj_width),
     ]
     
     project_table_str = render_to_string(table)

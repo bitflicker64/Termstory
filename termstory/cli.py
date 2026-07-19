@@ -2,17 +2,18 @@ import os
 
 import typer
 from typing import Optional, List
+from datetime import datetime, timedelta
 from dateutil import parser as date_parser
 
 # Supported tags for session categorization
 TAGS = ["deploy", "debug", "setup", "test", "docs"]
 
-from termstory.config import get_config_value, get_history_files, get_db_path
+from termstory.config import get_config_value, get_history_files, get_db_path, load_config
 from termstory.parser import parse_all_histories
 from termstory.session import create_sessions
 from termstory.project import detect_projects
 from termstory.database import Database
-from termstory.date_utils import get_current_time, get_today_range
+from termstory.date_utils import get_current_time, get_today_range, parse_date_range_helper
 from termstory.formatter import format_search_results, format_today_output, format_project_output, format_insights_output, format_stats_output, format_profile_output, format_necromancer_score, format_rage_quit_signatures
 import sqlite3
 
@@ -97,6 +98,28 @@ app = typer.Typer(
     no_args_is_help=False,
 )
 
+def discover_project_paths():
+    import glob
+    paths = []
+    project_roots = load_config().get(
+        "project_roots",
+        ["~/Projects", "~/src", "~/Developer", "~/Code", "~/Work", "~"],
+    )
+
+    if isinstance(project_roots, str):
+        project_roots = [project_roots]
+    elif not isinstance(project_roots, list):
+        project_roots = []
+
+    for root_dir in project_roots:
+            expanded = os.path.expanduser(root_dir)
+            if os.path.isdir(expanded):
+                for git_dir in glob.glob(os.path.join(expanded, "*", ".git")):
+                    paths.append(os.path.dirname(git_dir))
+                if root_dir != "~":
+                    for git_dir in glob.glob(os.path.join(expanded, "*", "*", ".git")):
+                        paths.append(os.path.dirname(git_dir))
+    return sorted(set(paths))
 def run_ingestion(db: Database) -> None:
     """Helper to parse active history files and store them in the database"""
     history_files = get_history_files()
@@ -118,61 +141,61 @@ def run_ingestion(db: Database) -> None:
             "Run some commands in your terminal first, then re-run `termstory ui`.\n"
         )
         return
-        
-    def discover_project_paths():
-        import glob
-        paths = []
-        for root_dir in ["~/Projects", "~/src", "~/Developer", "~/Code", "~/Work", "~"]:
-            expanded = os.path.expanduser(root_dir)
-            if os.path.isdir(expanded):
-                for git_dir in glob.glob(os.path.join(expanded, "*", ".git")):
-                    paths.append(os.path.dirname(git_dir))
-                if root_dir != "~":
-                    for git_dir in glob.glob(os.path.join(expanded, "*", "*", ".git")):
-                        paths.append(os.path.dirname(git_dir))
-        return sorted(set(paths))
+    commands = parse_all_histories(
+        history_files,
+        db=db,
+        project_paths=discover_project_paths()
+    )
 
-    commands = parse_all_histories(history_files, db=db, project_paths=discover_project_paths)
     if len(commands) == 0:
         Console(stderr=True).print(
             "\n[bold yellow]⚠️  Warning: Shell history parser returned 0 commands.[/bold yellow]\n"
             "Your history file might be empty, unreadable, or permission denied.\n"
             "If you are on macOS, please check and grant Full Disk Access to your Terminal app.\n"
         )
-        
+
     sessions = create_sessions(commands)
     projects = detect_projects(sessions)
     db.save_data(projects, sessions, commands)
-    
-    # Ingest commits for each project: dynamically adjust search window based on the oldest command parsed
+
+    # Ingest commits for each project
     from termstory.git_integration import get_project_commits
+
     if commands:
         oldest_ts = commands[0].timestamp
-        since_ts = min(oldest_ts - 24 * 3600, int(get_current_time().timestamp()) - 90 * 24 * 3600)
+        since_ts = min(
+            oldest_ts - 24 * 3600,
+            int(get_current_time().timestamp()) - 90 * 24 * 3600,
+        )
     else:
         since_ts = int(get_current_time().timestamp()) - 90 * 24 * 3600
-        
-    is_deep_history = since_ts < int(get_current_time().timestamp()) - 90 * 24 * 3600
+
+    is_deep_history = (
+        since_ts < int(get_current_time().timestamp()) - 90 * 24 * 3600
+    )
     git_timeout = 30 if is_deep_history else 10
-        
+
     for p in projects:
         if p.id is not None and p.path:
-            commits = get_project_commits(p.path, since_ts, timeout=git_timeout)
+            commits = get_project_commits(
+                p.path,
+                since_ts,
+                timeout=git_timeout,
+            )
             if commits:
                 db.save_commits(p.id, commits)
-                
+
     # Auto-tag sessions
     from termstory.tags import auto_tag_all_sessions
     auto_tag_all_sessions(db)
 
-    # Capture MCP snapshot of current workspace/IDE/terminal state
+    # Capture MCP snapshot
     from termstory.mcp_snapshot import capture_and_store_mcp_snapshot
     capture_and_store_mcp_snapshot(db)
 
-    # Start REM Sleep background context consolidation daemon
+    # Start REM Sleep daemon
     from termstory.reminder import start_sleep_daemon
     start_sleep_daemon(db.db_path)
-
 @app.command("search")
 def search_history(
     query: Optional[str] = typer.Argument(None, help="Search term/query across commits, commands, and project names"),
@@ -197,7 +220,7 @@ def search_history(
         try:
             since_ts = int(date_parser.parse(since).timestamp())
         except (ValueError, OverflowError) as e:
-            Console(stderr=True).print(f"[bold red]Error: Could not parse date '{since}': {e}[/]")
+            Console(stderr=True).print(f"[bold red]Error: Invalid date '{since}'. Expected YYYY-MM-DD.[/]")
             raise typer.Exit(code=1)
             
     until_ts = None
@@ -205,7 +228,7 @@ def search_history(
         try:
             until_ts = int(date_parser.parse(until).timestamp())
         except (ValueError, OverflowError) as e:
-            Console(stderr=True).print(f"[bold red]Error: Could not parse date '{until}': {e}[/]")
+            Console(stderr=True).print(f"[bold red]Error: Invalid date '{until}'. Expected YYYY-MM-DD.[/]")
             raise typer.Exit(code=1)
             
     tag_list = None
@@ -807,11 +830,12 @@ def cleanup_shell_marker():
             except Exception:
                 pass
 
-def perform_reset():
+def perform_reset(auto_confirm: bool = False, dry_run: bool = False):
     """Reset all TermStory state, configuration, and database files on disk"""
     import shutil
     import os
     from termstory.config import get_app_dir
+    from rich.prompt import Prompt
 
     dirs_to_clean = set()
 
@@ -832,6 +856,43 @@ def perform_reset():
             dirs_to_clean.add(os.path.join(os.environ["XDG_DATA_HOME"], "termstory"))
         dirs_to_clean.add(os.path.expanduser("~/.local/share/termstory"))
 
+    existing_paths = []
+    for db_dir in dirs_to_clean:
+        if os.path.exists(db_dir):
+            existing_paths.append(db_dir)
+            
+    ignore_file = os.path.expanduser("~/.termstoryignore")
+    if os.path.exists(ignore_file):
+        existing_paths.append(ignore_file)
+
+    if not existing_paths:
+        console.print("[yellow]No TermStory data found to reset.[/yellow]")
+        cleanup_shell_marker()
+        return
+        
+    console.print("[bold red]WARNING: The following paths will be permanently deleted:[/bold red]")
+    for p in existing_paths:
+        console.print(f"  - {p}")
+        
+    if dry_run:
+        console.print("\n[yellow]Dry run complete. No files were deleted.[/yellow]")
+        return
+
+    if not auto_confirm:
+        # A non-interactive shell can't answer the prompt; refuse instead of
+        # silently aborting with a success exit code.
+        if not sys.stdin.isatty():
+            console.print("[bold red]Refusing to reset in a non-interactive shell without --yes.[/bold red]")
+            raise typer.Exit(code=1)
+        try:
+            response = input("\nAre you sure you want to delete all TermStory data? (y/n): ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[red]Reset cancelled by user interruption.[/red]")
+            raise typer.Exit(code=1)
+        if response not in ("y", "yes"):
+            console.print("[yellow]Reset aborted.[/yellow]")
+            return
+
     for db_dir in dirs_to_clean:
         if os.path.exists(db_dir):
             try:
@@ -843,7 +904,6 @@ def perform_reset():
                 pass
                 
     # 4. Remove global ignore file
-    ignore_file = os.path.expanduser("~/.termstoryignore")
     if os.path.exists(ignore_file):
         try:
             os.unlink(ignore_file)
@@ -944,7 +1004,7 @@ def show_ui(
     app_tui.run()
     
     if getattr(app_tui, "was_reset", False):
-        perform_reset()
+        perform_reset(auto_confirm=True)
     else:
         try:
             from termstory.config import load_config, save_config
@@ -965,9 +1025,12 @@ def show_ui(
             Console(stderr=True).print(f"[dim]Note: failed to persist onboarding reminder flag: {e}[/dim]")
 
 @app.command("reset")
-def reset_cmd():
+def reset_cmd(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be deleted without actually deleting")
+):
     """Reset all TermStory state, configuration, and database"""
-    perform_reset()
+    perform_reset(auto_confirm=yes, dry_run=dry_run)
 
 
 @app.command("optimize")
@@ -1424,8 +1487,9 @@ def version_callback(value: bool):
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
-    date: Optional[str] = typer.Option(None, "--date", help="Date override (YYYY-MM-DD) for commands"),
+    date: Optional[str] = typer.Option(None, "--date", help="Date override (e.g. today, yesterday, 7days, YYYY-MM-DD) for commands"),
     reset: bool = typer.Option(False, "--reset", help="Reset all TermStory state, configuration, and database"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt for reset"),
     version: Optional[bool] = typer.Option(
         None,
         "--version",
@@ -1436,13 +1500,14 @@ def main(
 ):
     """TermStory - local shell history parsing and session summaries"""
     if reset:
-        perform_reset()
+        perform_reset(auto_confirm=yes)
         raise typer.Exit()
 
     if date:
         try:
-            date_parser.parse(date)
-            os.environ["TERMSTORY_DATE_OVERRIDE"] = date
+            start_ts, _ = parse_date_range_helper(date)
+            parsed_date = datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d")
+            os.environ["TERMSTORY_DATE_OVERRIDE"] = parsed_date
         except Exception:
             Console(stderr=True).print(f"[bold red]Error: Invalid date format '{date}'[/]")
             raise typer.Exit(code=1)

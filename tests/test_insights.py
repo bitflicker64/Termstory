@@ -353,5 +353,126 @@ def test_detect_late_night_chaotic_sessions_invalid_timestamp(tmp_path):
     assert len(sessions) == 0
 
 
+def test_detect_late_night_chaotic_sessions_query_count(tmp_path):
+    from datetime import datetime
+    from termstory.database import Database
+    from termstory.insights import detect_late_night_chaotic_sessions
+
+    db_file = tmp_path / "test_perf.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO projects (id, name, path) VALUES (1, 'Project Alpha', '~/alpha')")
+    
+    # Insert 5 late-night chaotic sessions
+    for s_id in range(1, 6):
+        start_ts = int(datetime(2026, 6, 16 + s_id, 2, 0, 0).timestamp())
+        cursor.execute("INSERT INTO sessions (id, start_time, end_time, duration_seconds, project_id) VALUES (?, ?, ?, ?, ?)",
+                       (s_id, start_ts, start_ts + 100, 100, 1))
+        for cmd_id in range(10):
+            cursor.execute("INSERT INTO commands (timestamp, command, exit_code, session_id, project_id) VALUES (?, ?, ?, ?, ?)",
+                           (start_ts + cmd_id, f"echo command_{cmd_id}", 1 if cmd_id < 3 else 0, s_id, 1))
+    
+    # Insert a commit
+    commit_ts = int(datetime(2026, 6, 17, 2, 0, 0).timestamp())
+    cursor.execute("INSERT INTO commits (hash, timestamp, message, cleaned_message, project_id) VALUES (?, ?, ?, ?, ?)",
+                   ("hash1", commit_ts, "commit msg", "commit msg", 1))
+
+    conn.commit()
+    conn.close()
+
+    # Track execute calls
+    query_count = 0
+    original_get_connection = db.get_connection
+    
+    class CountingCursor:
+        def __init__(self, cursor):
+            self.cursor = cursor
+            
+        def execute(self, sql, params=None):
+            nonlocal query_count
+            query_count += 1
+            if params is None:
+                return self.cursor.execute(sql)
+            return self.cursor.execute(sql, params)
+            
+        def fetchall(self):
+            return self.cursor.fetchall()
+            
+        def __getattr__(self, name):
+            return getattr(self.cursor, name)
+
+    class CountingConnection:
+        def __init__(self, conn):
+            self.conn = conn
+            
+        def cursor(self):
+            return CountingCursor(self.conn.cursor())
+            
+        def __getattr__(self, name):
+            return getattr(self.conn, name)
+
+    def counting_get_connection():
+        return CountingConnection(original_get_connection())
+
+    db.get_connection = counting_get_connection
+
+    sessions = detect_late_night_chaotic_sessions(db)
+    
+    assert len(sessions) == 5
+    assert query_count <= 5, f"Expected small constant query count, got {query_count} queries"
+
+
+def test_detect_late_night_chaotic_sessions_no_duplicate_commits(tmp_path):
+    from datetime import datetime
+    from termstory.database import Database
+    from termstory.insights import detect_late_night_chaotic_sessions
+
+    db_file = tmp_path / "test_dedup_commits.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO projects (id, name, path) VALUES (1, 'Project Alpha', '~/alpha')")
+    
+    # We need > 250 sessions to trigger chunking (chunk_size = 250)
+    # Let's insert 260 chaotic sessions
+    now_dt = datetime(2026, 6, 17, 2, 0, 0)
+    base_ts = int(now_dt.timestamp())
+    
+    for s_id in range(1, 261):
+        start_ts = base_ts + s_id * 15
+        cursor.execute("INSERT INTO sessions (id, start_time, end_time, duration_seconds, project_id) VALUES (?, ?, ?, ?, ?)",
+                       (s_id, start_ts, start_ts + 10, 10, 1))
+        # Insert commands to make it chaotic
+        for cmd_id in range(10):
+            cursor.execute("INSERT INTO commands (timestamp, command, exit_code, session_id, project_id) VALUES (?, ?, ?, ?, ?)",
+                           (start_ts + cmd_id, f"echo command_{cmd_id}", 1, s_id, 1))
+
+    # Insert a commit that overlaps with all sessions
+    # Since the sessions span from base_ts + 15 to base_ts + 260 * 15 + 10,
+    # let's set the commit timestamp to base_ts + 1000, which falls in the range of many sessions.
+    cursor.execute("INSERT INTO commits (hash, timestamp, message, cleaned_message, project_id) VALUES (?, ?, ?, ?, ?)",
+                   ("hash1", base_ts + 1000, "overlapping commit message", "overlapping commit message", 1))
+
+    conn.commit()
+    conn.close()
+
+    sessions = detect_late_night_chaotic_sessions(db)
+    
+    # Assert that all chaotic sessions are returned
+    assert len(sessions) == 260
+    
+    # Assert that the commit list of any session has no duplicates
+    for s in sessions:
+        assert s["commits"].count("overlapping commit message") <= 1
+        
+    # Verify that the commit was associated with at least some sessions
+    total_matches = sum(s["commits"].count("overlapping commit message") for s in sessions)
+    assert total_matches > 0
+
 
 

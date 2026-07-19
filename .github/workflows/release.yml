@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write  # needed to create GitHub releases
+
 jobs:
   build:
     name: Build distribution
@@ -32,15 +35,15 @@ jobs:
           name: python-package-distributions
           path: dist/
 
-  publish-to-pypi:
-    name: Publish Python distribution to PyPI
+  publish:
+    name: Publish release and package
     needs: build
     runs-on: ubuntu-latest
     environment:
       name: pypi
       url: https://pypi.org/p/termstory
     permissions:
-      id-token: write  # Mandatory for trusted publishing
+      contents: write
     steps:
       - name: Download all the dists
         uses: actions/download-artifact@v4
@@ -48,5 +51,18 @@ jobs:
           name: python-package-distributions
           path: dist/
 
+      - name: Create GitHub release (if missing)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — skipping"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
+          fi
+
       - name: Publish distribution to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}

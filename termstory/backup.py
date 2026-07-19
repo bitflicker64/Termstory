@@ -1,9 +1,12 @@
+import logging
 import os
 import shutil
 import sqlite3
 import glob
 from datetime import datetime
 from termstory.config import get_db_path
+
+logger = logging.getLogger(__name__)
 
 
 def _get_backup_dir() -> str:
@@ -43,8 +46,8 @@ def backup_db() -> str:
             oldest = backups.pop(0)
             if os.path.exists(oldest):
                 os.remove(oldest)
-    except Exception:
-        pass  # Rotation failure should not crash the backup process
+    except OSError as e:
+        logger.warning("Failed to rotate old backups: %s", e)
 
     return backup_path
 

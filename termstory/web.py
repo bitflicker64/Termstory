@@ -1,10 +1,14 @@
 import os
 import json
+import logging
+import sqlite3
 import webbrowser
 from typing import Optional
 from termstory.insights import analyze_all
 from termstory.formatter import _is_noise_command
 from termstory.database import Database
+
+logger = logging.getLogger(__name__)
 
 
 def get_web_data(db: Database, start_ts: Optional[int] = None, end_ts: Optional[int] = None) -> dict:
@@ -54,9 +58,9 @@ def get_web_data(db: Database, start_ts: Optional[int] = None, end_ts: Optional[
             
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
-            query += " ORDER BY start_time DESC LIMIT 1000"
+            query += " ORDER BY start_time DESC LIMIT 500"
         else:
-            query += " ORDER BY start_time DESC LIMIT 30"
+            query += " ORDER BY start_time DESC LIMIT 500"
             
         cursor.execute(query, params)
         session_ids = [row[0] for row in cursor.fetchall()]
@@ -230,8 +234,11 @@ def get_web_data(db: Database, start_ts: Optional[int] = None, end_ts: Optional[
         for day, count in cursor.fetchall():
             if day in daily_activity:
                 daily_activity[day]["sessions"] = count
-    except Exception:
-        pass
+    except sqlite3.Error:
+        logger.warning(
+            "Failed to calculate daily activity heatmap; returning zeroed heatmap.",
+            exc_info=True,
+        )
     finally:
         conn.close()
 
@@ -923,6 +930,7 @@ def generate_and_open_report(
         }}
 
         function formatDuration(seconds) {{
+            if (seconds === null || seconds === undefined) return "Ongoing";
             if (seconds <= 0) return "0s";
             if (seconds < 60) return `${{seconds}}s`;
             const hours = Math.floor(seconds / 3600);
@@ -940,6 +948,7 @@ def generate_and_open_report(
         }}
 
         function formatTime(timestamp) {{
+            if (timestamp === null || timestamp === undefined) return "Active";
             const date = new Date(timestamp * 1000);
             return date.toLocaleTimeString(undefined, {{ hour: '2-digit', minute: '2-digit' }});
         }}

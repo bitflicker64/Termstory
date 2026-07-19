@@ -2,8 +2,9 @@ import json
 import logging
 import math
 import os
-import time
 import re
+import sqlite3
+import time
 from typing import List, Dict, Optional, Tuple
 from termstory.config import get_app_dir, load_config
 
@@ -21,7 +22,8 @@ def load_reminders() -> List[Dict]:
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        logger.exception("Failed to load reminders from %s", path)
         return []
 
 def save_reminders(reminders: List[Dict]) -> None:
@@ -162,7 +164,8 @@ def _resolve_clustering_threshold() -> float:
     try:
         cfg = load_config()
         return float(cfg.get("clustering_threshold", _DEFAULT_CLUSTERING_THRESHOLD))
-    except Exception:
+    except (OSError, TypeError, ValueError) as exc:
+        logger.exception("Failed to resolve clustering threshold; using default")
         return _DEFAULT_CLUSTERING_THRESHOLD
 
 
@@ -217,6 +220,7 @@ def cluster_commands(commands: List[str], threshold: Optional[float] = None) -> 
             emb_list = embeddings
     except Exception:
         # Fallback if encoding failed
+        logger.exception("Failed to generate embeddings for command clustering")
         verb_clusters = {}
         for cmd in unique_cmds:
             verb = cmd.split()[0] if cmd.split() else "other"
@@ -313,8 +317,8 @@ def consolidate_sleep_contexts(db, force: bool = False) -> int:
         row = cursor.fetchone()
         if row and row[0] is not None:
             last_end = row[0]
-    except Exception:
-        pass
+    except (sqlite3.DatabaseError, ValueError, TypeError, OSError) as exc:
+        logger.exception("Failed to read the last sleep consolidation marker")
     finally:
         conn.close()
 
@@ -332,8 +336,8 @@ def consolidate_sleep_contexts(db, force: bool = False) -> int:
         rows = cursor.fetchall()
         for r in rows:
             commands.append({"command": r[0], "timestamp": r[1]})
-    except Exception:
-        pass
+    except (sqlite3.DatabaseError, ValueError, TypeError, OSError) as exc:
+        logger.exception("Failed to fetch commands for sleep consolidation")
     finally:
         conn.close()
 
@@ -428,8 +432,8 @@ def start_sleep_daemon(db_path: str):
             start_new_session=True,
             env=env
         )
-    except Exception:
-        pass
+    except OSError as exc:
+        logger.exception("Failed to start sleep daemon")
 
 
 def run_sleep_daemon(db_path: str):
@@ -454,8 +458,8 @@ def run_sleep_daemon(db_path: str):
         try:
             if os.path.exists(pid_file):
                 os.remove(pid_file)
-        except Exception:
-            pass
+        except OSError as exc:
+            logger.exception("Failed to remove sleep daemon PID file %s", pid_file)
         sys.exit(0)
         
     signal.signal(signal.SIGTERM, cleanup_pid)
@@ -465,19 +469,19 @@ def run_sleep_daemon(db_path: str):
         try:
             with open(pid_file, "w") as f:
                 f.write(str(os.getpid()))
-        except Exception:
-            pass
+        except OSError as exc:
+            logger.exception("Failed to write sleep daemon PID file %s", pid_file)
             
         db = Database(db_path)
         while True:
             try:
                 consolidate_sleep_contexts(db, force=False)
             except Exception:
-                pass
+                logger.exception("Failed to run consolidate_sleep_contexts in sleep daemon")
             time.sleep(poll_interval)
     finally:
         try:
             if os.path.exists(pid_file):
                 os.remove(pid_file)
-        except Exception:
-            pass
+        except OSError as exc:
+            logger.exception("Failed to remove sleep daemon PID file %s", pid_file)
