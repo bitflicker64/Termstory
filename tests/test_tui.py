@@ -158,10 +158,14 @@ def test_clean_command_to_memory():
     assert clean_command_to_memory("git add . && git commit -m 'Release v0.1'") == "Release v0.1"
 
     # 4. Advanced git commands
-    # Interactive rebase
+    # Interactive rebase with HEAD~N
     assert clean_command_to_memory("git rebase -i HEAD~3") == "Interactive rebase of last 3 commits"
     assert clean_command_to_memory("git rebase -i HEAD~1") == "Interactive rebase of last commit"
     assert clean_command_to_memory("git rebase -i HEAD~10") == "Interactive rebase of last 10 commits"
+
+    # Generic interactive rebase (onto branch/ref)
+    assert clean_command_to_memory("git rebase -i main") == "Interactive rebase"
+    assert clean_command_to_memory("git rebase --interactive feature") == "Interactive rebase"
 
     # Normal rebase
     assert clean_command_to_memory("git rebase main") == "Rebase onto main"
@@ -176,6 +180,7 @@ def test_clean_command_to_memory():
     # Reset variants
     assert clean_command_to_memory("git reset --hard HEAD~1") == "Hard reset to previous commit"
     assert clean_command_to_memory("git reset --hard HEAD~3") == "Hard reset 3 commits back"
+    assert clean_command_to_memory("git reset --soft HEAD~1") == "Soft reset to previous commit"
     assert clean_command_to_memory("git reset --soft HEAD~2") == "Soft reset 2 commits back"
     assert clean_command_to_memory("git reset --mixed HEAD~1") == "Mixed reset to previous commit"
     assert clean_command_to_memory("git reset HEAD~2") == "Reset 2 commits back"
