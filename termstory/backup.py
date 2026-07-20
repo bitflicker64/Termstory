@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 import sqlite3
@@ -5,6 +6,8 @@ import glob
 from datetime import datetime
 from termstory.config import get_db_path
 import logging
+
+logger = logging.getLogger(__name__)
 
 logger = logging.getLogger(__name__)
 

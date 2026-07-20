@@ -66,8 +66,10 @@ def classify_command(cmd_text: str) -> str:
             
     return first_token
 
-def format_time(timestamp: int) -> str:
+def format_time(timestamp: Optional[int]) -> str:
     """Format Unix timestamp to 12-hour local time format without leading zeroes, e.g. '9:00 AM'"""
+    if timestamp is None:
+        return "In progress"
     dt = datetime.fromtimestamp(timestamp)
     time_str = dt.strftime("%I:%M %p")
     if time_str.startswith("0"):
@@ -691,6 +693,43 @@ def clean_command_to_memory(cmd_str: str) -> str:
             return "Push changes to remote"
         if "pull" in cmd_str:
             return "Pull latest changes"
+
+        # Interactive rebase
+        rebase_i = re.search(r'rebase\s+(?:-i|--interactive)\s+HEAD~(\d+)', cmd_str)
+        if rebase_i:
+            n = int(rebase_i.group(1))
+            if n == 1:
+                return "Interactive rebase of last commit"
+            return f"Interactive rebase of last {n} commits"
+
+        # Generic interactive rebase (onto a branch/ref, not HEAD~N)
+        if re.search(r'rebase\s+(?:-i|--interactive)\s+', cmd_str) and not re.search(r'HEAD~(\d+)', cmd_str):
+            return "Interactive rebase"
+
+        # Normal rebase onto a branch/ref (avoid matching -i/--interactive already handled above)
+        rebase_onto = re.search(r'(?<!-)rebase\s+(?:onto\s+)?(?!-i|--interactive\b)(\S+)', cmd_str)
+        if rebase_onto:
+            target = rebase_onto.group(1)
+            return f"Rebase onto {target}"
+
+        # Cherry-pick
+        if re.search(r'cherry-pick', cmd_str):
+            return "Cherry-pick commit"
+
+        # Reset variants
+        reset_match = re.search(r'reset\s+(--hard|--soft|--mixed)?\s*HEAD~(\d+)', cmd_str)
+        if reset_match:
+            modifier = reset_match.group(1) or ""
+            n = int(reset_match.group(2))
+            count_str = "previous commit" if n == 1 else f"{n} commits back"
+            if modifier == "--hard":
+                return f"Hard reset to {count_str}" if n == 1 else f"Hard reset {count_str}"
+            elif modifier == "--soft":
+                return f"Soft reset to {count_str}" if n == 1 else f"Soft reset {count_str}"
+            elif modifier == "--mixed":
+                return f"Mixed reset to {count_str}" if n == 1 else f"Mixed reset {count_str}"
+            else:
+                return f"Reset to {count_str}" if n == 1 else f"Reset {count_str}"
             
     # 3. Clean newlines and split chains using quote-aware tokenizer
     clean = cmd_str.replace("\n", " ").strip()
