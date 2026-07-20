@@ -18,32 +18,7 @@ from collections import Counter, defaultdict
 from typing import List, Dict, Optional, Tuple
 
 from termstory.database import Database
-
-# ---------------------------------------------------------------------------
-# Noise commands that are excluded from prediction signals
-# (mirrors formatter.py's _is_noise_command heuristic)
-# ---------------------------------------------------------------------------
-_NOISE_PREFIXES = (
-    "cd ", "ls", "pwd", "echo ", "cat ", "man ",
-    "history", "clear", "exit", "which ", "type ",
-    "git status", "git log", "git diff", "git branch",
-    "docker ps", "docker logs", "docker inspect",
-    "grep ", "awk ", "sed ", "head ", "tail ",
-    "ping ", "curl -I", "wget --spider",
-)
-
-_NOISE_EXACT = {"ls", "pwd", "clear", "exit", "history", "cd"}
-
-
-def _is_noise(cmd: str) -> bool:
-    """Return True if the command is routine navigation / inspection noise."""
-    stripped = cmd.strip()
-    if stripped in _NOISE_EXACT:
-        return True
-    for prefix in _NOISE_PREFIXES:
-        if stripped.startswith(prefix):
-            return True
-    return False
+from termstory.formatter import _is_noise_command
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +133,7 @@ class Predictor:
                 if cmd_rows and all(bool(r[1]) for r in cmd_rows):
                     continue
 
-                cmds = [r[0] for r in cmd_rows if not _is_noise(r[0])]
+                cmds = [r[0] for r in cmd_rows if not _is_noise_command(r[0])]
                 project_name = p_name if p_name and p_name not in ("General / No Project", "") else "Other"
 
                 sessions.append({

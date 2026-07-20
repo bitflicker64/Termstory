@@ -1,8 +1,8 @@
+import logging
 import os
 import shutil
 import sqlite3
 import glob
-import logging
 from datetime import datetime
 from termstory.config import get_db_path
 
