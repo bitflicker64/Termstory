@@ -48,14 +48,16 @@ termstory search auth
 
 ![TermStory TUI Dashboard](https://raw.githubusercontent.com/bitflicker64/termstory/main/docs/assets/tui-dashboard.png)
 
-*TermStory v0.6.0 — AI-narrated daily chronicle, project timeline, focus metrics, and command playback.*
+*TermStory v0.6.4 — AI-narrated daily chronicle, project timeline, focus metrics, and command playback.*
 
 ## Documentation & Key Features
 
 Learn more about TermStory by exploring the detailed documentation below:
 
 - **[Architecture & Core Concepts](docs/architecture.md)** — Project layout, ingestion pipeline, timestamp detective, and git correlation.
+- **[Architecture Threat Tracker](docs/architecture-decisions.md)** — Resolved architectural threats and remediation decisions.
 - **[Database Schema](docs/database-schema.md)** — Thread-safe SQLite WAL schema and concurrency handling.
+- **[Data Privacy](DATA_PRIVACY.md)** — How TermStory handles your data and the trust architecture.
 - **[Privacy Sanitizer](docs/privacy.md)** — Learn how TermStory redacts credentials and protects local PII.
 - **[AI Integration](docs/ai-integration.md)** — Zero-dependency LLM client supporting Groq, OpenAI, and Ollama.
 - **[TUI & AI Narratives](docs/tui.md)** — Dashboard layout, interactive features, and AI-generated logs.

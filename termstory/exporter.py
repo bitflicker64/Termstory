@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional
 from dateutil import parser as date_parser
 
 from termstory.database import Database
+from termstory.date_utils import get_current_time
 from termstory.models import Session, Command, Project
 
 _FAR_FUTURE_TS: int = 9_999_999_999 # ~year 2286, safely beyond any real session timestamp

@@ -22,10 +22,10 @@ import pytest
 from termstory.predict import (
     Predictor,
     format_predict_output,
-    _is_noise,
     _hour_bucket,
     _day_label,
 )
+from termstory.formatter import _is_noise_command
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -132,24 +132,40 @@ def _make_db(sessions_spec: list) -> str:
 class TestIsNoise:
     def test_exact_noise(self):
         for cmd in ["ls", "pwd", "clear", "exit", "history", "cd"]:
-            assert _is_noise(cmd), f"Expected '{cmd}' to be noise"
+            assert _is_noise_command(cmd), f"Expected '{cmd}' to be noise"
 
     def test_prefix_noise(self):
-        assert _is_noise("cd /home/user/projects")
-        assert _is_noise("git status")
-        assert _is_noise("docker ps -a")
-        assert _is_noise("grep -r 'TODO'")
+        assert _is_noise_command("cd /home/user/projects")
+        assert _is_noise_command("git status")
+        assert _is_noise_command("docker logs my-container")
+        assert _is_noise_command("grep -r 'TODO'")
 
     def test_not_noise(self):
-        assert not _is_noise("python -m pytest")
-        assert not _is_noise("cargo build --release")
-        assert not _is_noise("npm run dev")
-        assert not _is_noise("git commit -m 'feat: add predict'")
-        assert not _is_noise("docker build -t myapp .")
+        assert not _is_noise_command("python -m pytest")
+        assert not _is_noise_command("cargo build --release")
+        assert not _is_noise_command("npm run dev")
+        assert not _is_noise_command("git commit -m 'feat: add predict'")
+        assert not _is_noise_command("docker build -t myapp .")
 
     def test_whitespace_stripped(self):
-        assert _is_noise("  ls  ")
-        assert not _is_noise("  npm install  ")
+        assert _is_noise_command("  ls  ")
+        assert not _is_noise_command("  npm install  ")
+
+    def test_noise_classification_equivalence(self):
+        """Regression test: verify both formatter and predict treat identical commands the same way."""
+        from termstory.formatter import _is_noise_command as formatter_noise
+        from termstory.predict import _is_noise_command as predict_noise
+
+        test_commands = [
+            "ls", "pwd", "clear", "exit", "history", "cd",
+            "cd /home/user/projects", "git status", "docker logs container", "grep -r 'TODO'",
+            "python -m pytest", "cargo build --release", "npm run dev",
+            "git commit -m 'feat: add predict'", "docker build -t myapp .",
+            "  ls  ", "  npm install  ", "docker images", "top", "htop", "whoami",
+            "ssh user@host", "mkdir mydir", "echo 'hello'", "# comment", "```python"
+        ]
+        for cmd in test_commands:
+            assert formatter_noise(cmd) == predict_noise(cmd), f"Mismatch for command: {cmd}"
 
 
 # ─── Time bucketing tests ────────────────────────────────────────────────────
@@ -326,7 +342,7 @@ class TestPredictorRanking:
             result = p.predict(top_n=1, now=now)
             if result["top_projects"]:
                 for cmd in result["top_projects"][0]["suggested_commands"]:
-                    assert not _is_noise(cmd), f"Noise cmd in suggestions: {cmd}"
+                    assert not _is_noise_command(cmd), f"Noise cmd in suggestions: {cmd}"
         finally:
             os.unlink(db_path)
 

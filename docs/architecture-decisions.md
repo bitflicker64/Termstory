@@ -1,4 +1,4 @@
-# TermStory Architectural Threat Tracker
+# Architecture Threat Tracker
 
 ### 1. Time-Traveling History (NTP Jumps & Suspend Chaos)
 **Severity**: High
