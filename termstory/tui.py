@@ -893,14 +893,12 @@ class DetailsCanvas(VerticalScroll):
         
         active_project_ids = {s.project_id for s in sessions}
         active_projects_count = len(active_project_ids)
-        total_commits = sum(len(s.commands) for s in sessions)
+        total_commits = sum(len(s.commits) for s in sessions)
         
         # Build side-by-side header block just like the daily chronicle
         operator = get_operator_handle()
         fs = calculate_focus_score(sessions)
         tod = calculate_time_of_day_distribution(sessions)
-        rpg_class = assign_daily_rpg_class(sessions)
-        
         peak_velocity = "morning grinds"
         if tod.get("afternoon", 0) >= tod.get("morning", 0) and tod.get("afternoon", 0) >= tod.get("evening", 0):
             peak_velocity = "afternoon compilation grinds"
@@ -931,7 +929,7 @@ class DetailsCanvas(VerticalScroll):
         header_lines.append(f"[bold cyan]{avatar_lines[6]}[/]     [bold cyan]ACTIVE REPOS:[/]      [bold]{active_projects_count} Workspaces[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[7]}[/]     [bold cyan]FOCUS SCORE:[/]     [bold green]{fs:.1f}/10.0[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[8]}[/]     [bold cyan]PEAK VELOCITY:[/]    [dim]{peak_velocity}[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]DAILY CLASS:[/]      [dim]{rpg_class}[/dim]")
+        header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]PROJECTS:[/]        [dim]{active_projects_count}[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[10]}[/]     [bold cyan]COMMITS:[/]         [dim]{total_commits}[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[11]}[/]     [bold cyan]SYSTEM ENGINE:[/]   [dim]Online & Synchronized[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[12]}[/]     [bold cyan]====================================================[/]")
@@ -1076,8 +1074,6 @@ class DetailsCanvas(VerticalScroll):
                         feed_widgets.append(Static(f"  └─ {escape(heur)}\n"))
                         
             self.mount(Vertical(*feed_widgets, classes="feed-container"))
-            import sys
-            print(f"MOUNTED FEED CONTAINER! sessions: {len(sessions)}", file=sys.stderr)
 
     def render_wrapped_view(
         self,
@@ -1153,7 +1149,7 @@ class DetailsCanvas(VerticalScroll):
         elif tod.get("evening", 0) >= tod.get("morning", 0) and tod.get("evening", 0) >= tod.get("afternoon", 0):
             peak_velocity = "late night grinds"
             
-        total_commits = sum(len(s.commands) for s in sessions)
+        total_commits = sum(len(s.commits) for s in sessions)
         total_time_str = format_duration(sum(s.duration_seconds for s in sessions))
         
         header_lines = []
@@ -1366,7 +1362,7 @@ class DetailsCanvas(VerticalScroll):
         header_lines.append(f"[bold cyan]{avatar_lines[7]}[/]     [bold cyan]FOCUS SCORE:[/]     [bold green]{fs:.1f}/10.0[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[8]}[/]     [bold cyan]PEAK TIME:[/]       [dim]{peak_velocity}[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]DAILY CLASS:[/]      [dim]{rpg_class}[/dim]")
-        header_lines.append(f"[bold cyan]{avatar_lines[10]}[/]     [bold cyan]COMMITS:[/]         [dim]{sum(len(s.commands) for s in sessions)}[/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[10]}[/]     [bold cyan]COMMITS:[/]         [dim]{sum(len(s.commits) for s in sessions)}[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[11]}[/]     [bold cyan]SYSTEM ENGINE:[/]   [dim]Online & Synchronized[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[12]}[/]     [bold cyan]====================================================[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[13]}[/]")

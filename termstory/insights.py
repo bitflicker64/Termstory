@@ -402,12 +402,14 @@ def analyze_all(db=None) -> Dict:
     sorted_projects = sorted(project_durations.items(), key=lambda x: x[1], reverse=True)
     
     vampire_metrics = get_vampire_metrics(sessions)
+    from termstory.insights import assign_rpg_class
     rpg_info = assign_rpg_class(sessions)
-    
+    rpg_class_str = rpg_info["class_name"]
+
     projects = db.get_all_projects_with_stats()
     necromancer_info = calculate_project_necromancer_score(real_sessions, projects)
     rage_quit_info = calculate_rage_quit_signatures(real_sessions)
-    
+
     return {
         "total_sessions": total_sessions,
         "total_commands": total_commands,
@@ -418,7 +420,7 @@ def analyze_all(db=None) -> Dict:
         "streak": streak,
         "vampire_index": vampire_metrics["vampire_index"],
         "vampire_metrics": vampire_metrics,
-        "rpg_class": rpg_info["class_name"],
+        "rpg_class": rpg_class_str,
         "rpg_info": rpg_info,
         "necromancer_score": necromancer_info["score"],
         "necromancer_info": necromancer_info,
