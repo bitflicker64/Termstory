@@ -8,7 +8,7 @@ from typer.testing import CliRunner
 from termstory.cli import app
 from termstory.database import Database
 from termstory.models import Project, Session, Command
-from termstory.web import get_web_data, generate_and_open_report
+from termstory.web import WEB_REPORT_SESSION_LIMIT, get_web_data, generate_and_open_report
 
 def test_get_web_data_empty_db(tmp_path):
     db_file = tmp_path / "empty.db"
@@ -28,6 +28,12 @@ def test_get_web_data_empty_db(tmp_path):
     assert data["stats"]["streak"] == 0
     assert len(data["projects"]) == 0
     assert len(data["sessions"]) == 0
+    assert data["session_window"] == {
+        "limit": WEB_REPORT_SESSION_LIMIT,
+        "returned": 0,
+        "total": 0,
+        "truncated": False,
+    }
     assert len(data["highlights"]) == 0
 
 
@@ -152,6 +158,44 @@ def test_get_web_data_populated_db(tmp_path):
     assert data["highlights"][0]["project_name"] == "Project A"
     assert data["highlights"][0]["ai_summary"] == "Started project A"
 
+
+def test_get_web_data_does_not_truncate_unfiltered_sessions_at_30(tmp_path):
+    db = Database(str(tmp_path / "sessions.db"))
+    db.init_db()
+
+    now = int(datetime(2026, 6, 14, 12, 0, 0).timestamp())
+    project = Project(
+        id=1,
+        name="Project A",
+        path="/path/to/a",
+        first_seen=now,
+        last_seen=now,
+        session_count=31,
+        total_time=31,
+    )
+    sessions = [
+        Session(
+            id=index + 1,
+            start_time=now + index,
+            end_time=now + index + 1,
+            duration_seconds=1,
+            project_id=1,
+        )
+        for index in range(31)
+    ]
+    db.save_data([project], sessions, [])
+
+    data = get_web_data(db)
+
+    assert len(data["sessions"]) == 31
+    assert data["session_window"] == {
+        "limit": WEB_REPORT_SESSION_LIMIT,
+        "returned": 31,
+        "total": 31,
+        "truncated": False,
+    }
+
+
 def test_generate_and_open_report(tmp_path, monkeypatch):
     db_file = tmp_path / "report.db"
     db = Database(str(db_file))
@@ -183,6 +227,9 @@ def test_generate_and_open_report(tmp_path, monkeypatch):
         
     assert "<title>TermStory Web Report</title>" in html
     assert "const reportData = " in html
+    assert 'id="session-window-notice"' in html
+    assert "if (sessionWindow?.truncated)" in html
+    assert "Showing ${sessionWindow.returned} of ${sessionWindow.total} sessions." in html
 
 def test_cli_web_subcommand(tmp_path, monkeypatch):
     db_file = tmp_path / "cli_web.db"
@@ -268,13 +315,13 @@ def test_swarm_audit_fixes(tmp_path, monkeypatch):
     db = Database(str(db_file))
     db.init_db()
     
-    # We will insert more than 1000 sessions (e.g. 1005 sessions) to check uncapped override
+    session_count = WEB_REPORT_SESSION_LIMIT + 5
     now = int(datetime(2026, 6, 14, 12, 0, 0).timestamp())
     
-    projects = [Project(id=1, name="Project A", path="/path/to/a", first_seen=now, last_seen=now, session_count=1005, total_time=10050)]
+    projects = [Project(id=1, name="Project A", path="/path/to/a", first_seen=now, last_seen=now, session_count=session_count, total_time=session_count * 10)]
     sessions = []
     commands = []
-    for i in range(1005):
+    for i in range(session_count):
         s_id = i + 1
         s_time = now - i * 10  # spread out in time
         sessions.append(Session(id=s_id, start_time=s_time, end_time=s_time + 5, duration_seconds=5, project_id=1))
@@ -288,17 +335,24 @@ def test_swarm_audit_fixes(tmp_path, monkeypatch):
     start_ts = now - 20000
     data = get_web_data(db, start_ts=start_ts)
     
-    # Verify KPI stats override does NOT cap at 1000
-    assert data["stats"]["total_sessions"] == 1005
-    assert data["stats"]["total_commands"] == 1005
+    # Verify KPI stats override does not cap at the report session limit.
+    assert data["stats"]["total_sessions"] == session_count
+    assert data["stats"]["total_commands"] == session_count
     assert data["stats"]["total_projects"] == 1
+    assert len(data["sessions"]) == WEB_REPORT_SESSION_LIMIT
+    assert data["session_window"] == {
+        "limit": WEB_REPORT_SESSION_LIMIT,
+        "returned": WEB_REPORT_SESSION_LIMIT,
+        "total": session_count,
+        "truncated": True,
+    }
     
     # Verify daily activity heatmap calculations work and are populated
     today_str = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
     assert today_str in data["daily_activity"]
-    # The sum of commands across all days in heatmap should be 1005
+    # The sum of commands across all days in heatmap should include every session.
     total_heatmap_commands = sum(day["commands"] for day in data["daily_activity"].values())
-    assert total_heatmap_commands == 1005
+    assert total_heatmap_commands == session_count
     
     # Test custom template with const reportData = ... and backslashes
     template_file = tmp_path / "custom_template.html"
@@ -321,4 +375,3 @@ def test_swarm_audit_fixes(tmp_path, monkeypatch):
     assert "const reportData =" in html
     # Check if our backslash command exists intact in the JSON
     assert "backslash \\\\" in html
-

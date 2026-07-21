@@ -1,7 +1,10 @@
+import logging
 import re
 import os
 import math
 from typing import List, Tuple, Optional
+
+logger = logging.getLogger(__name__)
 
 # Load custom redaction patterns from .termstoryignore
 # IMPORTANT: This loads once at module import time (called at the bottom of this file).
@@ -16,7 +19,7 @@ def load_custom_ignore_rules() -> tuple:
     for path in paths:
         if os.path.exists(path):
             try:
-                with open(path, 'r') as f:
+                with open(path, 'r', encoding='utf-8') as f:
                     for line in f:
                         line = line.strip()
                         if line and not line.startswith('#'):
@@ -27,7 +30,6 @@ def load_custom_ignore_rules() -> tuple:
             except Exception:
                 pass
     return tuple(local_patterns)
-
 CUSTOM_REDACTION_PATTERNS = load_custom_ignore_rules()
 # Blacklist patterns - if a command matches any of these, the entire session is dropped from AI
 BLACKLIST_PATTERNS = [

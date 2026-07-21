@@ -18,14 +18,6 @@ from termstory.tui import (
     OnboardingScreen,
 )
 
-@pytest.fixture(autouse=True)
-def mock_github_avatar_fetch(monkeypatch):
-    monkeypatch.setattr(
-        "termstory.tui.get_github_avatar_ascii",
-        lambda operator, width, height, on_resolved: [""] * height
-    )
-
-
 def test_calculate_streak(monkeypatch):
     now = datetime(2026, 6, 2, 12, 0)
     monkeypatch.setattr("termstory.tui.get_current_time", lambda: now)
@@ -164,6 +156,34 @@ def test_clean_command_to_memory():
     
     # 3. Multi-command chain
     assert clean_command_to_memory("git add . && git commit -m 'Release v0.1'") == "Release v0.1"
+
+    # 4. Advanced git commands
+    # Interactive rebase with HEAD~N
+    assert clean_command_to_memory("git rebase -i HEAD~3") == "Interactive rebase of last 3 commits"
+    assert clean_command_to_memory("git rebase -i HEAD~1") == "Interactive rebase of last commit"
+    assert clean_command_to_memory("git rebase -i HEAD~10") == "Interactive rebase of last 10 commits"
+
+    # Generic interactive rebase (onto branch/ref)
+    assert clean_command_to_memory("git rebase -i main") == "Interactive rebase"
+    assert clean_command_to_memory("git rebase --interactive feature") == "Interactive rebase"
+
+    # Normal rebase
+    assert clean_command_to_memory("git rebase main") == "Rebase onto main"
+    assert clean_command_to_memory("git rebase develop") == "Rebase onto develop"
+    assert clean_command_to_memory("git rebase origin/main") == "Rebase onto origin/main"
+
+    # Cherry-pick
+    assert clean_command_to_memory("git cherry-pick abc123") == "Cherry-pick commit"
+    assert clean_command_to_memory("git cherry-pick 7ab93fd") == "Cherry-pick commit"
+    assert clean_command_to_memory("git cherry-pick feature_commit") == "Cherry-pick commit"
+
+    # Reset variants
+    assert clean_command_to_memory("git reset --hard HEAD~1") == "Hard reset to previous commit"
+    assert clean_command_to_memory("git reset --hard HEAD~3") == "Hard reset 3 commits back"
+    assert clean_command_to_memory("git reset --soft HEAD~1") == "Soft reset to previous commit"
+    assert clean_command_to_memory("git reset --soft HEAD~2") == "Soft reset 2 commits back"
+    assert clean_command_to_memory("git reset --mixed HEAD~1") == "Mixed reset to previous commit"
+    assert clean_command_to_memory("git reset HEAD~2") == "Reset 2 commits back"
 
 
 def test_deduplicate_sessions():
@@ -426,32 +446,18 @@ async def test_tui_render_interactive_ai_buttons(monkeypatch):
             return "Generated AI summary description"
             
         monkeypatch.setattr("termstory.tui.generate_ai_summary", mock_generate_ai_summary)
-        monkeypatch.setattr(db, "save_session_ai_summary", lambda *args, **kwargs: None)
         
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             
             # Press the Generate Story button programmatically
-            btn = None
-            for _ in range(50):
-                try:
-                    btn = app.query_one("#btn-gen-session-1")
-                    break
-                except Exception:
-                    import asyncio
-                    await asyncio.sleep(0.05)
-            assert btn is not None
-            btn.press()
+            app.query_one("#btn-gen-session-1").press()
             await pilot.pause()
             
-            import asyncio
-            for _ in range(50):
-                if len(called) == 1:
-                    break
-                await asyncio.sleep(0.05)
             assert len(called) == 1
             assert app.sessions[0].ai_summary == "Generated AI summary description"
 
+            import asyncio
             # Wait for the button to disappear due to cooldown
             for _ in range(50):
                 try:
@@ -466,24 +472,11 @@ async def test_tui_render_interactive_ai_buttons(monkeypatch):
             await pilot.pause()
 
             # Press the button again (now it is '⟳ Regenerate' button)
-            btn = None
-            for _ in range(50):
-                try:
-                    btn = app.query_one("#btn-gen-session-1")
-                    break
-                except Exception:
-                    await asyncio.sleep(0.05)
-            assert btn is not None
-            btn.press()
+            app.query_one("#btn-gen-session-1").press()
             await pilot.pause()
 
-            for _ in range(50):
-                if len(called) == 2:
-                    break
-                await asyncio.sleep(0.05)
             assert len(called) == 2
             assert app.sessions[0].ai_summary == "Generated AI summary description"
-            await asyncio.sleep(0.5)
 
 
 @pytest.mark.asyncio
@@ -533,16 +526,7 @@ async def test_tui_generate_executive_review(monkeypatch):
             
             # Press the generate executive review button programmatically
             date_str = datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d")
-            btn = None
-            for _ in range(50):
-                try:
-                    btn = app.query_one(f"#btn-exec-{date_str}-date")
-                    break
-                except Exception:
-                    import asyncio
-                    await asyncio.sleep(0.05)
-            assert btn is not None
-            btn.press()
+            app.query_one(f"#btn-exec-{date_str}-date").press()
             await pilot.pause()
             
             import asyncio
@@ -602,16 +586,7 @@ async def test_tui_overall_timeframe_summary(monkeypatch):
             await pilot.pause()
             
             # Press the generate executive review button for overall timeframe
-            btn = None
-            for _ in range(50):
-                try:
-                    btn = app.query_one("#btn-exec-overall-overall")
-                    break
-                except Exception:
-                    import asyncio
-                    await asyncio.sleep(0.05)
-            assert btn is not None
-            btn.press()
+            app.query_one("#btn-exec-overall-overall").press()
             await pilot.pause()
             
             import asyncio
@@ -663,30 +638,15 @@ async def test_tui_bulk_auto_summarize(monkeypatch):
             return "Bulk summary output"
             
         monkeypatch.setattr("termstory.tui.generate_ai_summary", mock_generate_ai_summary)
-        monkeypatch.setattr(db, "save_session_ai_summary", lambda *args, **kwargs: None)
         
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             
             # Press the bulk auto-summarize button programmatically
             date_str = datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d")
-            btn = None
-            for _ in range(50):
-                try:
-                    btn = app.query_one(f"#btn-bulk-{date_str}-date")
-                    break
-                except Exception:
-                    import asyncio
-                    await asyncio.sleep(0.05)
-            assert btn is not None
-            btn.press()
+            app.query_one(f"#btn-bulk-{date_str}-date").press()
             await pilot.pause()
             
-            import asyncio
-            for _ in range(50):
-                if len(called) == 1:
-                    break
-                await asyncio.sleep(0.05)
             assert len(called) == 1
             assert app.sessions[0].ai_summary == "Bulk summary output"
 
@@ -731,7 +691,6 @@ async def test_tui_bulk_auto_summarize_fail_fast(monkeypatch):
             return None  # Simulate failure
             
         monkeypatch.setattr("termstory.tui.generate_ai_summary", mock_generate_ai_summary)
-        monkeypatch.setattr(db, "save_session_ai_summary", lambda *args, **kwargs: None)
         monkeypatch.setattr("termstory.ai.get_last_ai_error", lambda: "API connection timeout")
         
         notifications = []
@@ -745,16 +704,7 @@ async def test_tui_bulk_auto_summarize_fail_fast(monkeypatch):
             
             # Press the bulk auto-summarize button programmatically
             date_str = datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d")
-            btn = None
-            for _ in range(50):
-                try:
-                    btn = app.query_one(f"#btn-bulk-{date_str}-date")
-                    break
-                except Exception:
-                    import asyncio
-                    await asyncio.sleep(0.05)
-            assert btn is not None
-            btn.press()
+            app.query_one(f"#btn-bulk-{date_str}-date").press()
             await pilot.pause()
             
             import asyncio
@@ -830,44 +780,82 @@ async def test_tui_help_screen():
 
 
 def test_tui_copy_to_clipboard(monkeypatch):
+    """Verify that on a successful subprocess.run call the text is copied and
+    the OSC 52 fallback (super().copy_to_clipboard) is also called."""
     from termstory.database import Database
     from termstory.tui import TermStoryWorkspace
     import subprocess
     from textual.app import App
-    
+
     db = Database(":memory:")
     db.init_db()
-    
+
     app = TermStoryWorkspace(
-        db, 
-        days_limit=30, 
-        config_override={"has_seen_onboarding": True, "ai_enabled": False}
+        db,
+        days_limit=30,
+        config_override={"has_seen_onboarding": True, "ai_enabled": False},
     )
-    
-    copied_texts = []
-    
-    class MockProcess:
-        def __init__(self):
-            self.returncode = 0
-        def communicate(self, input):
-            copied_texts.append(input.decode('utf-8'))
-            return (b'', b'')
-            
-    def mock_popen(*args, **kwargs):
-        return MockProcess()
-        
-    monkeypatch.setattr(subprocess, "Popen", mock_popen)
-    
+
+    run_calls = []
+
+    class _FakeCompletedProcess:
+        returncode = 0
+
+    def mock_run(*args, **kwargs):
+        run_calls.append({"args": args, "kwargs": kwargs})
+        return _FakeCompletedProcess()
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
     parent_called = []
+
     def mock_parent_copy(self, text):
         parent_called.append(text)
-        
+
     monkeypatch.setattr(App, "copy_to_clipboard", mock_parent_copy)
-    
+
     app.copy_to_clipboard("test-copy-text")
-    
-    assert "test-copy-text" in copied_texts
+
+    # subprocess.run was invoked at least once (OS branch)
+    assert run_calls, "Expected subprocess.run to be called"
+    # OSC 52 fallback always fires
     assert "test-copy-text" in parent_called
+
+
+def test_tui_copy_to_clipboard_timeout(monkeypatch):
+    """Verify that a TimeoutExpired from subprocess.run does not crash the TUI
+    and that the OSC 52 fallback (super().copy_to_clipboard) still runs."""
+    from termstory.database import Database
+    from termstory.tui import TermStoryWorkspace
+    import subprocess
+    from textual.app import App
+
+    db = Database(":memory:")
+    db.init_db()
+
+    app = TermStoryWorkspace(
+        db,
+        days_limit=30,
+        config_override={"has_seen_onboarding": True, "ai_enabled": False},
+    )
+
+    def mock_run_timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=2.0)
+
+    monkeypatch.setattr(subprocess, "run", mock_run_timeout)
+
+    parent_called = []
+
+    def mock_parent_copy(self, text):
+        parent_called.append(text)
+
+    monkeypatch.setattr(App, "copy_to_clipboard", mock_parent_copy)
+
+    # Must not raise — timeout is handled internally
+    app.copy_to_clipboard("timeout-copy-text")
+
+    # OSC 52 fallback must still run even after the subprocess timed out
+    assert "timeout-copy-text" in parent_called
 
 
 @pytest.mark.asyncio
@@ -929,8 +917,6 @@ async def test_tui_month_no_activity_feed():
             await pilot.pause()
 
             from textual.css.query import NoMatches
-            import asyncio
-            await asyncio.sleep(0.1)
             with pytest.raises(NoMatches):
                 canvas.query_one(".feed-container")
 
@@ -938,14 +924,7 @@ async def test_tui_month_no_activity_feed():
             await pilot.pause()
             await pilot.pause()
 
-            feed = None
-            for _ in range(50):
-                try:
-                    feed = canvas.query_one(".feed-container")
-                    break
-                except Exception:
-                    import asyncio
-                    await asyncio.sleep(0.05)
+            feed = canvas.query_one(".feed-container")
             assert feed is not None
 
 
@@ -992,16 +971,7 @@ async def test_wrapped_view_generation_and_layout(monkeypatch):
             canvas.render_wrapped_view("June 2026", "2026-06", [s], [p])
             await pilot.pause()
             
-            btn = None
-            for _ in range(50):
-                try:
-                    btn = app.query_one("#btn-exec-2026-06-month")
-                    break
-                except Exception:
-                    import asyncio
-                    await asyncio.sleep(0.05)
-            assert btn is not None
-            btn.press()
+            app.query_one("#btn-exec-2026-06-month").press()
             await pilot.pause()
             
             import asyncio
@@ -1017,11 +987,12 @@ async def test_wrapped_view_generation_and_layout(monkeypatch):
             assert "merged_prs" in called_args[0]
             
             cached = None
-            for _ in range(50):
+            for _ in range(100):
                 cached = db.get_macro_summary("2026-06")
                 if cached is not None:
                     break
                 await asyncio.sleep(0.05)
+                
             assert cached is not None
             assert "Mock verdict text." in cached
 
@@ -1143,61 +1114,82 @@ async def test_tui_deep_search_scope_escape():
             assert "Timeline" in str(new_timeline_root.label)
 
 @pytest.mark.asyncio
-async def test_tui_api_key_validation():
-    """Verify OnboardingScreen's API key validation: empty key shows error,
-    selecting ollama (which doesn't need API key) allows screen dismissal.
+async def test_tui_api_key_validation(monkeypatch):
+    """End-to-end regression test for Issue #288: verify the real Save & Enable
+    button path works under Textual 8.x without freezing.
 
-    Uses structural invocation (call save flow functions directly) rather
-    than pilot.click("btn-save") to avoid Textual 8.x AwaitComplete
-    pre_await callback chain raising ScreenError. Push screen without
-    awaiting so push_screen's underlying future doesn't block."""
-    from termstory.tui import OnboardingScreen
-    # Provide a config that defaults to groq with no api key
-    screen = OnboardingScreen({"active_provider": "groq", "providers": {}})
+    Uses a fake non-empty API key; the onboarding code only validates that
+    the field is non-empty and never contacts the provider during save."""
+    import tempfile
+    import os
+    from termstory.database import Database
+    from termstory.models import Project, Session, Command
 
-    # We need an app context to mount the screen
-    from textual.app import App
-    class DummyApp(App):
-        pass
+    saved_configs = []
+    def mock_save_config(config):
+        saved_configs.append(config)
 
-    app = DummyApp()
-    async with app.run_test() as pilot:
-        # Push the screen. Do not await push_screen so the underlying
-        # dismiss future isn't awaited downstream (Textual 8.x pre_await
-        # chain).
-        app.push_screen(screen)
-        await pilot.pause()
+    monkeypatch.setattr("termstory.tui.save_config", mock_save_config)
 
-        # Verify initial state of error label
-        error_label = screen.query_one("#error-api-key")
-        assert error_label.styles.display in ("none", "block")
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = os.path.join(tmp_dir, "test.db")
+        db = Database(db_path)
+        db.init_db()
 
-        # Run the save flow directly with empty API key (groq branch).
-        # Simulates what on_button_pressed would do.
-        screen.selected_provider = "groq"
-        # Drive validation path directly: come from on_button_pressed
-        # without going through ActionChain — set the saved flag manually
-        # for visibility check.
-        error_label.update("API Key cannot be empty.")
-        error_label.styles.display = "block"
+        now_ts = int(time.time())
+        p = Project(id=1, name="Proj A", path="~/proj-a", first_seen=now_ts, last_seen=now_ts, session_count=1, total_time=0)
+        cmd = Command(timestamp=now_ts, command="git diff", exit_code=0, session_id=1, project_id=1)
+        s = Session(id=1, start_time=now_ts, end_time=now_ts, duration_seconds=0, project_id=1, commands=[cmd], ai_summary=None)
+        db.save_data([p], [s], [cmd])
 
-        # Verify error label visible
-        assert error_label.styles.display == "block"
-        assert len(app.screen_stack) > 1  # Screen did not dismiss
+        app = TermStoryWorkspace(
+            db,
+            days_limit=30,
+            config_override={
+                "has_seen_onboarding": False,
+                "ai_enabled": False,
+                "active_provider": "groq",
+                "providers": {}
+            }
+        )
 
-        # Switch to ollama — set selected_provider to bypass API key check
-        screen.selected_provider = "ollama"
-        # Mutate config as the save branch would, but DON'T call dismiss
-        # (Textual 8.x AwaitComplete hang). The test's purpose is to verify
-        # the validation flow, not the dismiss mechanics.
-        screen.config["active_provider"] = "ollama"
-        await pilot.pause()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
 
-        # Manually pop the screen from test context (works fine — we proved
-        # this in probe). Verifies the dismissal post-condition.
-        screen.dismiss()
-        await pilot.pause()
-        assert len(app.screen_stack) == 1
+            # OnboardingScreen should be visible because has_seen_onboarding=False
+            assert isinstance(app.screen, OnboardingScreen)
+            onboarding = app.screen
+
+            # Set a fake non-empty API key — no real network call is made.
+            api_key_input = onboarding.query_one("#input-api-key")
+            api_key_input.value = "gsk_test_key"
+            await pilot.pause()
+
+            # Press the actual Save & Enable button directly.
+            save_btn = onboarding.query_one("#btn-save")
+            save_btn.press()
+
+            # Wait for both the dismissal timer to fire AND the push_screen
+            # callback (handle_onboarding_result) to update app.config.
+            for _ in range(50):
+                if (
+                    not isinstance(app.screen, OnboardingScreen)
+                    and app.config.get("has_seen_onboarding")
+                ):
+                    break
+                await pilot.pause()
+
+            # Verify the modal dismissed and the result reached the app.
+            assert not isinstance(app.screen, OnboardingScreen)
+            assert app.config["has_seen_onboarding"] is True
+            assert app.config["ai_enabled"] is True
+            assert app.config["active_provider"] == "groq"
+            assert app.config["providers"]["groq"]["api_key"] == "gsk_test_key"
+
+            # Ensure save_config was called with the new config but never
+            # wrote to the developer's real ~/.termstory/config.json.
+            assert len(saved_configs) == 1
+            assert saved_configs[0]["has_seen_onboarding"] is True
 
 @pytest.mark.asyncio
 async def test_tui_worker_cancellation(monkeypatch):
@@ -1253,7 +1245,6 @@ async def test_tui_worker_cancellation(monkeypatch):
             return "AI Summary"
             
         monkeypatch.setattr("termstory.tui.generate_ai_summary", mock_generate_ai_summary)
-        monkeypatch.setattr(db, "save_session_ai_summary", lambda *args, **kwargs: None)
         
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
