@@ -1,3 +1,4 @@
+
 import logging
 import os
 import re
@@ -7,6 +8,7 @@ import unicodedata
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from typing import List, Dict, Tuple, Optional, Any
+from termstory.sanitizer import redact_command
 
 from termstory.models import Session, Project, Command, format_duration
 from termstory.date_utils import get_current_time, format_date_range
@@ -186,7 +188,7 @@ def format_today_output(sessions: List[Session], projects: List[Project], compar
                 candidates = [cmd.command for cmd in s.commands if not _is_noise_command(cmd.command)]
                 if candidates:
                     best_cmd = max(candidates, key=len)
-                    cleaned = clean_command_to_memory(best_cmd)
+                    cleaned = redact_command(clean_command_to_memory(best_cmd))
                     if cleaned not in seen_memories:
                         seen_memories.add(cleaned)
                         bullet_lines.append(f"• {escape(cleaned)}")
@@ -442,7 +444,7 @@ def format_project_output(sessions: List[Session], project: Project) -> str:
                 candidates = [cmd.command for cmd in s.commands if not _is_noise_command(cmd.command)]
                 if candidates:
                     best_cmd = max(candidates, key=len)
-                    cleaned = clean_command_to_memory(best_cmd)
+                    
                     if cleaned not in seen_memories:
                         seen_memories.add(cleaned)
                         day_memories.append(cleaned)
