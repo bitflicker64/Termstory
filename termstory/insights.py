@@ -536,7 +536,7 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
             failed_count = len(failed_cmds)
             total_count = len(commands)
 
-                        # Desperation patterns — expanded to cover the exact signals the
+            # Desperation patterns — expanded to cover the exact signals the
             # issue calls out: "frantic git add .", "bypassed tests", and
             # "fast force-pushes". Matching is case-insensitive so we catch
             # `git push --force`, `git push -f`, `git commit --amend`,
