@@ -232,5 +232,75 @@ def test_today_output_redacts_bearer_token():
     # The raw token should never appear
     assert "ghp_dummyGitHubToken1234567890" not in output
 
-    # The command should still appear, but redacted
+    # The command should still appear, but redact the PAT into the GitHub-specific placeholder
+    assert "Bearer" in output
+
+
+def test_project_output_redacts_bearer_token():
+    now = int(time.time())
+    p = Project(
+        id=1,
+        name="Project Delta",
+        path="~/delta",
+        first_seen=now,
+        last_seen=now,
+        session_count=1,
+        total_time=600,
+    )
+
+    cmd = Command(
+        timestamp=now,
+        command='curl -H "Authorization: Bearer ghp_dummyGitHubToken1234567890" https://api.example.invalid/check',
+        session_id=1,
+        project_id=1,
+    )
+
+    s = Session(
+        id=1,
+        start_time=now,
+        end_time=now + 600,
+        duration_seconds=600,
+        project_id=1,
+        commands=[cmd],
+        commits=[],
+    )
+
+    output = format_project_output([s], p)
+
+    assert "ghp_dummyGitHubToken1234567890" not in output
+    assert "Bearer" in output
+
+
+def test_project_output_redacts_bearer_token():
+    now = int(time.time())
+    p = Project(
+        id=1,
+        name="Project Delta",
+        path="~/delta",
+        first_seen=now,
+        last_seen=now,
+        session_count=1,
+        total_time=600,
+    )
+
+    cmd = Command(
+        timestamp=now,
+        command='curl -H "Authorization: Bearer ghp_dummyGitHubToken1234567890" https://api.example.invalid/check',
+        session_id=1,
+        project_id=1,
+    )
+
+    s = Session(
+        id=1,
+        start_time=now,
+        end_time=now + 600,
+        duration_seconds=600,
+        project_id=1,
+        commands=[cmd],
+        commits=[],
+    )
+
+    output = format_project_output([s], p)
+
+    assert "ghp_dummyGitHubToken1234567890" not in output
     assert "[REDACTED_TOKEN]" in output

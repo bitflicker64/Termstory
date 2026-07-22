@@ -199,7 +199,7 @@ def format_today_output(sessions: List[Session], projects: List[Project], compar
                         if not raw_cmds or raw_cmds[-1] != cmd.command:
                             raw_cmds.append(cmd.command)
                     for cmd in raw_cmds:
-                        cleaned = clean_command_to_memory(cmd)
+                        cleaned = redact_command(clean_command_to_memory(cmd))
                         if cleaned not in seen_memories:
                             seen_memories.add(cleaned)
                             bullet_lines.append(f"• {escape(cleaned)}")
@@ -444,7 +444,7 @@ def format_project_output(sessions: List[Session], project: Project) -> str:
                 candidates = [cmd.command for cmd in s.commands if not _is_noise_command(cmd.command)]
                 if candidates:
                     best_cmd = max(candidates, key=len)
-                    
+                    cleaned = redact_command(clean_command_to_memory(best_cmd))
                     if cleaned not in seen_memories:
                         seen_memories.add(cleaned)
                         day_memories.append(cleaned)
@@ -455,7 +455,7 @@ def format_project_output(sessions: List[Session], project: Project) -> str:
                         if not raw_cmds or raw_cmds[-1] != cmd.command:
                             raw_cmds.append(cmd.command)
                     for cmd in raw_cmds:
-                        cleaned = clean_command_to_memory(cmd)
+                        cleaned = redact_command(clean_command_to_memory(cmd))
                         if cleaned not in seen_memories:
                             seen_memories.add(cleaned)
                             day_memories.append(cleaned)
