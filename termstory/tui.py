@@ -2215,9 +2215,27 @@ class TermStoryWorkspace(App):
         tree = self.query_one("#history-navigator")
         tree.populate(self.projects, self.sessions)
         
-        # Handle onboarding or start summarization
-        if not self.config.get("has_seen_onboarding", False):
-            self.push_screen(OnboardingScreen(self.config), self.handle_onboarding_result)
+        # Show onboarding only if the user hasn't completed onboarding and AI is not already configured.
+        has_seen_onboarding = self.config.get("has_seen_onboarding", False)
+        ai_enabled = self.config.get("ai_enabled", False)
+        active_provider = self.config.get("active_provider", "disabled")
+
+        providers = self.config.get("providers", {})
+        provider_cfg = providers.get(active_provider, {}) if isinstance(providers, dict) else {}
+
+        api_key = provider_cfg.get("api_key")
+
+        ai_already_configured = (
+            ai_enabled
+            and active_provider not in ("", "disabled", None)
+            and bool(api_key)
+        )
+
+        if not has_seen_onboarding and not ai_already_configured:
+            self.push_screen(
+                OnboardingScreen(self.config),
+                self.handle_onboarding_result,
+            )
         
         # Automatically focus today's date node or the most recent date node
         if self.auto_select_today_on_mount:
