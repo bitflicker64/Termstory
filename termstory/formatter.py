@@ -1689,7 +1689,7 @@ def format_bug_predictions_heuristics(sessions: List[Dict]) -> str:
                     f"Monday-you will be doing `git filter-repo` instead of standup.")
         elif any(
             ("deselect" in c) or ("--ignore" in c) or ("--skip" in c)
-            or (" -k " in c and "not" in c) or ("skipif" in c) or ("disabled_tests" in c)
+            or (" -k " in c and "not" in c) or ("skipif" in c) or ("disabled_tests" in c) or ("disable_tests" in c)
             for c in lowered
         ):
             bug = "Silently Bypassed Test / Mock Leak"
