@@ -882,3 +882,24 @@ def test_generate_answer_redacts_github_pat_in_commit(monkeypatch):
     assert res == "ok"
     sent_prompt = called_prompts[0]
     assert "ghp_ASKSECRET1234567890abcdef" not in sent_prompt
+
+def test_search_ask_active_session_with_null_end_time(tmp_path):
+    db_file = tmp_path / "test_ask_active_session.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    now = 1700000000
+    p = Project(id=1, name="ActiveSessionProject", path="~/active", first_seen=now, last_seen=now, session_count=1, total_time=100)
+    
+    # Session with end_time=None
+    cmd = Command(timestamp=now, command="git push origin main", session_id=1, project_id=1)
+    s = Session(id=1, start_time=now, end_time=None, duration_seconds=0, project_id=1, commands=[cmd])
+    s.ai_summary = "Working on active session"
+    
+    db.save_data([p], [s], [cmd])
+    db.save_session_ai_summary(1, s.ai_summary)
+
+    # We expect this to match despite end_time being None
+    results = search_ask("active session", db)
+    assert len(results) == 1
+    assert results[0].id == 1
