@@ -616,3 +616,20 @@ class TestPredictorOngoingSessionsAndTimezone:
             assert "morning" in res_est["time_context"]
         finally:
             os.unlink(db_path)
+
+class TestPredictorValidation:
+    def test_invalid_top(self):
+        p = Predictor("dummy.db")
+        with pytest.raises(ValueError, match="top must be greater than 0"):
+            p.predict(top_n=0)
+            
+        with pytest.raises(ValueError, match="top must be greater than 0"):
+            p.predict(top_n=-1)
+
+    def test_invalid_days(self):
+        p = Predictor("dummy.db")
+        with pytest.raises(ValueError, match="days must be greater than 0"):
+            p.predict(days=0)
+            
+        with pytest.raises(ValueError, match="days must be greater than 0"):
+            p.predict(days=-5)

@@ -304,6 +304,11 @@ class Predictor:
                 "message": "No history available"  # only if empty
             }
         """
+        if top_n <= 0:
+            raise ValueError("top must be greater than 0")
+        if days is not None and days <= 0:
+            raise ValueError("days must be greater than 0")
+
         if now is None:
             now = datetime.now()
         tz = now.tzinfo
