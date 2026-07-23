@@ -163,17 +163,18 @@ def detect_project_language_from_files(path: str) -> Optional[str]:
     """Helper to check common config files on disk to infer project language."""
     if not path:
         return None
-    if path in _LANG_CACHE:
-        return _LANG_CACHE[path]
+    expanded = os.path.expanduser(path)
+    if expanded in _LANG_CACHE:
+        return _LANG_CACHE[expanded]
         
-    if not os.path.isdir(path):
-        _LANG_CACHE[path] = None
+    if not os.path.isdir(expanded):
+        _LANG_CACHE[expanded] = None
         return None
         
-    path_lower = path.lower()
+    path_lower = expanded.lower()
     for prefix in ["/mnt", "/volumes/smb", "\\\\"]:
         if path_lower.startswith(prefix):
-            _LANG_CACHE[path] = None
+            _LANG_CACHE[expanded] = None
             return None
             
     checks = [
@@ -192,24 +193,24 @@ def detect_project_language_from_files(path: str) -> Optional[str]:
     
     for filename, lang in checks:
         try:
-            if os.path.exists(os.path.join(path, filename)):
-                _LANG_CACHE[path] = lang
+            if os.path.exists(os.path.join(expanded, filename)):
+                _LANG_CACHE[expanded] = lang
                 return lang
         except Exception:
             logger.debug("Failed to check for config file %s in %s", filename, path, exc_info=True)
             
     try:
-        for f in os.listdir(path):
+        for f in os.listdir(expanded):
             if f.endswith(".csproj") or f.endswith(".sln"):
-                _LANG_CACHE[path] = "C#"
+                _LANG_CACHE[expanded] = "C#"
                 return "C#"
             if f == "Makefile":
-                _LANG_CACHE[path] = "C/C++"
+                _LANG_CACHE[expanded] = "C/C++"
                 return "C/C++"
     except Exception:
         logger.debug("Failed to list directory contents for language detection: %s", path, exc_info=True)
         
-    _LANG_CACHE[path] = None
+    _LANG_CACHE[expanded] = None
     return None
 
 def language_detection(db: Database) -> Dict[str, float]:

@@ -206,18 +206,86 @@ def calculate_streak(sessions: List[Session]) -> int:
             break
     return streak
 
-def calculate_vampire_index(sessions: List[Session]) -> float:
-    """Calculate the percentage of sessions that occur between midnight and 5 AM."""
+def assign_daily_rpg_class(sessions: List[Session]) -> str:
+    """Assign an RPG class based on command frequency."""
+    import os
     if not sessions:
-        return 0.0
-    
-    vampire_sessions = 0
+        return "Level 1 Village Peasant"
+        
+    cmd_counts = {}
     for s in sessions:
-        dt = datetime.fromtimestamp(s.start_time)
-        if 0 <= dt.hour < 5:
-            vampire_sessions += 1
+        for cmd in s.commands:
+            cmd_text = cmd.command.strip()
+            if not cmd_text:
+                continue
             
-    return round((vampire_sessions / len(sessions)) * 100, 1)
+            lower_cmd = cmd_text.lower()
+            first_word = cmd_text.split()[0]
+            base_cmd = os.path.basename(first_word).lower()
+            
+            # Special logic for pipes
+            if "|" in cmd_text:
+                base_cmd = "grep" # fallback for regex sorcerer logic
+            
+            # Check expanded commands inside the command text
+            for x in ["docker-compose", "docker", "podman", "git", "gh", "npm", "yarn", "pnpm", "npx", "python3", "python", "pytest", "poetry", "pip", "sqlite3", "psql", "mysql", "mongo", "prisma", "sql", "make", "cmake", "gcc", "clang", "cargo", "rustc", "go", "grep", "awk", "sed"]:
+                if x in lower_cmd.split():
+                    base_cmd = x
+                    break
+                    
+            cmd_counts[base_cmd] = cmd_counts.get(base_cmd, 0) + 1
+            
+    if not cmd_counts:
+        return "Level 1 Village Peasant"
+        
+    top_cmd = max(cmd_counts.items(), key=lambda x: x[1])[0]
+    dominant_count = cmd_counts[top_cmd]
+    
+    # Normalize level based on dominant-class share
+    level = min(100, max(1, dominant_count // 5))
+    
+    class_map = {
+        "docker": "Docker Demolitionist",
+        "docker-compose": "Docker Demolitionist",
+        "podman": "Docker Demolitionist",
+        "git": "Version Control Paladin",
+        "gh": "Version Control Paladin",
+        "grep": "Regex Sorcerer",
+        "awk": "Regex Sorcerer",
+        "sed": "Regex Sorcerer",
+        "python": "Python Pyromancer",
+        "python3": "Python Pyromancer",
+        "pytest": "Python Pyromancer",
+        "poetry": "Python Pyromancer",
+        "pip": "Package Potion Master",
+        "npm": "Frontend Bard",
+        "yarn": "Frontend Bard",
+        "pnpm": "Frontend Bard",
+        "npx": "Frontend Bard",
+        "sqlite3": "Database Necromancer",
+        "psql": "Database Necromancer",
+        "mysql": "Database Necromancer",
+        "mongo": "Database Necromancer",
+        "prisma": "Database Necromancer",
+        "sql": "Database Necromancer",
+        "make": "Systems Ranger",
+        "cmake": "Systems Ranger",
+        "gcc": "Systems Ranger",
+        "clang": "Systems Ranger",
+        "cargo": "Rust Ranger",
+        "rustc": "Rust Ranger",
+        "go": "Go Gladiator",
+        "kubectl": "Kubernetes Knight",
+        "vim": "Vim Vampire",
+        "nvim": "Neovim Ninja",
+        "node": "NodeJS Necromancer",
+        "ls": "Directory Druid",
+        "cd": "Pathfinder Rogue"
+    }
+    
+    archetype = class_map.get(top_cmd, f"Scripting Shaman ({top_cmd})")
+    
+    return f"Level {level} {archetype}"
 
 def analyze_all(db=None) -> Dict:
     """Analyze all recorded history to produce total counts, most active periods,
@@ -334,12 +402,14 @@ def analyze_all(db=None) -> Dict:
     sorted_projects = sorted(project_durations.items(), key=lambda x: x[1], reverse=True)
     
     vampire_metrics = get_vampire_metrics(sessions)
+    from termstory.insights import assign_rpg_class
     rpg_info = assign_rpg_class(sessions)
-    
+    rpg_class_str = rpg_info["class_name"]
+
     projects = db.get_all_projects_with_stats()
     necromancer_info = calculate_project_necromancer_score(real_sessions, projects)
     rage_quit_info = calculate_rage_quit_signatures(real_sessions)
-    
+
     return {
         "total_sessions": total_sessions,
         "total_commands": total_commands,
@@ -350,7 +420,7 @@ def analyze_all(db=None) -> Dict:
         "streak": streak,
         "vampire_index": vampire_metrics["vampire_index"],
         "vampire_metrics": vampire_metrics,
-        "rpg_class": rpg_info["class_name"],
+        "rpg_class": rpg_class_str,
         "rpg_info": rpg_info,
         "necromancer_score": necromancer_info["score"],
         "necromancer_info": necromancer_info,
@@ -386,6 +456,9 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
 
         chaotic_sessions = []
 
+        # 1. Filter out candidate late-night sessions in memory
+        candidate_sessions = []
+        candidate_ids = []
         for row in session_rows:
             s_id, start, end, duration, p_id = row
             try:
@@ -394,19 +467,37 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
                 continue
             hour = dt.hour
 
-            # Late night check: 11 PM (23) to 5 AM (5)
             is_late_night = (hour >= 23 or hour < 5)
             if not is_late_night:
                 continue
 
-            # Fetch commands for this session
-            cursor.execute("""
-                SELECT command, exit_code
+            candidate_sessions.append((s_id, start, end, duration, p_id, hour))
+            candidate_ids.append(s_id)
+
+        if not candidate_ids:
+            return []
+
+        # 2. Bulk fetch commands for all candidate sessions
+        commands_by_session = defaultdict(list)
+        _SQLITE_IN_CHUNK_SIZE = 900
+        for i in range(0, len(candidate_ids), _SQLITE_IN_CHUNK_SIZE):
+            chunk = candidate_ids[i:i + _SQLITE_IN_CHUNK_SIZE]
+            placeholders = ",".join("?" for _ in chunk)
+            cursor.execute(f"""
+                SELECT session_id, command, exit_code
                 FROM commands
-                WHERE session_id = ?
+                WHERE session_id IN ({placeholders})
                 ORDER BY timestamp ASC
-            """, (s_id,))
-            cmd_rows = cursor.fetchall()
+            """, chunk)
+            for row in cursor.fetchall():
+                c_s_id, cmd, exit_code = row
+                commands_by_session[c_s_id].append((cmd, exit_code))
+
+        # 3. Evaluate chaos scoring in memory
+        chaotic_candidates = []
+        for row in candidate_sessions:
+            s_id, start, end, duration, p_id, hour = row
+            cmd_rows = commands_by_session.get(s_id, [])
             if not cmd_rows:
                 continue
 
@@ -415,12 +506,7 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
             failed_count = len(failed_cmds)
             total_count = len(commands)
 
-            # Chaos score heuristics:
-            # 1. Total command count >= 10 (working intensely)
-            # 2. Failed command count >= 3 (struggling)
-            # 3. Running git commit --amend or similar desperate commands
             has_desperate_command = any("amend" in cmd or "revert" in cmd or "force" in cmd or "reset" in cmd for cmd in commands)
-
             is_chaotic = (total_count >= 10 or failed_count >= 3 or has_desperate_command)
 
             if is_chaotic:
@@ -428,28 +514,70 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
                 if p_name == "General / No Project" or not p_name:
                     p_name = "Other"
 
-                # Fetch commits in session
-                commits = []
-                if p_id is not None:
-                    cursor.execute("""
-                        SELECT message
-                        FROM commits
-                        WHERE project_id = ? AND timestamp >= ? AND timestamp <= ?
-                        ORDER BY timestamp ASC
-                    """, (p_id, start - 300, end + 600 if end is not None else start + 3600))
-                    commits = [r[0] for r in cursor.fetchall()]
-
-                chaotic_sessions.append({
+                chaotic_candidates.append({
                     "session_id": s_id,
                     "start_time": start,
                     "end_time": end,
                     "duration_seconds": duration,
                     "project_name": p_name,
+                    "project_id": p_id,
                     "commands": commands,
                     "failed_commands": failed_cmds,
-                    "commits": commits,
                     "hour": hour
                 })
+
+        # 4. Bulk-fetch commits within precise session windows to avoid over-fetching
+        # seen_commits deduplicates rows that appear in multiple chunk queries when
+        # >250 chaotic sessions share the same project.
+        commits_by_project = defaultdict(list)
+        seen_commits = set()
+        sessions_with_project = [s for s in chaotic_candidates if s["project_id"] is not None]
+        if sessions_with_project:
+            # Chunking to keep parameter count below SQLite limits (max 250 sessions = 750 params)
+            chunk_size = 250
+            for i in range(0, len(sessions_with_project), chunk_size):
+                chunk = sessions_with_project[i:i + chunk_size]
+                clauses = []
+                query_args = []
+                for session in chunk:
+                    start = session["start_time"]
+                    end = session["end_time"]
+                    min_ts = start - 300
+                    max_ts = end + 600 if end is not None else start + 3600
+                    clauses.append("(project_id = ? AND timestamp >= ? AND timestamp <= ?)")
+                    query_args.extend([session["project_id"], min_ts, max_ts])
+
+                if clauses:
+                    cursor.execute(f"""
+                        SELECT project_id, timestamp, message
+                        FROM commits
+                        WHERE {" OR ".join(clauses)}
+                        ORDER BY timestamp ASC
+                    """, query_args)
+                    for c_row in cursor.fetchall():
+                        c_pid, c_ts, c_msg = c_row
+                        commit_key = (c_pid, c_ts, c_msg)
+                        if commit_key not in seen_commits:
+                            seen_commits.add(commit_key)
+                            commits_by_project[c_pid].append((c_ts, c_msg))
+
+        # 5. Filter and associate commits in memory
+        for session in chaotic_candidates:
+            p_id = session["project_id"]
+            start = session["start_time"]
+            end = session["end_time"]
+
+            commits = []
+            if p_id is not None:
+                max_ts = end + 600 if end is not None else start + 3600
+                min_ts = start - 300
+                for c_ts, c_msg in commits_by_project[p_id]:
+                    if min_ts <= c_ts <= max_ts:
+                        commits.append(c_msg)
+
+            session["commits"] = commits
+            del session["project_id"]
+            chaotic_sessions.append(session)
 
         return chaotic_sessions
     finally:

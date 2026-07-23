@@ -2,11 +2,14 @@
 
 Thank you for your interest in contributing to TermStory! Here is a brief guide to help you get started.
 
+## Community Standards
+Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before contributing to help maintain a welcoming and respectful community.
+
 ## Dev Setup
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-username/termstory.git
+   git clone https://github.com/bitflicker64/Termstory.git
    cd termstory
    ```
 2. Install the package in editable mode with development dependencies:
