@@ -1,7 +1,10 @@
+import logging
 import re
 import os
 import math
 from typing import List, Tuple, Optional
+
+logger = logging.getLogger(__name__)
 
 # Load custom redaction patterns from .termstoryignore
 # IMPORTANT: This loads once at module import time (called at the bottom of this file).
@@ -16,7 +19,7 @@ def load_custom_ignore_rules() -> tuple:
     for path in paths:
         if os.path.exists(path):
             try:
-                with open(path, 'r') as f:
+                with open(path, 'r', encoding='utf-8') as f:
                     for line in f:
                         line = line.strip()
                         if line and not line.startswith('#'):
@@ -27,7 +30,6 @@ def load_custom_ignore_rules() -> tuple:
             except Exception:
                 pass
     return tuple(local_patterns)
-
 CUSTOM_REDACTION_PATTERNS = load_custom_ignore_rules()
 # Blacklist patterns - if a command matches any of these, the entire session is dropped from AI
 BLACKLIST_PATTERNS = [
@@ -122,20 +124,42 @@ def calculate_entropy(s: str) -> float:
 
 def redact_high_entropy(cmd: str) -> str:
     # NOTE: This is a best-effort heuristic, NOT a guarantee.
-    # Strings shorter than 24 chars, or with Shannon entropy <= 4.3 bits/char,
-    # will NOT be caught here — even if they are real secrets.
     # Named-prefix patterns (AWS_KEY_PATTERN, OPENAI_API_KEY_PATTERN, etc.)
     # defined above are the primary defense for known secret formats.
     # For unknown/custom formats, add patterns to ~/.termstoryignore.
+    #
+    # Two-tier detection:
+    # - Primary:   length >= 24 AND entropy > 4.3  (original threshold, unchanged)
+    # - Secondary: length 16-23 AND entropy > 3.9  (catches shorter mixed-case secrets)
+    #
+    # The secondary tier requires uppercase + lowercase + digit characters to
+    # all be present. This excludes benign IDs that use only one case:
+    #   - lowercase-only slugs (pod names, trace IDs)
+    #   - uppercase-only constants (ENV_VAR_NAMES)
+    #   - purely numeric strings
+    # Mixed-case identifiers with entropy > 3.9 are redacted. CamelCase build
+    # tags like MyAppBuild12345xy (entropy ~3.85) fall below the threshold and
+    # are NOT caught — this is a documented trade-off.
     def replacer(match):
         s = match.group(0)
-        # Avoid redacting git commit hashes and normal text by requiring entropy > 4.3
-        if calculate_entropy(s) > 4.3:
+        n = len(s)
+        entropy = calculate_entropy(s)
+        # Primary tier: long strings with high entropy
+        if n >= 24 and entropy > 4.3:
+            return "[REDACTED_ENTROPY]"
+        # Secondary tier: shorter strings that mix upper, lower, and digits
+        if (
+            16 <= n <= 23
+            and entropy > 3.9
+            and any(c.isupper() for c in s)
+            and any(c.islower() for c in s)
+            and any(c.isdigit() for c in s)
+        ):
             return "[REDACTED_ENTROPY]"
         return s
-    
-    # Match strings of length >= 24 that consist of base64-like characters
-    return re.sub(r'\b[a-zA-Z0-9_+/=-]{24,}\b', replacer, cmd)
+
+    # Match strings of length >= 16 that consist of base64-like characters
+    return re.sub(r'\b[a-zA-Z0-9_+/=-]{16,}\b', replacer, cmd)
 
 def should_blacklist_command(cmd: str) -> bool:
     """Check if the command is blacklisted from AI processing"""

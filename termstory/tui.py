@@ -50,8 +50,13 @@ from termstory.project import disambiguate_project_names
 from termstory.formatter import _is_noise_command, clean_command_to_memory, generate_daily_activity_punch_card, get_operator_handle, get_github_avatar_ascii
 from termstory.date_utils import get_current_time
 from termstory.config import load_config, save_config
+<<<<<<< HEAD
 from termstory.ai import generate_ai_summary, generate_timeframe_summary, generate_wrapped_summary
 from termstory.insights import calculate_focus_score, calculate_time_of_day_distribution, calculate_project_necromancer_score
+=======
+from termstory.ai import generate_ai_summary, generate_timeframe_summary, generate_daily_chronicle, generate_wrapped_summary
+from termstory.insights import calculate_focus_score, calculate_time_of_day_distribution, assign_daily_rpg_class
+>>>>>>> upstream/main
 
 def is_worker_cancelled() -> bool:
     try:
@@ -180,9 +185,9 @@ def calculate_dashboard_stats(sessions: List[Session], projects: List[Project], 
         latest_ts = max(s.end_time for s in sessions)
         last_ingestion_str = datetime.fromtimestamp(latest_ts).strftime("%b %d %H:%M")
 
-    from termstory.insights import calculate_vampire_coder_index, assign_rpg_class
+    from termstory.insights import calculate_vampire_coder_index, assign_daily_rpg_class
     vamp_index = calculate_vampire_coder_index(sessions)
-    rpg_res = assign_rpg_class(sessions)
+    rpg_class_str = assign_daily_rpg_class(sessions)
 
     return {
         "total_time": total_time_str,
@@ -192,7 +197,7 @@ def calculate_dashboard_stats(sessions: List[Session], projects: List[Project], 
         "heatmap": heatmap,
         "last_ingestion": last_ingestion_str,
         "vampire_index": vamp_index,
-        "rpg_class": rpg_res["class_name"],
+        "rpg_class": rpg_class_str,
     }
 
 
@@ -362,7 +367,28 @@ def get_session_memory_str(session: Session) -> str:
 # 2. TUI WIDGETS & SCREENS
 # ==========================================
 
-class HelpScreen(ModalScreen[None]):
+class _DeferredDismissMixin:
+    """Mixin providing a deferred screen dismissal to avoid Textual 8.x modal freeze.
+
+    Calling dismiss() directly during a button/action handler can trigger a
+    ZeroDivisionError inside Textual 8.x's pre_await machinery. Scheduling the
+    dismiss on the next event-loop tick via set_timer(0.001, ...) works around
+    the bug while preserving the same user-visible behavior.
+    """
+    def dismiss_later(self, result=None) -> None:
+        """Dismiss this modal on the next event-loop tick.
+
+        Uses a **0.001 s** (not 0.0 s) delay.  In Textual 8.x,
+        ``set_timer(0.0, ...)`` re-enters ``pre_await`` during modal
+        dismissal and crashes with a ``ZeroDivisionError``; a non-zero
+        delay ensures the timer fires on a clean tick.
+        """
+        def _do_dismiss():
+            self.dismiss(result)
+        self.set_timer(0.001, _do_dismiss)
+
+
+class HelpScreen(_DeferredDismissMixin, ModalScreen[None]):
     """Modal screen displaying all keyboard shortcuts."""
     
     BINDINGS = [
@@ -404,18 +430,13 @@ class HelpScreen(ModalScreen[None]):
         
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-close-help":
-            # set_timer(0.0, ...) schedules the dismiss on the next event
-            # loop tick, fully outside the Button.Pressed dispatch chain.
-            # Textual 8.x raises ScreenError if AwaitComplete.pre_await runs
-            # inside the screen's message pump, which call_after_refresh
-            # can't escape.
-            self.set_timer(0.0, self.dismiss)
+            self.dismiss_later()
 
     def action_dismiss_none(self) -> None:
-        self.set_timer(0.0, self.dismiss)
+        self.dismiss_later()
 
 
-class OnboardingScreen(ModalScreen[dict]):
+class OnboardingScreen(_DeferredDismissMixin, ModalScreen[dict]):
     """Modal screen displaying trust warning and AI configuration options."""
     
     BINDINGS = [
@@ -539,10 +560,10 @@ class OnboardingScreen(ModalScreen[dict]):
         self.config["ai_enabled"] = False
         self.config["active_provider"] = "disabled"
         self.config["has_seen_onboarding"] = True
-        self.set_timer(0.0, lambda: self.dismiss(self.config))
+        self.dismiss_later(self.config)
 
     def action_dismiss_none(self) -> None:
-        self.set_timer(0.0, lambda: self.dismiss(None))
+        self.dismiss_later(None)
         
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id
@@ -599,21 +620,14 @@ class OnboardingScreen(ModalScreen[dict]):
             self.config["ai_enabled"] = True
             self.config["active_provider"] = self.selected_provider
             self.config["has_seen_onboarding"] = True
-
-            # Schedule dismiss out-of-band of this message handler. Using
-            # call_after_refresh(self.dismiss, ...) is not enough by itself
-            # because the AwaitComplete's pre_await callback raises
-            # ScreenError if awaited from inside the screen's message context
-            # (Textual 8.x). set_timer runs on the next tick outside the
-            # Button.Pressed dispatch chain.
-            self.set_timer(0.0, lambda: self.dismiss(self.config))
+            self.dismiss_later(self.config)
         elif button_id == "btn-disable-ai":
             github_username = self.query_one("#input-github-username").value.strip().lstrip('@')
             self.config["github_username"] = github_username
             self.config["ai_enabled"] = False
             self.config["active_provider"] = "disabled"
             self.config["has_seen_onboarding"] = True
-            self.set_timer(0.0, lambda: self.dismiss(self.config))
+            self.dismiss_later(self.config)
 
 
 
@@ -900,7 +914,8 @@ class DetailsCanvas(VerticalScroll):
             operator = get_operator_handle()
             fs = calculate_focus_score(sessions)
             tod = calculate_time_of_day_distribution(sessions)
-            necro_score = calculate_project_necromancer_score(sessions, projects)
+            necro_info = calculate_project_necromancer_score(self.app.sessions, projects)
+            necro_score = necro_info.get("score", 0)
         
             peak_velocity = "morning grinds"
             if tod.get("afternoon", 0) >= tod.get("morning", 0) and tod.get("afternoon", 0) >= tod.get("evening", 0):
@@ -1148,7 +1163,9 @@ class DetailsCanvas(VerticalScroll):
         
         fs = calculate_focus_score(sessions)
         tod = calculate_time_of_day_distribution(sessions)
-        necro_score = calculate_project_necromancer_score(sessions, projects)
+        rpg_class = assign_daily_rpg_class(sessions)
+        necro_info = calculate_project_necromancer_score(self.app.sessions, projects)
+        necro_score = necro_info.get("score", 0)
         
         peak_velocity = "morning grinds"
         if tod.get("afternoon", 0) >= tod.get("morning", 0) and tod.get("afternoon", 0) >= tod.get("evening", 0):
@@ -1169,11 +1186,12 @@ class DetailsCanvas(VerticalScroll):
         header_lines.append(f"[bold cyan]{avatar_lines[6]}[/]     [bold cyan]ACTIVE REPOS:[/]      [bold]{active_projects_count} Workspaces[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[7]}[/]     [bold cyan]FOCUS SCORE:[/]     [bold green]{fs:.1f}/10.0[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[8]}[/]     [bold cyan]PEAK VELOCITY:[/]    [dim]{peak_velocity}[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]NECROMANCER:[/]      [dim]{necro_score} dead projects revived[/dim]")
-        header_lines.append(f"[bold cyan]{avatar_lines[10]}[/]     [bold cyan]ACTIVE DAYS:[/]     [dim]{active_days} Days[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[11]}[/]     [bold cyan]SYSTEM ENGINE:[/]   [dim]Online & Synchronized[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[12]}[/]     [bold cyan]====================================================[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[13]}[/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]DAILY CLASS:[/]      [dim]{rpg_class if 'rpg_class' in locals() else 'Level 1 Village Peasant'}[/dim]")
+        header_lines.append(f"[bold cyan]{avatar_lines[10]}[/]     [bold cyan]NECROMANCER:[/]      [dim]{necro_score} dead projects revived[/dim]")
+        header_lines.append(f"[bold cyan]{avatar_lines[11]}[/]     [bold cyan]COMMITS:[/]          [dim]{total_commits}[/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[12]}[/]     [bold cyan]ACTIVE DAYS:[/]     [dim]{active_days} Days[/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[13]}[/]     [bold cyan]SYSTEM ENGINE:[/]   [dim]Online & Synchronized[/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[14]}[/]     [bold cyan]====================================================[/]")
         
         self.mount(Static("\n".join(header_lines) + "\n\n", markup=True))
         
@@ -1331,7 +1349,11 @@ class DetailsCanvas(VerticalScroll):
         
         fs = calculate_focus_score(sessions)
         tod = calculate_time_of_day_distribution(sessions)
+<<<<<<< HEAD
         necro_score = calculate_project_necromancer_score(sessions, projects)
+=======
+        rpg_class = assign_daily_rpg_class(sessions)
+>>>>>>> upstream/main
         
         peak_velocity = "morning grinds"
         if tod.get("afternoon", 0) >= tod.get("morning", 0) and tod.get("afternoon", 0) >= tod.get("evening", 0):
@@ -1368,11 +1390,11 @@ class DetailsCanvas(VerticalScroll):
         header_lines.append(f"[bold cyan]{avatar_lines[6]}[/]     [bold cyan]ACTIVE SESSIONS:[/] [bold]{len(sessions)}[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[7]}[/]     [bold cyan]FOCUS SCORE:[/]     [bold green]{fs:.1f}/10.0[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[8]}[/]     [bold cyan]PEAK TIME:[/]       [dim]{peak_velocity}[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]NECROMANCER:[/]      [dim]{necro_score} dead projects revived[/dim]")
-        header_lines.append(f"[bold cyan]{avatar_lines[10]}[/]     [bold cyan]COMMITS:[/]         [dim]{sum(len(s.commits) for s in sessions)}[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[11]}[/]     [bold cyan]SYSTEM ENGINE:[/]   [dim]Online & Synchronized[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[12]}[/]     [bold cyan]====================================================[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[13]}[/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]DAILY CLASS:[/]      [dim]{rpg_class if 'rpg_class' in locals() else 'Level 1 Village Peasant'}[/dim]")
+        header_lines.append(f"[bold cyan]{avatar_lines[10]}[/]     [bold cyan]NECROMANCER:[/]      [dim]{necro_score} dead projects revived[/dim]")
+        header_lines.append(f"[bold cyan]{avatar_lines[11]}[/]     [bold cyan]COMMITS:[/]         [dim]{sum(len(s.commits) for s in sessions)}[/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[12]}[/]     [bold cyan]SYSTEM ENGINE:[/]   [dim]Online & Synchronized[/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[13]}[/]     [bold cyan]====================================================[/]")
         
         self.mount(Static("\n".join(header_lines)))
         
@@ -1626,7 +1648,7 @@ class DetailsCanvas(VerticalScroll):
 # 3. RESET CONFIRMATION MODAL
 # ==========================================
 
-class ResetConfirmScreen(ModalScreen):
+class ResetConfirmScreen(_DeferredDismissMixin, ModalScreen):
     """Confirmation dialog before resetting TermStory data."""
     
     BINDINGS = [
@@ -1650,13 +1672,13 @@ class ResetConfirmScreen(ModalScreen):
         )
     
     def action_confirm_reset(self) -> None:
-        self.set_timer(0.0, lambda: self.dismiss(True))
+        self.dismiss_later(True)
 
     def action_cancel_reset(self) -> None:
-        self.set_timer(0.0, lambda: self.dismiss(False))
+        self.dismiss_later(False)
 
 
-class MatrixDefragScreen(ModalScreen[None]):
+class MatrixDefragScreen(_DeferredDismissMixin, ModalScreen[None]):
     """Cyberpunk Matrix Defrag animation overlay."""
     BINDINGS = [
         Binding("escape", "close_matrix", "Close", show=True),
@@ -1664,7 +1686,7 @@ class MatrixDefragScreen(ModalScreen[None]):
     ]
 
     def action_close_matrix(self) -> None:
-        self.set_timer(0.0, self.dismiss)
+        self.dismiss_later()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1747,7 +1769,7 @@ class MatrixDefragScreen(ModalScreen[None]):
             self.set_timer(0.8, self.dismiss)
 
 
-class GhostTyperScreen(ModalScreen[None]):
+class GhostTyperScreen(_DeferredDismissMixin, ModalScreen[None]):
     """Cyberpunk Ghost Typer playback simulator."""
     BINDINGS = [
         Binding("escape", "close_typing", "Stop Playback", show=True),
@@ -1755,7 +1777,7 @@ class GhostTyperScreen(ModalScreen[None]):
     ]
 
     def action_close_typing(self) -> None:
-        self.set_timer(0.0, self.dismiss)
+        self.dismiss_later()
     
     def __init__(self, commands: List[str], *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -2135,7 +2157,8 @@ class TermStoryWorkspace(App):
         
     def copy_to_clipboard(self, text: str) -> None:
         """Robust OS-level clipboard writer using system commands (e.g. pbcopy on macOS),
-        falling back to Textual's default copy_to_clipboard."""
+        falling back to Textual's default copy_to_clipboard.
+        Operations will timeout after 2 seconds."""
         import sys
         import subprocess
         
@@ -2145,23 +2168,19 @@ class TermStoryWorkspace(App):
         try:
             if sys.platform == 'darwin':
                 # macOS
-                process = subprocess.Popen(['pbcopy'], stdin=subprocess.PIPE, close_fds=True)
-                process.communicate(input=cleaned_text.encode('utf-8'))
+                subprocess.run(['pbcopy'], input=cleaned_text.encode('utf-8'), timeout=2.0, check=True)
             elif sys.platform.startswith('linux'):
                 # Linux (try xclip, then xsel, then wl-copy)
                 for cmd in [['xclip', '-selection', 'clipboard'], ['xsel', '--clipboard', '--input'], ['wl-copy']]:
                     try:
-                        process = subprocess.Popen(cmd, stdin=subprocess.PIPE, close_fds=True)
-                        process.communicate(input=cleaned_text.encode('utf-8'))
-                        if process.returncode == 0:
-                            break
-                    except FileNotFoundError:
+                        subprocess.run(cmd, input=cleaned_text.encode('utf-8'), timeout=2.0, check=True)
+                        break
+                    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
                         continue
             elif sys.platform == 'win32':
                 # Windows
-                process = subprocess.Popen(['clip'], stdin=subprocess.PIPE, close_fds=True)
-                process.communicate(input=cleaned_text.encode('utf-8'))
-        except Exception as e:
+                subprocess.run(['clip'], input=cleaned_text.encode('utf-8'), timeout=2.0, check=True)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
             logger.debug("TUI UI exception suppressed: %s", e)
             
         # Also always fall back to Textual's native copy_to_clipboard (sends OSC 52 sequence)
@@ -2332,6 +2351,8 @@ class TermStoryWorkspace(App):
             
             self._show_node_details(selected_node)
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             logger.debug("TUI UI exception suppressed: %s", e)
         finally:
             self._refreshing_canvas = False

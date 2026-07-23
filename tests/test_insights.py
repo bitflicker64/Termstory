@@ -201,6 +201,34 @@ def test_assign_rpg_class():
     assert r2["class_name"] == "Docker Demolitionist"
 
 
+def test_assign_daily_rpg_class():
+    from termstory.insights import assign_daily_rpg_class
+    
+    # Test empty sessions
+    assert assign_daily_rpg_class([]) == "Level 1 Village Peasant"
+    
+    # Test single command
+    s1 = Session(
+        id=1, start_time=0, end_time=100, duration_seconds=100, project_id=1,
+        commands=[
+            Command(timestamp=0, command="kubectl get pods")
+        ]
+    )
+    r1 = assign_daily_rpg_class([s1])
+    assert r1 == "Level 1 Kubernetes Knight"
+    
+    # Test top-cmd fallback and stripping basename
+    s2 = Session(
+        id=2, start_time=0, end_time=100, duration_seconds=100, project_id=1,
+        commands=[
+            Command(timestamp=0, command="~/.local/bin/foo bar"),
+            Command(timestamp=10, command="foo baz")
+        ]
+    )
+    r2 = assign_daily_rpg_class([s2])
+    assert r2 == "Level 1 Scripting Shaman (foo)"
+
+
 def test_calculate_project_necromancer_score():
     from termstory.insights import calculate_project_necromancer_score
     from termstory.formatter import format_necromancer_score
@@ -351,6 +379,79 @@ def test_detect_late_night_chaotic_sessions_invalid_timestamp(tmp_path):
     # Should not raise OSError or OverflowError, just skip it or handle gracefully
     sessions = detect_late_night_chaotic_sessions(db)
     assert len(sessions) == 0
+
+
+def test_detect_late_night_chaotic_sessions_query_count(tmp_path):
+    from datetime import datetime
+    from termstory.database import Database
+    from termstory.insights import detect_late_night_chaotic_sessions
+
+    db_file = tmp_path / "test_perf.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO projects (id, name, path) VALUES (1, 'Project Alpha', '~/alpha')")
+    
+    # Insert 5 late-night chaotic sessions
+    for s_id in range(1, 6):
+        start_ts = int(datetime(2026, 6, 16 + s_id, 2, 0, 0).timestamp())
+        cursor.execute("INSERT INTO sessions (id, start_time, end_time, duration_seconds, project_id) VALUES (?, ?, ?, ?, ?)",
+                       (s_id, start_ts, start_ts + 100, 100, 1))
+        for cmd_id in range(10):
+            cursor.execute("INSERT INTO commands (timestamp, command, exit_code, session_id, project_id) VALUES (?, ?, ?, ?, ?)",
+                           (start_ts + cmd_id, f"echo command_{cmd_id}", 1 if cmd_id < 3 else 0, s_id, 1))
+    
+    # Insert a commit
+    commit_ts = int(datetime(2026, 6, 17, 2, 0, 0).timestamp())
+    cursor.execute("INSERT INTO commits (hash, timestamp, message, cleaned_message, project_id) VALUES (?, ?, ?, ?, ?)",
+                   ("hash1", commit_ts, "commit msg", "commit msg", 1))
+
+    conn.commit()
+    conn.close()
+
+    # Track execute calls
+    query_count = 0
+    original_get_connection = db.get_connection
+    
+    class CountingCursor:
+        def __init__(self, cursor):
+            self.cursor = cursor
+            
+        def execute(self, sql, params=None):
+            nonlocal query_count
+            query_count += 1
+            if params is None:
+                return self.cursor.execute(sql)
+            return self.cursor.execute(sql, params)
+            
+        def fetchall(self):
+            return self.cursor.fetchall()
+            
+        def __getattr__(self, name):
+            return getattr(self.cursor, name)
+
+    class CountingConnection:
+        def __init__(self, conn):
+            self.conn = conn
+            
+        def cursor(self):
+            return CountingCursor(self.conn.cursor())
+            
+        def __getattr__(self, name):
+            return getattr(self.conn, name)
+
+    def counting_get_connection():
+        return CountingConnection(original_get_connection())
+
+    db.get_connection = counting_get_connection
+
+    sessions = detect_late_night_chaotic_sessions(db)
+    
+    assert len(sessions) == 5
+    assert query_count <= 5, f"Expected small constant query count, got {query_count} queries"
+
 
 
 

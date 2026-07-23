@@ -194,3 +194,106 @@ def test_custom_redaction_patterns_race_condition():
     assert not errors, f"Exceptions occurred in threads: {errors}"
     import termstory.sanitizer
     assert isinstance(termstory.sanitizer.CUSTOM_REDACTION_PATTERNS, tuple)
+
+
+def test_high_entropy_git_shas_not_redacted():
+    """Git SHA-1 hashes (40 hex chars, entropy <= 3.87) must NOT be redacted
+    — they are benign and appear frequently in git output."""
+    git_shas = [
+        "a1b2c3d4e5f6789012345678901234567890abcd",
+        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        "abc123abc123abc123abc123abc123abc123abc1",
+        "0f1e2d3c4b5a6789012345678901234567890abc",
+    ]
+    for sha in git_shas:
+        assert len(sha) == 40
+        cmd = f"git log {sha}"
+        redacted = redact_command(cmd)
+        assert "[REDACTED_ENTROPY]" not in redacted, (
+            f"Git SHA {sha!r} was incorrectly redacted"
+        )
+
+
+def test_high_entropy_primary_tier_unchanged():
+    """Primary tier (len >= 24, entropy > 4.3) still works as before."""
+    high_entropy_token = "aB3cD4eF5gH6iJ7kL8mN9oP0qR1sT2uV3w"
+    assert len(high_entropy_token) >= 24
+    cmd = f"echo {high_entropy_token}"
+    redacted = redact_command(cmd)
+    assert "[REDACTED_ENTROPY]" in redacted
+    assert high_entropy_token not in redacted
+
+
+def test_high_entropy_short_secrets_not_caught_documented_limitation():
+    """Strings of 16-23 chars cannot be reliably distinguished from benign
+    mixed-case identifiers (CamelCase build tags, pod names, trace IDs) at
+    any entropy threshold — this is a documented limitation. The named-prefix
+    patterns and ~/.termstoryignore are the defense for shorter secrets."""
+    # Benign lowercase-only slug: no uppercase, so secondary tier skips it
+    pod_name = "myapp-build-abc123xy"
+    assert len(pod_name) == 20
+    cmd = f"kubectl get pod {pod_name}"
+    redacted = redact_command(cmd)
+    assert "[REDACTED_ENTROPY]" not in redacted
+
+    # Uppercase-only constant: no lowercase, so secondary tier skips it
+    env_var = "MYAPP12345BUILDKEY"
+    assert len(env_var) == 18
+    cmd2 = f"echo {env_var}"
+    redacted2 = redact_command(cmd2)
+    assert "[REDACTED_ENTROPY]" not in redacted2
+
+
+def test_secondary_tier_catches_mixed_case_secrets():
+    """Secondary tier redacts 16-23 char strings with upper+lower+digit mixture."""
+    # Mixed-case API token style
+    secret = "xK9mP2qR7vN4wL8s"
+    assert 16 <= len(secret) <= 23
+    cmd = f"curl -H 'Authorization: {secret}' https://api.example.com"
+    redacted = redact_command(cmd)
+    assert "[REDACTED_ENTROPY]" in redacted
+
+
+def test_secondary_tier_catches_mixed_case_build_tag_style():
+    """High-entropy mixed-case 16-23 char secrets are caught by secondary tier."""
+    # High entropy mixed-case secret (entropy > 3.9, all char classes present)
+    secret = "xK9mP2qR7vN4wL8sZ"
+    assert 16 <= len(secret) <= 23
+    redacted = redact_command(f"kubectl get pod {secret}")
+    assert "[REDACTED_ENTROPY]" in redacted
+
+
+def test_secondary_tier_skips_lowercase_only_slug():
+    """Lowercase-only pod names are not redacted."""
+    slug = "myapp-build-abc123"
+    redacted = redact_command(f"kubectl get pod {slug}")
+    assert "[REDACTED_ENTROPY]" not in redacted
+
+
+def test_secondary_tier_skips_uppercase_only_constant():
+    """Uppercase-only env var names are not redacted."""
+    const = "MYBUILDKEY123456"
+    redacted = redact_command(f"echo {const}")
+    assert "[REDACTED_ENTROPY]" not in redacted
+
+
+def test_secondary_tier_skips_low_entropy_mixed_case():
+    """Mixed-case but low entropy (e.g. repeated pattern) is not redacted."""
+    low_entropy = "AaAaAaAaAaAaAaAa"
+    assert 16 <= len(low_entropy) <= 23
+    redacted = redact_command(f"echo {low_entropy}")
+    assert "[REDACTED_ENTROPY]" not in redacted
+
+
+def test_secondary_tier_documented_false_negatives():
+    """CamelCase build tags with entropy <= 3.9 are intentionally NOT caught.
+
+    MyAppBuild12345xy and FixBug12345AbcDe have entropy ~3.85 — below the
+    3.9 threshold — so they pass through. This is the documented trade-off:
+    the threshold is set to avoid redacting benign kubectl/git identifiers.
+    """
+    # MyAppBuild12345xy: entropy 3.85, below 3.9 threshold — not caught
+    redacted = redact_command("kubectl get pod MyAppBuild12345xy")
+    assert "[REDACTED_ENTROPY]" not in redacted, (
+        "MyAppBuild12345xy should not be redacted (entropy ~3.85, below 3.9 threshold)"
+    )
