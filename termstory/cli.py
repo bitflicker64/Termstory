@@ -280,7 +280,7 @@ def search_history(
 
 @app.command("today")
 def show_today(
-    compare: bool = typer.Option(True, "--compare/--no-compare", help="Compare with yesterday's metrics")
+    compare: bool = typer.Option(False, "--compare/--no-compare", help="Compare each project's time with yesterday")
 ):
     """Show today's work summary"""
     db_path = get_db_path()
