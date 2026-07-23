@@ -1,4 +1,4 @@
-"""Concurrency stress test: 2 sessions x 20 commands = 40 commands per worker (lightweight)"""
+"""Concurrency stress test: 5 writers x 20 sessions x 100 commands = 10,000 commands (massive)"""
 import sqlite3
 import threading
 import time
@@ -6,7 +6,7 @@ import os
 import random
 from termstory.database import Database
 from termstory.models import Project, Session, Command
-def writer_worker(db_path, worker_id, num_sessions=50, commands_per_session=100):
+def writer_worker(db_path, worker_id, num_sessions, commands_per_session, errors):
     """Write commands per worker simulating long multi-year history logs"""
     db = Database(db_path)
     
@@ -14,58 +14,67 @@ def writer_worker(db_path, worker_id, num_sessions=50, commands_per_session=100)
     base_time = int(time.time()) - 86400 * 365 * 3
     
     for s in range(num_sessions):
-        try:
-            # Create project
-            p = Project(
-                id=None,
-                name=f"stress_proj_{worker_id}_{s}",
-                path=f"/tmp/stress_proj_{worker_id}_{s}",
-                first_seen=base_time + s * 86400,
-                last_seen=base_time + s * 86400 + 500,
-                session_count=1,
-                total_time=500
-            )
-            
-            # Create session - use temp_id for session mapping
-            temp_session_id = worker_id * 10000 + s + 1
-            session_start = base_time + s * 86400 + worker_id * 3600
-            session_end = session_start + 500
-            sess = Session(
-                id=temp_session_id,
-                start_time=session_start,
-                end_time=session_end,
-                duration_seconds=500,
-                project_id=None,  # Will be set after project save
-                commands=[],
-                tags=None
-            )
-            
-            # Create commands for this session
-            cmds = []
-            for c in range(commands_per_session):
-                cmd = Command(
-                    timestamp=session_start + c * 2,
-                    command=f"git commit -m 'massive stress test {worker_id} {s} {c}'",
-                    exit_code=0,
-                    session_id=temp_session_id,  # Use temp_id for mapping
-                    project_id=None,
-                    is_legacy=False
+        retries = 20
+        success = False
+        while retries > 0 and not success:
+            try:
+                # Create project
+                p = Project(
+                    id=None,
+                    name=f"stress_proj_{worker_id}_{s}",
+                    path=f"/tmp/stress_proj_{worker_id}_{s}",
+                    first_seen=base_time + s * 86400,
+                    last_seen=base_time + s * 86400 + 500,
+                    session_count=1,
+                    total_time=500
                 )
-                cmds.append(cmd)
-            
-            sess.commands = cmds
-            db.save_data([p], [sess], cmds)
-            
-        except sqlite3.OperationalError as e:
-            if "database is locked" in str(e):
-                time.sleep(0.01)  # Brief backoff
-                continue
-            else:
-                raise
-        except Exception as e:
-            pass
+                
+                # Create session - use temp_id for session mapping
+                temp_session_id = worker_id * 10000 + s + 1
+                session_start = base_time + s * 86400 + worker_id * 3600
+                session_end = session_start + 500
+                sess = Session(
+                    id=temp_session_id,
+                    start_time=session_start,
+                    end_time=session_end,
+                    duration_seconds=500,
+                    project_id=None,  # Will be set after project save
+                    commands=[],
+                    tags=None
+                )
+                
+                # Create commands for this session
+                cmds = []
+                for c in range(commands_per_session):
+                    cmd = Command(
+                        timestamp=session_start + c * 2,
+                        command=f"git commit -m 'massive stress test {worker_id} {s} {c}'",
+                        exit_code=0,
+                        session_id=temp_session_id,  # Use temp_id for mapping
+                        project_id=None,
+                        is_legacy=False
+                    )
+                    cmds.append(cmd)
+                
+                sess.commands = cmds
+                db.save_data([p], [sess], cmds)
+                success = True
+                
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e):
+                    retries -= 1
+                    time.sleep(0.01)  # Brief backoff
+                else:
+                    errors.append(f"Writer {worker_id} db error: {e}")
+                    break
+            except Exception as e:
+                errors.append(f"Writer {worker_id} error: {e}")
+                break
+                
+        if not success:
+            errors.append(f"Writer {worker_id} failed to save session {s} after retries")
 
-def reader_worker(db_path, worker_id, num_queries=50):
+def reader_worker(db_path, worker_id, num_queries, errors):
     """Concurrent reads during writes"""
     db = Database(db_path)
     
@@ -86,7 +95,7 @@ def reader_worker(db_path, worker_id, num_queries=50):
             db.get_range_sessions(int(time.time()) - 86400 * 365 * 3, int(time.time()))
             
         except Exception as e:
-            pass
+            errors.append(f"Reader {worker_id} error: {e}")
         time.sleep(0.005)  # Small delay
 
 def test_massive_history_ingestion(tmp_path):
@@ -107,15 +116,17 @@ def test_massive_history_ingestion(tmp_path):
     
     threads = []
     
+    errors = []
+    
     # Start readers first
     for i in range(3):
-        t = threading.Thread(target=reader_worker, args=(db_path, i, 50))
+        t = threading.Thread(target=reader_worker, args=(db_path, i, 50, errors))
         threads.append(t)
         t.start()
     
     # Start writers
     for i in range(num_writers):
-        t = threading.Thread(target=writer_worker, args=(db_path, i, sessions_per_writer, commands_per_session))
+        t = threading.Thread(target=writer_worker, args=(db_path, i, sessions_per_writer, commands_per_session, errors))
         threads.append(t)
         t.start()
     
@@ -137,13 +148,15 @@ def test_massive_history_ingestion(tmp_path):
     c.execute("SELECT COUNT(*) FROM projects")
     proj_count = c.fetchone()[0]
     
+    
     # Test FTS search still works
     results = db.search_sessions("massive stress test")
     assert len(results) > 0, "FTS should return results after concurrent ingestion"
     
-    # 99% tolerance allows for rare WAL SQLite transient locks dropping a session during extreme concurrency
-    assert cmd_count >= (num_writers * sessions_per_writer * commands_per_session) * 0.99, "Most commands should be ingested"
-    assert sess_count >= (num_writers * sessions_per_writer) * 0.99
-    assert proj_count >= (num_writers * sessions_per_writer) * 0.99
+    assert len(errors) == 0, f"Concurrency errors detected: {errors}"
     
-    conn.close()
+    assert cmd_count == (num_writers * sessions_per_writer * commands_per_session), "All commands should be ingested"
+    assert sess_count == (num_writers * sessions_per_writer), "All sessions should be ingested"
+    assert proj_count == (num_writers * sessions_per_writer), "All projects should be ingested"
+    
+    conn.close()
