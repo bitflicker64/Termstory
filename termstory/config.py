@@ -2,8 +2,29 @@ import os
 import json
 import sys
 import logging
+import tempfile
 from typing import List, Any
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
 logger = logging.getLogger(__name__)
+
+def _acquire_lock(fd: int) -> None:
+    """Acquire an exclusive file lock (cross-platform)."""
+    if os.name == "nt":
+        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+    else:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+def _release_lock(fd: int) -> None:
+    """Release the file lock."""
+    if os.name == "nt":
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 def get_app_dir(dir_type: str = "data") -> str:
     """Get the appropriate application directory.
@@ -93,6 +114,12 @@ def get_config_path() -> str:
     db_dir = get_app_dir("config")
     os.makedirs(db_dir, exist_ok=True)
     return os.path.join(db_dir, "config.json")
+
+def get_config_lock_path() -> str:
+    """Return the path to the config lock file"""
+    db_dir = get_app_dir("config")
+    os.makedirs(db_dir, exist_ok=True)
+    return os.path.join(db_dir, "config.lock")
 
 
 def translate_legacy_key(config: dict, key: str) -> str:
@@ -190,10 +217,13 @@ def load_config() -> dict:
     config = {}
 
     if os.path.exists(config_path):
+        fd = None
+        f = None
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-
+            fd = os.open(config_path, os.O_RDONLY)
+            _acquire_lock(fd)
+            f = os.fdopen(fd, "r", encoding="utf-8")
+            config = json.load(f)
         except (
             json.JSONDecodeError,
             UnicodeDecodeError,
@@ -212,9 +242,22 @@ def load_config() -> dict:
             logger.warning(
                 "Could not read config file '%s': %s",
                 config_path,
-            e,
+                e,
             )
             config = {}
+        finally:
+            try:
+                if fd is not None:
+                    _release_lock(fd)
+            except OSError:
+                pass
+            if f is not None:
+                f.close()
+            elif fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
 
     if not isinstance(config, dict):
         config = {}
@@ -277,10 +320,37 @@ def load_config() -> dict:
 
 
 def save_config(config: dict) -> None:
-    """Save configuration dictionary to disk"""
+    """Save configuration dictionary to disk atomically"""
     config_path = get_config_path()
+    lock_path = get_config_lock_path()
+    tmp_path = None
+    
     try:
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=4)
-    except Exception:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+        try:
+            _acquire_lock(fd)
+            
+            dir_name = os.path.dirname(config_path)
+            if dir_name:
+                os.makedirs(dir_name, exist_ok=True)
+            
+            fd_tmp, tmp_path = tempfile.mkstemp(
+                dir=dir_name or ".", prefix=".config.", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd_tmp, "w", encoding="utf-8") as f:
+                    json.dump(config, f, indent=4)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, config_path)
+                tmp_path = None
+            except Exception:
+                pass
+            finally:
+                if tmp_path is not None and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+        finally:
+            _release_lock(fd)
+            os.close(fd)
+    except OSError:
         pass
