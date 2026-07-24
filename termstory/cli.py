@@ -381,7 +381,7 @@ def show_insights():
     
     run_ingestion(db)
     
-    from termstory.insights import analyze_all
+    from termstory.insights import analyze_all, calculate_rage_quit_signatures
     stats = analyze_all(db)
     
     from termstory.models import format_duration
