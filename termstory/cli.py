@@ -1561,6 +1561,33 @@ def show_rpg_class():
     output = format_rpg_class(rpg_info, bio)
     console.print(Text.from_ansi(output))
 
+@app.command("rage-quit")
+def rage_quit(ctx: typer.Context) -> None:
+    """Find the most frequent commands before 12+ hour periods of inactivity.
+
+    Your "rage-quit" is the command you run before long breaks —
+    it reveals how you typically end your terminal sessions.
+    """
+    from termstory.config import get_config
+    from termstory.database import Database
+    from termstory.formatter import format_rage_quit_signatures
+    from termstory.insights import calculate_rage_quit_signatures
+
+    config = get_config()
+    db = Database(config.get_db_path())
+    sessions = db.get_all_sessions()
+
+    # Filter out legacy sessions
+    real_sessions = [s for s in sessions if not getattr(s, "is_legacy", False)]
+
+    # Calculate rage-quit signatures
+    result = calculate_rage_quit_signatures(real_sessions)
+    signatures = result.get("signatures", [])
+    total_events = result.get("total_events", 0)
+
+    # Format and print
+    output = format_rage_quit_signatures(signatures, total_events)
+    console.print(output)
 
 @app.command("vampire-index")
 def show_vampire_index():
