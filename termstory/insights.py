@@ -647,6 +647,33 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
     finally:
         conn.close()
 
+@app.command("rage-quit")
+def rage_quit(ctx: typer.Context) -> None:
+    """Find the most frequent commands before 12+ hour periods of inactivity.
+
+    Your "rage-quit" is the command you run before long breaks —
+    it reveals how you typically end your terminal sessions.
+    """
+    from termstory.config import get_config
+    from termstory.database import Database
+    from termstory.formatter import format_rage_quit_signatures
+    from termstory.insights import calculate_rage_quit_signatures
+
+    config = get_config()
+    db = Database(config.get_db_path())
+    sessions = db.get_all_sessions()
+    projects = db.get_all_projects()
+
+    # Filter out legacy sessions
+    real_sessions = [s for s in sessions if not getattr(s, "is_legacy", False)]
+
+    # Calculate rage-quit signatures
+    result = calculate_rage_quit_signatures(real_sessions)
+    signatures = result.get("signatures", [])
+
+    # Format and print
+    output = format_rage_quit_signatures(signatures, result.get("total_events", 0))
+    console.print(output)
 
 def calculate_vampire_coder_index(sessions: List[Session]) -> float:
     """Calculate the percentage of commands and commits executed between midnight and 5:00 AM."""
