@@ -1143,21 +1143,19 @@ class DetailsCanvas(VerticalScroll):
         provider = self.app.config.get("active_provider", "disabled")
         status_part = "Narrative Concluded" if (ai_enabled and provider != "disabled") else "Offline / Local Only"
         
-        # Fetch GitHub avatar ASCII lines (28x14)
+        # Fetch GitHub avatar ASCII lines (28x15)
         avatar_lines = get_github_avatar_ascii(
             operator, 
             width=28, 
-            height=14, 
+            height=15, 
             on_resolved=lambda: self.app.call_from_thread(self.app.refresh_details_canvas)
         )
         
         fs = calculate_focus_score(sessions)
         tod = calculate_time_of_day_distribution(sessions)
-<<<<<<< HEAD
-        vampire_index = calculate_vampire_index(sessions)
-=======
+        vampire_metrics = get_vampire_metrics(sessions)
+        vampire_index = vampire_metrics.get("vampire_index", 0.0)
         rpg_class = assign_daily_rpg_class(sessions)
->>>>>>> upstream/main
         
         peak_velocity = "morning grinds"
         if tod.get("afternoon", 0) >= tod.get("morning", 0) and tod.get("afternoon", 0) >= tod.get("evening", 0):
