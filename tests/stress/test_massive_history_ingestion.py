@@ -6,7 +6,7 @@ import os
 import random
 from termstory.database import Database
 from termstory.models import Project, Session, Command
-def writer_worker(db_path, worker_id, num_sessions, commands_per_session, errors):
+def writer_worker(db_path, base_path, worker_id, num_sessions, commands_per_session, errors):
     """Write commands per worker simulating long multi-year history logs"""
     db = Database(db_path)
     
@@ -14,7 +14,7 @@ def writer_worker(db_path, worker_id, num_sessions, commands_per_session, errors
     base_time = int(time.time()) - 86400 * 365 * 3
     
     for s in range(num_sessions):
-        retries = 20
+        retries = 5
         success = False
         while retries > 0 and not success:
             try:
@@ -22,7 +22,7 @@ def writer_worker(db_path, worker_id, num_sessions, commands_per_session, errors
                 p = Project(
                     id=None,
                     name=f"stress_proj_{worker_id}_{s}",
-                    path=f"/tmp/stress_proj_{worker_id}_{s}",
+                    path=os.path.join(base_path, f"stress_proj_{worker_id}_{s}"),
                     first_seen=base_time + s * 86400,
                     last_seen=base_time + s * 86400 + 500,
                     session_count=1,
@@ -86,10 +86,12 @@ def reader_worker(db_path, worker_id, num_queries, errors):
             
             # List projects
             conn = db.get_connection()
-            c = conn.cursor()
-            c.execute("SELECT COUNT(*) FROM projects")
-            c.fetchone()
-            conn.close()
+            try:
+                c = conn.cursor()
+                c.execute("SELECT COUNT(*) FROM projects")
+                c.fetchone()
+            finally:
+                conn.close()
             
             # Get sessions (range query) covers all 3 years
             db.get_range_sessions(int(time.time()) - 86400 * 365 * 3, int(time.time()))
@@ -126,7 +128,7 @@ def test_massive_history_ingestion(tmp_path):
     
     # Start writers
     for i in range(num_writers):
-        t = threading.Thread(target=writer_worker, args=(db_path, i, sessions_per_writer, commands_per_session, errors))
+        t = threading.Thread(target=writer_worker, args=(db_path, str(tmp_path), i, sessions_per_writer, commands_per_session, errors))
         threads.append(t)
         t.start()
     
@@ -137,26 +139,27 @@ def test_massive_history_ingestion(tmp_path):
     # Verify counts
     db = Database(db_path)
     conn = db.get_connection()
-    c = conn.cursor()
-    
-    c.execute("SELECT COUNT(*) FROM commands")
-    cmd_count = c.fetchone()[0]
-    
-    c.execute("SELECT COUNT(*) FROM sessions")
-    sess_count = c.fetchone()[0]
-    
-    c.execute("SELECT COUNT(*) FROM projects")
-    proj_count = c.fetchone()[0]
-    
-    
-    # Test FTS search still works
-    results = db.search_sessions("massive stress test")
-    assert len(results) > 0, "FTS should return results after concurrent ingestion"
-    
-    assert len(errors) == 0, f"Concurrency errors detected: {errors}"
-    
-    assert cmd_count == (num_writers * sessions_per_writer * commands_per_session), "All commands should be ingested"
-    assert sess_count == (num_writers * sessions_per_writer), "All sessions should be ingested"
-    assert proj_count == (num_writers * sessions_per_writer), "All projects should be ingested"
-    
-    conn.close()
+    try:
+        c = conn.cursor()
+        
+        c.execute("SELECT COUNT(*) FROM commands")
+        cmd_count = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM sessions")
+        sess_count = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM projects")
+        proj_count = c.fetchone()[0]
+        
+        
+        # Test FTS search still works
+        results = db.search_sessions("massive stress test")
+        assert len(results) > 0, "FTS should return results after concurrent ingestion"
+        
+        assert len(errors) == 0, f"Concurrency errors detected: {errors}"
+        
+        assert cmd_count == (num_writers * sessions_per_writer * commands_per_session), "All commands should be ingested"
+        assert sess_count == (num_writers * sessions_per_writer), "All sessions should be ingested"
+        assert proj_count == (num_writers * sessions_per_writer), "All projects should be ingested"
+    finally:
+        conn.close()
