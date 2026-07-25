@@ -50,13 +50,8 @@ from termstory.project import disambiguate_project_names
 from termstory.formatter import _is_noise_command, clean_command_to_memory, generate_daily_activity_punch_card, get_operator_handle, get_github_avatar_ascii
 from termstory.date_utils import get_current_time
 from termstory.config import load_config, save_config
-<<<<<<< HEAD
-from termstory.ai import generate_ai_summary, generate_timeframe_summary, generate_wrapped_summary
-from termstory.insights import calculate_focus_score, calculate_time_of_day_distribution, calculate_project_necromancer_score
-=======
 from termstory.ai import generate_ai_summary, generate_timeframe_summary, generate_daily_chronicle, generate_wrapped_summary
-from termstory.insights import calculate_focus_score, calculate_time_of_day_distribution, assign_daily_rpg_class
->>>>>>> upstream/main
+from termstory.insights import calculate_focus_score, calculate_time_of_day_distribution, calculate_project_necromancer_score, assign_daily_rpg_class
 
 def is_worker_cancelled() -> bool:
     try:
@@ -1153,11 +1148,11 @@ class DetailsCanvas(VerticalScroll):
         ai_enabled = self.app.config.get("ai_enabled", False)
         provider = self.app.config.get("active_provider", "disabled")
         
-        # Fetch GitHub avatar ASCII lines (28x14)
+        # Fetch GitHub avatar ASCII lines (28x15)
         avatar_lines = get_github_avatar_ascii(
             operator, 
             width=28, 
-            height=14, 
+            height=15, 
             on_resolved=lambda: self.app.call_from_thread(self.app.refresh_details_canvas)
         )
         
@@ -1349,11 +1344,9 @@ class DetailsCanvas(VerticalScroll):
         
         fs = calculate_focus_score(sessions)
         tod = calculate_time_of_day_distribution(sessions)
-<<<<<<< HEAD
-        necro_score = calculate_project_necromancer_score(sessions, projects)
-=======
+        necro_info = calculate_project_necromancer_score(self.app.sessions, projects)
+        necro_score = necro_info.get("score", 0)
         rpg_class = assign_daily_rpg_class(sessions)
->>>>>>> upstream/main
         
         peak_velocity = "morning grinds"
         if tod.get("afternoon", 0) >= tod.get("morning", 0) and tod.get("afternoon", 0) >= tod.get("evening", 0):
