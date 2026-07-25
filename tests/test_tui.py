@@ -526,7 +526,9 @@ async def test_tui_render_interactive_ai_buttons(monkeypatch):
             await pilot.pause()
             
             assert len(called) == 1
-            assert app.sessions[0].ai_summary == "Generated AI summary description"
+            await app.workers.wait_for_complete()
+    await pilot.pause()
+    assert app.sessions[0].ai_summary == "Generated AI summary description"
 
             import asyncio
             # Wait for the button to disappear due to cooldown
