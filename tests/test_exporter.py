@@ -55,6 +55,18 @@ def test_parse_since():
     with pytest.raises(ValueError):
         parse_since("not-a-date")
 
+def test_parse_since_with_date_override(monkeypatch):
+    monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2026-06-03 12:00:00")
+    parsed = parse_since("3")
+    assert parsed is not None
+    expected = int(datetime(2026, 5, 31, 0, 0, 0).timestamp())
+    assert parsed == expected
+
+def test_parse_since_date_string_unaffected(monkeypatch):
+    monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2026-06-03 12:00:00")
+    parsed = parse_since("2026-06-01")
+    assert parsed == int(datetime(2026, 6, 1, 0, 0).timestamp())
+
 def test_fetch_export_data(temp_db):
     # Test fetch all
     sessions = fetch_export_data(temp_db)

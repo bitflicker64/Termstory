@@ -280,7 +280,7 @@ def search_history(
 
 @app.command("today")
 def show_today(
-    compare: bool = typer.Option(True, "--compare/--no-compare", help="Compare with yesterday's metrics")
+    compare: bool = typer.Option(False, "--compare/--no-compare", help="Compare each project's time with yesterday")
 ):
     """Show today's work summary"""
     db_path = get_db_path()
@@ -884,8 +884,12 @@ def perform_reset(auto_confirm: bool = False, dry_run: bool = False):
         if not sys.stdin.isatty():
             console.print("[bold red]Refusing to reset in a non-interactive shell without --yes.[/bold red]")
             raise typer.Exit(code=1)
-        response = Prompt.ask("\nAre you sure you want to delete all TermStory data?", choices=["y", "yes", "n", "no"], default="n")
-        if response.lower() not in ["y", "yes"]:
+        try:
+            response = input("\nAre you sure you want to delete all TermStory data? (y/n): ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[red]Reset cancelled by user interruption.[/red]")
+            raise typer.Exit(code=1)
+        if response not in ("y", "yes"):
             console.print("[yellow]Reset aborted.[/yellow]")
             return
 

@@ -17,12 +17,10 @@ Covers:
 
 import os
 import sys
-import glob
-import stat
 import time
 import tempfile
 import unittest
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 from datetime import datetime, timezone, timedelta
 
 # Ensure the project root is on the path
@@ -34,6 +32,7 @@ from termstory.timestamp_detective import TimestampDetective
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 class ParserBugDateTime:
     @staticmethod
     def strptime(*_args, **_kwargs):
@@ -42,8 +41,8 @@ class ParserBugDateTime:
 
 NOW = int(datetime.now().timestamp())
 FOUR_YEARS_AGO = NOW - (4 * 365 * 24 * 60 * 60)
-SIX_YEARS_AGO  = NOW - (6 * 365 * 24 * 60 * 60)
-TOMORROW       = NOW + 86400
+SIX_YEARS_AGO = NOW - (6 * 365 * 24 * 60 * 60)
+TOMORROW = NOW + 86400
 
 
 def make_detective(**kwargs) -> TimestampDetective:
@@ -51,7 +50,7 @@ def make_detective(**kwargs) -> TimestampDetective:
     return TimestampDetective(
         search_root=kwargs.pop("search_root", tempfile.gettempdir()),
         project_paths=kwargs.pop("project_paths", []),
-        **kwargs
+        **kwargs,
     )
 
 
@@ -64,8 +63,8 @@ def make_items(*commands) -> list:
 # A. Virtual CWD Tracker
 # ---------------------------------------------------------------------------
 
-class TestVirtualCWDTracker(unittest.TestCase):
 
+class TestVirtualCWDTracker(unittest.TestCase):
     def setUp(self):
         self.home = os.path.expanduser("~")
         self.d = make_detective(search_root=self.home)
@@ -80,8 +79,8 @@ class TestVirtualCWDTracker(unittest.TestCase):
         items = make_items("ls", "cd /tmp", "echo hi")
         cwd_map = self.d._build_virtual_cwd_map(items)
         self.assertEqual(cwd_map[0], self.home)
-        self.assertEqual(cwd_map[1], "/tmp")   # after the cd command itself
-        self.assertEqual(cwd_map[2], "/tmp")   # subsequent command inherits
+        self.assertEqual(cwd_map[1], "/tmp")  # after the cd command itself
+        self.assertEqual(cwd_map[2], "/tmp")  # subsequent command inherits
 
     def test_cd_relative(self):
         items = make_items("cd /tmp", "cd subdir", "ls")
@@ -113,8 +112,8 @@ class TestVirtualCWDTracker(unittest.TestCase):
     def test_pushd_popd(self):
         items = make_items("cd /tmp", "pushd /var", "ls", "popd", "ls")
         cwd_map = self.d._build_virtual_cwd_map(items)
-        self.assertEqual(cwd_map[2], "/var")   # inside pushd
-        self.assertEqual(cwd_map[4], "/tmp")   # after popd
+        self.assertEqual(cwd_map[2], "/var")  # inside pushd
+        self.assertEqual(cwd_map[4], "/tmp")  # after popd
 
     def test_popd_empty_stack_is_safe(self):
         """popd with nothing on the stack should not crash."""
@@ -128,8 +127,8 @@ class TestVirtualCWDTracker(unittest.TestCase):
 # B. Git Commit Message Extraction
 # ---------------------------------------------------------------------------
 
-class TestGitCommitExtraction(unittest.TestCase):
 
+class TestGitCommitExtraction(unittest.TestCase):
     def setUp(self):
         self.d = make_detective()
 
@@ -140,7 +139,9 @@ class TestGitCommitExtraction(unittest.TestCase):
         self.assertEqual(self._extract('git commit -m "fix auth bug"'), "fix auth bug")
 
     def test_single_quoted(self):
-        self.assertEqual(self._extract("git commit -m 'add login page'"), "add login page")
+        self.assertEqual(
+            self._extract("git commit -m 'add login page'"), "add login page"
+        )
 
     def test_combined_flag_am(self):
         self.assertEqual(self._extract('git commit -am "quick fix"'), "quick fix")
@@ -148,7 +149,7 @@ class TestGitCommitExtraction(unittest.TestCase):
     def test_long_flag(self):
         self.assertEqual(
             self._extract('git commit --message "refactor: clean up"'),
-            "refactor: clean up"
+            "refactor: clean up",
         )
 
     def test_no_message_flag(self):
@@ -168,8 +169,8 @@ class TestGitCommitExtraction(unittest.TestCase):
 # C. Git Commit Detector (fuzzy matching against mocked git log)
 # ---------------------------------------------------------------------------
 
-class TestDetectGitCommit(unittest.TestCase):
 
+class TestDetectGitCommit(unittest.TestCase):
     def setUp(self):
         self.d = make_detective(search_root=tempfile.gettempdir())
 
@@ -180,9 +181,16 @@ class TestDetectGitCommit(unittest.TestCase):
     @patch.object(TimestampDetective, "_find_git_root", return_value="/repos/myapp")
     def test_exact_match_returns_commit_timestamp(self, _mock_root):
         """A commit message with ratio = 1.0 should return the commit's timestamp."""
-        self._mock_log("/repos/myapp", [
-            {"hash": "abc1234", "timestamp": FOUR_YEARS_AGO, "message": "add express middleware"}
-        ])
+        self._mock_log(
+            "/repos/myapp",
+            [
+                {
+                    "hash": "abc1234",
+                    "timestamp": FOUR_YEARS_AGO,
+                    "message": "add express middleware",
+                }
+            ],
+        )
         result = self.d.detect_git_commit(
             'git commit -m "add express middleware"', "/repos/myapp"
         )
@@ -199,25 +207,42 @@ class TestDetectGitCommit(unittest.TestCase):
         'fix auth bug' vs 'fix auth debug' → ratio ≈ 0.923, well above threshold.
         We use messages that are genuinely close, not merely related.
         """
-        self._mock_log("/repos/myapp", [
-            {"hash": "def5678", "timestamp": FOUR_YEARS_AGO, "message": "fix auth debug"}
-        ])
+        self._mock_log(
+            "/repos/myapp",
+            [
+                {
+                    "hash": "def5678",
+                    "timestamp": FOUR_YEARS_AGO,
+                    "message": "fix auth debug",
+                }
+            ],
+        )
         result = self.d.detect_git_commit(
             'git commit -m "fix auth bug"', "/repos/myapp"
         )
         # "fix auth bug" vs "fix auth debug" — ratio ≈ 0.923, always above the 0.85 threshold.
         # Verify the result is returned unconditionally.
         import difflib
+
         ratio = difflib.SequenceMatcher(None, "fix auth bug", "fix auth debug").ratio()
-        self.assertGreaterEqual(ratio, 0.85, f"Sanity check: ratio {ratio:.3f} should be ≥ 0.85")
+        self.assertGreaterEqual(
+            ratio, 0.85, f"Sanity check: ratio {ratio:.3f} should be ≥ 0.85"
+        )
         self.assertIsNotNone(result)
 
     @patch.object(TimestampDetective, "_find_git_root", return_value="/repos/myapp")
     def test_below_threshold_returns_none(self, _mock_root):
         """A very different commit message should not match."""
-        self._mock_log("/repos/myapp", [
-            {"hash": "aaa0000", "timestamp": FOUR_YEARS_AGO, "message": "update README documentation"}
-        ])
+        self._mock_log(
+            "/repos/myapp",
+            [
+                {
+                    "hash": "aaa0000",
+                    "timestamp": FOUR_YEARS_AGO,
+                    "message": "update README documentation",
+                }
+            ],
+        )
         result = self.d.detect_git_commit(
             'git commit -m "add express middleware"', "/repos/myapp"
         )
@@ -227,12 +252,26 @@ class TestDetectGitCommit(unittest.TestCase):
     def test_cwd_repo_searched_first(self, _mock_root):
         """CWD-derived repo should be searched before fallback project paths."""
         # Put a match in the CWD repo and a different match in a fallback
-        self._mock_log("/repos/myapp", [
-            {"hash": "cwd1111", "timestamp": FOUR_YEARS_AGO + 100, "message": "fix typo in readme"}
-        ])
-        self._mock_log("/repos/other", [
-            {"hash": "other222", "timestamp": FOUR_YEARS_AGO + 200, "message": "fix typo in readme"}
-        ])
+        self._mock_log(
+            "/repos/myapp",
+            [
+                {
+                    "hash": "cwd1111",
+                    "timestamp": FOUR_YEARS_AGO + 100,
+                    "message": "fix typo in readme",
+                }
+            ],
+        )
+        self._mock_log(
+            "/repos/other",
+            [
+                {
+                    "hash": "other222",
+                    "timestamp": FOUR_YEARS_AGO + 200,
+                    "message": "fix typo in readme",
+                }
+            ],
+        )
         self.d.project_paths = ["/repos/other"]
 
         result = self.d.detect_git_commit(
@@ -246,9 +285,10 @@ class TestDetectGitCommit(unittest.TestCase):
     @patch.object(TimestampDetective, "_find_git_root", return_value="/repos/myapp")
     def test_future_timestamp_rejected(self, _mock_root):
         """A commit with a future timestamp should not be returned."""
-        self._mock_log("/repos/myapp", [
-            {"hash": "future0", "timestamp": TOMORROW, "message": "add feature x"}
-        ])
+        self._mock_log(
+            "/repos/myapp",
+            [{"hash": "future0", "timestamp": TOMORROW, "message": "add feature x"}],
+        )
         result = self.d.detect_git_commit(
             'git commit -m "add feature x"', "/repos/myapp"
         )
@@ -257,9 +297,16 @@ class TestDetectGitCommit(unittest.TestCase):
     @patch.object(TimestampDetective, "_find_git_root", return_value="/repos/myapp")
     def test_too_old_timestamp_rejected(self, _mock_root):
         """A commit older than 5 years should be rejected by the validity guard."""
-        self._mock_log("/repos/myapp", [
-            {"hash": "old1111", "timestamp": SIX_YEARS_AGO, "message": "initial commit"}
-        ])
+        self._mock_log(
+            "/repos/myapp",
+            [
+                {
+                    "hash": "old1111",
+                    "timestamp": SIX_YEARS_AGO,
+                    "message": "initial commit",
+                }
+            ],
+        )
         result = self.d.detect_git_commit(
             'git commit -m "initial commit"', "/repos/myapp"
         )
@@ -270,43 +317,59 @@ class TestDetectGitCommit(unittest.TestCase):
 # C2. Inline Date Strings
 # ---------------------------------------------------------------------------
 
-class TestDetectInlineDate(unittest.TestCase):
 
+class TestDetectInlineDate(unittest.TestCase):
     def setUp(self):
         self.d = make_detective(search_root=tempfile.gettempdir())
 
     def test_git_commit_date_flag_iso(self):
-        result = self.d.detect_inline_date('git commit --date="2024-01-15T10:30:00"', "/tmp")
+        result = self.d.detect_inline_date(
+            'git commit --date="2024-01-15T10:30:00"', "/tmp"
+        )
         self.assertIsNotNone(result)
         ts, label = result
         self.assertIn("2024-01-15T10:30:00", label)
         import datetime
+
         dt = datetime.datetime.strptime("2024-01-15T10:30:00", "%Y-%m-%dT%H:%M:%S")
         dt = dt.astimezone()
         self.assertEqual(ts, int(dt.timestamp()))
 
     def test_git_commit_amend_date_flag_git_format(self):
-        result = self.d.detect_inline_date('git commit --amend --date="Mon Jan 15 10:30:00 2024 +0000"', "/tmp")
+        result = self.d.detect_inline_date(
+            'git commit --amend --date="Mon Jan 15 10:30:00 2024 +0000"', "/tmp"
+        )
         self.assertIsNotNone(result)
         ts, label = result
         import datetime
-        dt = datetime.datetime.strptime("Mon Jan 15 10:30:00 2024 +0000", "%a %b %d %H:%M:%S %Y %z")
+
+        dt = datetime.datetime.strptime(
+            "Mon Jan 15 10:30:00 2024 +0000", "%a %b %d %H:%M:%S %Y %z"
+        )
         self.assertEqual(ts, int(dt.timestamp()))
 
     def test_git_committer_date_env_var(self):
-        result = self.d.detect_inline_date('GIT_COMMITTER_DATE="2024-01-15T10:30:00" git commit -m "fix"', "/tmp")
+        result = self.d.detect_inline_date(
+            'GIT_COMMITTER_DATE="2024-01-15T10:30:00" git commit -m "fix"', "/tmp"
+        )
         self.assertIsNotNone(result)
 
     def test_tar_create_with_date(self):
-        result = self.d.detect_inline_date("tar -czf backup_2024-01-15.tar.gz src/", "/tmp")
+        result = self.d.detect_inline_date(
+            "tar -czf backup_2024-01-15.tar.gz src/", "/tmp"
+        )
         self.assertIsNotNone(result)
 
     def test_mysqldump_with_date(self):
-        result = self.d.detect_inline_date("mysqldump mydb > dump_2024-01-15.sql", "/tmp")
+        result = self.d.detect_inline_date(
+            "mysqldump mydb > dump_2024-01-15.sql", "/tmp"
+        )
         self.assertIsNotNone(result)
 
     def test_mv_with_date(self):
-        result = self.d.detect_inline_date("mv report.pdf report_2024-01-15.pdf", "/tmp")
+        result = self.d.detect_inline_date(
+            "mv report.pdf report_2024-01-15.pdf", "/tmp"
+        )
         self.assertIsNotNone(result)
 
     def test_git_log_since_returns_none(self):
@@ -322,7 +385,7 @@ class TestDetectInlineDate(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_cat_date_file_returns_none(self):
-        result = self.d.detect_inline_date('cat file_2024-01-15.txt', "/tmp")
+        result = self.d.detect_inline_date("cat file_2024-01-15.txt", "/tmp")
         self.assertIsNone(result)
 
     def test_invalid_date_returns_none(self):
@@ -330,7 +393,9 @@ class TestDetectInlineDate(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_too_old_timestamp_filtered(self):
-        result = self.d.detect_inline_date('git commit --date="1990-01-01T10:00:00"', "/tmp")
+        result = self.d.detect_inline_date(
+            'git commit --date="1990-01-01T10:00:00"', "/tmp"
+        )
         self.assertIsNone(result)
 
 
@@ -338,14 +403,15 @@ class TestDetectInlineDate(unittest.TestCase):
 # D. File Stat Detector
 # ---------------------------------------------------------------------------
 
-class TestDetectFileStat(unittest.TestCase):
 
+class TestDetectFileStat(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.d = make_detective(search_root=self.tmp)
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_touch_existing_file(self):
@@ -427,14 +493,15 @@ class TestDetectFileStat(unittest.TestCase):
 # E. Package Manager Detector (mocked filesystem)
 # ---------------------------------------------------------------------------
 
-class TestDetectPackageManager(unittest.TestCase):
 
+class TestDetectPackageManager(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.d = make_detective(search_root=self.tmp)
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_npm_local_install_package_lock(self):
@@ -460,7 +527,9 @@ class TestDetectPackageManager(unittest.TestCase):
     def test_brew_formula_not_installed_returns_none(self):
         """If the Cellar directory doesn't exist, return None."""
         self.d._brew_prefix = self.tmp  # Valid prefix, but no Cellar/nonexistent
-        result = self.d.detect_package_manager("brew install nonexistent_formula_xyz", self.tmp)
+        result = self.d.detect_package_manager(
+            "brew install nonexistent_formula_xyz", self.tmp
+        )
         self.assertIsNone(result)
 
     def test_npm_global_install(self):
@@ -480,7 +549,9 @@ class TestDetectPackageManager(unittest.TestCase):
         We mock the helper directly rather than glob.glob so the test doesn't depend
         on the actual ~/.cargo directory layout.
         """
-        with patch.object(self.d, "_get_cargo_crate_timestamp", return_value=FOUR_YEARS_AGO):
+        with patch.object(
+            self.d, "_get_cargo_crate_timestamp", return_value=FOUR_YEARS_AGO
+        ):
             result = self.d.detect_package_manager("cargo add serde", self.tmp)
         self.assertIsNotNone(result)
         _, label = result
@@ -503,8 +574,8 @@ class TestDetectPackageManager(unittest.TestCase):
 # F. Docker Image Detector
 # ---------------------------------------------------------------------------
 
-class TestDetectDocker(unittest.TestCase):
 
+class TestDetectDocker(unittest.TestCase):
     def setUp(self):
         self.d = make_detective()
 
@@ -524,7 +595,9 @@ class TestDetectDocker(unittest.TestCase):
         """docker build --tag api:latest . should also be detected."""
         iso_ts = datetime.fromtimestamp(FOUR_YEARS_AGO, tz=timezone.utc).isoformat()
         mock_run.return_value = MagicMock(returncode=0, stdout=iso_ts)
-        result = self.d.detect_docker("docker build --tag api:latest .", tempfile.gettempdir())
+        result = self.d.detect_docker(
+            "docker build --tag api:latest .", tempfile.gettempdir()
+        )
         self.assertIsNotNone(result)
         _, label = result
         self.assertIn("api:latest", label)
@@ -533,7 +606,9 @@ class TestDetectDocker(unittest.TestCase):
     def test_docker_inspect_failure_returns_none(self, mock_run):
         """If docker inspect returns non-zero, result should be None."""
         mock_run.return_value = MagicMock(returncode=1, stdout="")
-        result = self.d.detect_docker("docker build -t bad-build .", tempfile.gettempdir())
+        result = self.d.detect_docker(
+            "docker build -t bad-build .", tempfile.gettempdir()
+        )
         self.assertIsNone(result)
 
     def test_non_build_command_returns_none(self):
@@ -546,14 +621,15 @@ class TestDetectDocker(unittest.TestCase):
 # G. Venv / Lockfile Detector
 # ---------------------------------------------------------------------------
 
-class TestDetectVenvLockfile(unittest.TestCase):
 
+class TestDetectVenvLockfile(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.d = make_detective(search_root=self.tmp)
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_bundle_install_gemfile_lock(self):
@@ -607,8 +683,8 @@ class TestDetectVenvLockfile(unittest.TestCase):
 # H. Anchor Interpolation Engine
 # ---------------------------------------------------------------------------
 
-class TestInterpolation(unittest.TestCase):
 
+class TestInterpolation(unittest.TestCase):
     def setUp(self):
         self.d = make_detective()
 
@@ -622,19 +698,23 @@ class TestInterpolation(unittest.TestCase):
         items = []
         for spec in specs:
             if spec is not None:
-                items.append({
-                    "command": f"cmd_{spec}",
-                    "detected_ts": spec,
-                    "detected_source": f"mock@{spec}",
-                    "is_legacy_still": False
-                })
+                items.append(
+                    {
+                        "command": f"cmd_{spec}",
+                        "detected_ts": spec,
+                        "detected_source": f"mock@{spec}",
+                        "is_legacy_still": False,
+                    }
+                )
             else:
-                items.append({
-                    "command": "unresolved",
-                    "detected_ts": None,
-                    "detected_source": None,
-                    "is_legacy_still": True
-                })
+                items.append(
+                    {
+                        "command": "unresolved",
+                        "detected_ts": None,
+                        "detected_source": None,
+                        "is_legacy_still": True,
+                    }
+                )
         return items
 
     def test_gap_between_two_anchors_interpolated(self):
@@ -645,9 +725,9 @@ class TestInterpolation(unittest.TestCase):
         items = self._make_enriched(1000, None, None, None, 2000)
         result = self.d._interpolate(items)
         # Anchors at idx 0 and 4; gaps at idx 1, 2, 3
-        self.assertEqual(result[1]["detected_ts"], int(1000 + (2000 - 1000) * 1/4))
-        self.assertEqual(result[2]["detected_ts"], int(1000 + (2000 - 1000) * 2/4))
-        self.assertEqual(result[3]["detected_ts"], int(1000 + (2000 - 1000) * 3/4))
+        self.assertEqual(result[1]["detected_ts"], int(1000 + (2000 - 1000) * 1 / 4))
+        self.assertEqual(result[2]["detected_ts"], int(1000 + (2000 - 1000) * 2 / 4))
+        self.assertEqual(result[3]["detected_ts"], int(1000 + (2000 - 1000) * 3 / 4))
         # All interpolated items must remain is_legacy_still=True
         self.assertTrue(result[1]["is_legacy_still"])
         self.assertTrue(result[2]["is_legacy_still"])
@@ -715,14 +795,15 @@ class TestInterpolation(unittest.TestCase):
 # I. Full Pipeline — resolve_all()
 # ---------------------------------------------------------------------------
 
-class TestResolveAll(unittest.TestCase):
 
+class TestResolveAll(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.d = make_detective(search_root=self.tmp)
 
     def tearDown(self):
         import shutil
+
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_empty_list(self):
@@ -773,7 +854,9 @@ class TestResolveAll(unittest.TestCase):
         # npm install → resolved (anchor A)
         # ls          → unresolvable → interpolated
         # git clone … → resolved (anchor B)
-        items = make_items("npm install", "ls -la", "git clone https://github.com/u/repo.git repo")
+        items = make_items(
+            "npm install", "ls -la", "git clone https://github.com/u/repo.git repo"
+        )
         result = self.d.resolve_all(items)
 
         ts_a = result[0].get("detected_ts")
@@ -786,13 +869,37 @@ class TestResolveAll(unittest.TestCase):
             self.assertGreaterEqual(ts_mid, min(ts_a, ts_b))
             self.assertLessEqual(ts_mid, max(ts_a, ts_b))
 
+    def test_empty_project_paths_still_resolves_legacy(self):
+        """Ensure resolve_all() still returns legacy commands when project_paths is empty.
+
+        This mirrors the parser's post-callback-failure state: after catching a
+        project_paths callback exception, the parser passes an empty list to
+        TimestampDetective. The Detective must not drop or crash on any commands.
+        """
+        detective = make_detective(search_root=self.tmp, project_paths=[])
+        items = make_items("ls -la", "echo hello", "pwd")
+        result = detective.resolve_all(items)
+
+        # All commands must still be returned
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result[0]["command"], "ls -la")
+        self.assertEqual(result[1]["command"], "echo hello")
+        self.assertEqual(result[2]["command"], "pwd")
+
+        # No real evidence was found, so they remain legacy
+        for item in result:
+            self.assertIn("detected_ts", item)
+            self.assertIn("detected_source", item)
+            self.assertIn("is_legacy_still", item)
+            self.assertTrue(item["is_legacy_still"])
+
 
 # ---------------------------------------------------------------------------
 # H. macOS System Log Detector (Detector 6)
 # ---------------------------------------------------------------------------
 
-class TestDetectMacosSystemLog(unittest.TestCase):
 
+class TestDetectMacosSystemLog(unittest.TestCase):
     def setUp(self):
         self.d = make_detective()
 
@@ -808,7 +915,9 @@ class TestDetectMacosSystemLog(unittest.TestCase):
             "    jq 1.6\n"
         )
         mock_run.return_value = MagicMock(returncode=0, stdout=log_output)
-        result = self.d.detect_macos_system_log("brew install jq", tempfile.gettempdir())
+        result = self.d.detect_macos_system_log(
+            "brew install jq", tempfile.gettempdir()
+        )
         self.assertIsNotNone(result)
         ts, label = result
         self.assertEqual(ts, FOUR_YEARS_AGO)
@@ -821,10 +930,11 @@ class TestDetectMacosSystemLog(unittest.TestCase):
         dt = datetime.fromtimestamp(FOUR_YEARS_AGO)
         git_date = dt.astimezone().strftime("%a %b %d %H:%M:%S %Y %z")
         mock_run.return_value = MagicMock(
-            returncode=0,
-            stdout=f"commit a\nDate:   {git_date}\n\n    msg\n"
+            returncode=0, stdout=f"commit a\nDate:   {git_date}\n\n    msg\n"
         )
-        result = self.d.detect_macos_system_log("brew install homebrew/core/jq@1.6", tempfile.gettempdir())
+        result = self.d.detect_macos_system_log(
+            "brew install homebrew/core/jq@1.6", tempfile.gettempdir()
+        )
         self.assertIsNotNone(result)
         _, label = result
         self.assertIn("jq", label)
@@ -841,9 +951,11 @@ class TestDetectMacosSystemLog(unittest.TestCase):
         last_line = target.strftime("%a %b %d %H:%M")
         mock_run.return_value = MagicMock(
             returncode=0,
-            stdout=f"alice    ttys000   192.168.0.1   {last_line}   still logged in\n"
+            stdout=f"alice    ttys000   192.168.0.1   {last_line}   still logged in\n",
         )
-        result = self.d.detect_macos_system_log("sudo systemctl restart x", tempfile.gettempdir())
+        result = self.d.detect_macos_system_log(
+            "sudo systemctl restart x", tempfile.gettempdir()
+        )
         self.assertIsNotNone(result)
         ts, label = result
 
@@ -872,11 +984,15 @@ class TestDetectMacosSystemLog(unittest.TestCase):
                 self.d._parse_git_log_date("commit x\nDate:   not a date\n")
 
     def test_parse_last_login_ignores_format_mismatches_only(self):
-        self.assertIsNone(self.d._parse_last_login("alice ttys000 Tue Jun 99 09:14 still logged in"))
+        self.assertIsNone(
+            self.d._parse_last_login("alice ttys000 Tue Jun 99 09:14 still logged in")
+        )
 
         with patch("termstory.timestamp_detective.datetime", ParserBugDateTime):
             with self.assertRaises(TypeError):
-                self.d._parse_last_login("alice ttys000 Thu Jun 5 09:14 still logged in")
+                self.d._parse_last_login(
+                    "alice ttys000 Thu Jun 5 09:14 still logged in"
+                )
 
     def test_detect_macos_syslog_missing_file(self):
         """When install.log doesn't exist (e.g. on Linux), return None."""
@@ -890,13 +1006,16 @@ class TestDetectMacosSystemLog(unittest.TestCase):
             stamp = dt.strftime("%Y-%m-%d %H:%M:%S")
             with open(log_path, "w") as f:
                 f.write(f"{stamp}+00 host installd[1]: Installed: jq\n")
-            with patch("os.path.exists", return_value=True), \
-                 patch("builtins.open", return_value=open(log_path)):
+            with (
+                patch("os.path.exists", return_value=True),
+                patch("builtins.open", return_value=open(log_path)),
+            ):
                 ts = self.d.detect_macos_syslog("jq")
             self.assertIsNotNone(ts)
             self.assertEqual(ts, int(dt.timestamp()))
         finally:
             import shutil
+
             shutil.rmtree(tmp, ignore_errors=True)
 
     def test_detect_macos_syslog_timezone_offsets(self):
@@ -905,14 +1024,19 @@ class TestDetectMacosSystemLog(unittest.TestCase):
             log_path = os.path.join(tmp, "install.log")
             # 2026-04-01 04:22:04-07:00 is 1775042524
             with open(log_path, "w") as f:
-                f.write("2026-04-01 04:22:04-07 MacBook-Pro system_installd[584]: Installed \"jq\" (1.6)\n")
-            with patch("os.path.exists", return_value=True), \
-                 patch("builtins.open", return_value=open(log_path)):
+                f.write(
+                    '2026-04-01 04:22:04-07 MacBook-Pro system_installd[584]: Installed "jq" (1.6)\n'
+                )
+            with (
+                patch("os.path.exists", return_value=True),
+                patch("builtins.open", return_value=open(log_path)),
+            ):
                 ts = self.d.detect_macos_syslog("jq")
             self.assertIsNotNone(ts)
             self.assertEqual(ts, 1775042524)
         finally:
             import shutil
+
             shutil.rmtree(tmp, ignore_errors=True)
 
     def test_detect_macos_syslog_package_filter_strict(self):
@@ -921,13 +1045,18 @@ class TestDetectMacosSystemLog(unittest.TestCase):
         try:
             log_path = os.path.join(tmp, "install.log")
             with open(log_path, "w") as f:
-                f.write("2026-04-01 04:22:04-07 MacBook-Pro system_installd[584]: Installed: brew-cask google-chrome\n")
-            with patch("os.path.exists", return_value=True), \
-                 patch("builtins.open", return_value=open(log_path)):
+                f.write(
+                    "2026-04-01 04:22:04-07 MacBook-Pro system_installd[584]: Installed: brew-cask google-chrome\n"
+                )
+            with (
+                patch("os.path.exists", return_value=True),
+                patch("builtins.open", return_value=open(log_path)),
+            ):
                 ts = self.d.detect_macos_syslog("jq")
             self.assertIsNone(ts)
         finally:
             import shutil
+
             shutil.rmtree(tmp, ignore_errors=True)
 
 

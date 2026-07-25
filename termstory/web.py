@@ -10,6 +10,9 @@ from termstory.database import Database
 
 logger = logging.getLogger(__name__)
 
+WEB_REPORT_SESSION_LIMIT = 500
+AI_HIGHLIGHT_LIMIT = 15
+
 
 def get_web_data(db: Database, start_ts: Optional[int] = None, end_ts: Optional[int] = None) -> dict:
     """Gather stats, project list, timeline, and AI highlights from the database, filtering by date range if provided."""
@@ -58,10 +61,9 @@ def get_web_data(db: Database, start_ts: Optional[int] = None, end_ts: Optional[
             
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
-            query += " ORDER BY start_time DESC LIMIT 1000"
-        else:
-            query += " ORDER BY start_time DESC LIMIT 30"
-            
+        query += " ORDER BY start_time DESC LIMIT ?"
+        params.append(WEB_REPORT_SESSION_LIMIT)
+
         cursor.execute(query, params)
         session_ids = [row[0] for row in cursor.fetchall()]
     finally:
@@ -152,7 +154,7 @@ def get_web_data(db: Database, start_ts: Optional[int] = None, end_ts: Optional[
 
     # 4. AI Summary Highlights
     ai_sessions = [s for s in sessions_data if s["ai_summary"]]
-    if len(ai_sessions) < 15:
+    if len(ai_sessions) < AI_HIGHLIGHT_LIMIT:
         # Fetch more from DB if we don't have enough in the filtered set
         conn = db.get_connection()
         try:
@@ -170,7 +172,8 @@ def get_web_data(db: Database, start_ts: Optional[int] = None, end_ts: Optional[
                 params_ai.append(end_ts)
             if conditions_ai:
                 query_ai += " AND " + " AND ".join(conditions_ai)
-            query_ai += " ORDER BY start_time DESC LIMIT 15"
+            query_ai += " ORDER BY start_time DESC LIMIT ?"
+            params_ai.append(AI_HIGHLIGHT_LIMIT)
             
             cursor.execute(query_ai, params_ai)
             extra_ids = [row[0] for row in cursor.fetchall()]
@@ -200,7 +203,7 @@ def get_web_data(db: Database, start_ts: Optional[int] = None, end_ts: Optional[
                 })
 
     ai_sessions.sort(key=lambda x: x["start_time"], reverse=True)
-    highlights_data = ai_sessions[:15]
+    highlights_data = ai_sessions[:AI_HIGHLIGHT_LIMIT]
 
     # 5. Calculate daily activity for the last 90 days for the heatmap
     now_dt = datetime.now()
@@ -242,10 +245,19 @@ def get_web_data(db: Database, start_ts: Optional[int] = None, end_ts: Optional[
     finally:
         conn.close()
 
+    total_sessions = stats["total_sessions"]
+    session_window = {
+        "limit": WEB_REPORT_SESSION_LIMIT,
+        "returned": len(sessions_data),
+        "total": total_sessions,
+        "truncated": total_sessions > len(sessions_data),
+    }
+
     return {
         "stats": stats,
         "projects": projects_data,
         "sessions": sessions_data,
+        "session_window": session_window,
         "highlights": highlights_data,
         "daily_activity": daily_activity
     }
@@ -467,6 +479,18 @@ def generate_and_open_report(
             text-align: right;
             color: var(--text-secondary);
             font-size: 0.9rem;
+        }}
+        .session-window-notice {{
+            display: none;
+            margin: -16px 0 28px;
+            padding: 12px 16px;
+            border-left: 3px solid var(--accent-color);
+            background: var(--panel-bg);
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }}
+        .session-window-notice.visible {{
+            display: block;
         }}
 
         /* Glassmorphism panel */
@@ -839,6 +863,8 @@ def generate_and_open_report(
                 <div style="margin-top: 2px;">Last Ingested: <span id="last-ingested-date">-</span></div>
             </div>
         </header>
+
+        <div id="session-window-notice" class="session-window-notice" role="status" aria-live="polite"></div>
         
         <div class="kpi-grid">
             <div class="panel kpi-card">
@@ -930,6 +956,7 @@ def generate_and_open_report(
         }}
 
         function formatDuration(seconds) {{
+            if (seconds === null || seconds === undefined) return "Ongoing";
             if (seconds <= 0) return "0s";
             if (seconds < 60) return `${{seconds}}s`;
             const hours = Math.floor(seconds / 3600);
@@ -947,6 +974,7 @@ def generate_and_open_report(
         }}
 
         function formatTime(timestamp) {{
+            if (timestamp === null || timestamp === undefined) return "";
             const date = new Date(timestamp * 1000);
             return date.toLocaleTimeString(undefined, {{ hour: '2-digit', minute: '2-digit' }});
         }}
@@ -1165,6 +1193,13 @@ def generate_and_open_report(
             document.getElementById('kpi-commands').textContent = reportData.stats.total_commands;
             document.getElementById('kpi-projects').textContent = reportData.stats.total_projects;
             document.getElementById('kpi-streak').textContent = `${{reportData.stats.streak}} Days`;
+
+            const sessionWindow = reportData.session_window;
+            if (sessionWindow?.truncated) {{
+                const notice = document.getElementById('session-window-notice');
+                notice.textContent = `Showing ${{sessionWindow.returned}} of ${{sessionWindow.total}} sessions.`;
+                notice.classList.add('visible');
+            }}
             
             const searchInput = document.getElementById('search-bar');
             searchInput.addEventListener('input', (e) => {{

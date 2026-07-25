@@ -66,8 +66,10 @@ def classify_command(cmd_text: str) -> str:
             
     return first_token
 
-def format_time(timestamp: int) -> str:
+def format_time(timestamp: Optional[int]) -> str:
     """Format Unix timestamp to 12-hour local time format without leading zeroes, e.g. '9:00 AM'"""
+    if timestamp is None:
+        return "In progress"
     dt = datetime.fromtimestamp(timestamp)
     time_str = dt.strftime("%I:%M %p")
     if time_str.startswith("0"):
@@ -691,6 +693,43 @@ def clean_command_to_memory(cmd_str: str) -> str:
             return "Push changes to remote"
         if "pull" in cmd_str:
             return "Pull latest changes"
+
+        # Interactive rebase
+        rebase_i = re.search(r'rebase\s+(?:-i|--interactive)\s+HEAD~(\d+)', cmd_str)
+        if rebase_i:
+            n = int(rebase_i.group(1))
+            if n == 1:
+                return "Interactive rebase of last commit"
+            return f"Interactive rebase of last {n} commits"
+
+        # Generic interactive rebase (onto a branch/ref, not HEAD~N)
+        if re.search(r'rebase\s+(?:-i|--interactive)\s+', cmd_str) and not re.search(r'HEAD~(\d+)', cmd_str):
+            return "Interactive rebase"
+
+        # Normal rebase onto a branch/ref (avoid matching -i/--interactive already handled above)
+        rebase_onto = re.search(r'(?<!-)rebase\s+(?:onto\s+)?(?!-i|--interactive\b)(\S+)', cmd_str)
+        if rebase_onto:
+            target = rebase_onto.group(1)
+            return f"Rebase onto {target}"
+
+        # Cherry-pick
+        if re.search(r'cherry-pick', cmd_str):
+            return "Cherry-pick commit"
+
+        # Reset variants
+        reset_match = re.search(r'reset\s+(--hard|--soft|--mixed)?\s*HEAD~(\d+)', cmd_str)
+        if reset_match:
+            modifier = reset_match.group(1) or ""
+            n = int(reset_match.group(2))
+            count_str = "previous commit" if n == 1 else f"{n} commits back"
+            if modifier == "--hard":
+                return f"Hard reset to {count_str}" if n == 1 else f"Hard reset {count_str}"
+            elif modifier == "--soft":
+                return f"Soft reset to {count_str}" if n == 1 else f"Soft reset {count_str}"
+            elif modifier == "--mixed":
+                return f"Mixed reset to {count_str}" if n == 1 else f"Mixed reset {count_str}"
+            else:
+                return f"Reset to {count_str}" if n == 1 else f"Reset {count_str}"
             
     # 3. Clean newlines and split chains using quote-aware tokenizer
     clean = cmd_str.replace("\n", " ").strip()
@@ -1614,37 +1653,70 @@ def format_bug_predictions(predictions: str) -> str:
 
 
 def format_bug_predictions_heuristics(sessions: List[Dict]) -> str:
-    """Witty heuristic bug prediction based on session telemetry when LLM is unavailable."""
+    """Witty heuristic bug prediction based on session telemetry when LLM is unavailable.
+
+    The detection branches map the chaotic signals called out in issue #39 —
+    frantic ``git add .``, bypassed tests, and force-pushes / history rewrites —
+    onto plausible, slightly ominous bug categories. Docker and test commands
+    keep their own branches; the git branch is sharpened to distinguish
+    "stage everything" panic from "rewrite history" panic.
+    """
     output_lines = [
         "🔮 [bold magenta]Predictive Bug Fortune Teller (Heuristic Fallback Mode)[/bold magenta]",
         "[dim]────────────────────────────────────────────────────────────────────────────────[/]",
     ]
-    
+
     for s in sessions:
         hour = s.get("hour", 0)
         p_name = s.get("project_name", "Other")
         failed = s.get("failed_commands", [])
         cmds = s.get("commands", [])
-        
-        # Determine likely bug category
-        if any("docker" in cmd.lower() for cmd in cmds):
-            bug = "Docker Port Bind Collision / Zombie Container"
-            desc = "You ran docker multiple times late at night. There's a 90% chance a container is hanging, blocking port 8080 or local databases."
-        elif any("test" in cmd.lower() or "pytest" in cmd.lower() for cmd in cmds):
-            bug = "Mock Leak or Bypassed/Commented Assertion"
-            desc = "Multiple test errors around midnight suggest you got sick of fixing them and either commented one out or disabled a strict check."
-        elif any("amend" in cmd.lower() or "force" in cmd.lower() for cmd in cmds):
+        lowered = [c.lower() for c in cmds]
+
+        # Determine likely bug category. Order matters: the most specific /
+        # dangerous signals are checked first so a session that both runs
+        # docker AND force-pushes is reported by its git crime, not its
+        # container habit.
+        if any("amend" in c or "force" in c or "reset" in c or "revert" in c for c in lowered):
             bug = "Detached HEAD or Git Desynchronization"
-            desc = "Desperate force-pushes or commit amends at this hour are a recipe for history corruption. Look out for branch conflicts."
+            desc = ("Desperate force-pushes or commit amends at this hour are a recipe for "
+                    "history corruption. A teammate will pull your rewritten branch and lose "
+                    "an afternoon. Look out for silent merge conflicts and rebased-over fixes.")
+        elif any("git add ." in c or "git add -a" in c or "git add --all" in c for c in lowered):
+            bug = "Accidentally Committed Secrets / Build Artifacts"
+            desc = (f"You ran `git add .` in a caffeine fugue at {hour:02d}:00. There is a 75% "
+                    f"chance your `.env`, `node_modules/`, or a 400MB log file is now in history. "
+                    f"Monday-you will be doing `git filter-repo` instead of standup.")
+        elif any(
+            ("deselect" in c) or ("--ignore" in c) or ("--skip" in c)
+            or (" -k " in c and "not" in c) or ("skipif" in c) or ("disabled_tests" in c) or ("disable_tests" in c)
+            for c in lowered
+        ):
+            bug = "Silently Bypassed Test / Mock Leak"
+            desc = ("You deselected or skipped a failing test late at night instead of fixing it. "
+                    "That test was guarding a real edge case. It will fail in production at 3 AM "
+                    "next Thursday, and the on-call will be you.")
+        elif any("test" in c or "pytest" in c or "jest" in c or "vitest" in c for c in lowered):
+            bug = "Mock Leak or Commented-Out Assertion"
+            desc = ("Multiple test runs around midnight suggest you got sick of fixing a flaky "
+                    "suite and either commented an assertion out or left a mock installed. The "
+                    "next CI green is a lie.")
+        elif any("docker" in c for c in lowered):
+            bug = "Docker Port Bind Collision / Zombie Container"
+            desc = ("You ran docker multiple times late at night. There's a 90% chance a container "
+                    "is still holding port 8080 or your local Postgres. `docker ps` will name your "
+                    "ghosts.")
         else:
-            bug = "Sleep-Deprived Off-by-One or Typos"
-            desc = f"Your brain was at 10% capacity at {hour}:00. Double check your `<` vs `<=` boundaries and environment variable spelling."
-            
+            bug = "Sleep-Deprived Off-by-One or Typo"
+            desc = (f"Your brain was at 10% capacity at {hour:02d}:00. Double-check your `<` vs "
+                    f"`<=` boundaries, your `==` vs `=` assignments, and whether you spelled the "
+                    f"env var the same way in two files.")
+
         output_lines.append(f"[bold cyan]Session {s['session_id']} ({hour:02d}:00)[/] in [yellow]{p_name}[/]")
         output_lines.append(f"  🚨 [bold red]Predicted Bug:[/] {bug}")
         output_lines.append(f"  📝 [italic]{desc}[/italic]")
         output_lines.append("")
-        
+
     output_lines.append("[dim]────────────────────────────────────────────────────────────────────────────────[/]")
     return render_to_string(Text.from_markup("\n".join(output_lines).strip()))
 
