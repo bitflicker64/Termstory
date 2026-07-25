@@ -916,7 +916,14 @@ def predict_bugs_from_sessions(
     provider: str,
     timeout: Optional[float] = None
 ) -> Optional[str]:
-    """Query LLM to predict potential bugs based on late-night chaotic session command telemetry."""
+    """Query LLM to predict potential bugs based on late-night chaotic session command telemetry.
+
+    The prompt explicitly directs the model to look for the chaotic signals
+    called out in issue #39 — frantic ``git add .``, bypassed / skipped
+    tests, and force-pushes or history rewrites — and to frame its
+    predictions as ominous, mystical fortunes rather than dry bug reports.
+    Returns ``None`` when AI is disabled or no sessions are supplied.
+    """
     if provider == "disabled" or not sessions_data:
         return None
         
@@ -937,13 +944,19 @@ def predict_bugs_from_sessions(
     payload = "\n\n".join(session_blocks)
     
     prompt = (
-        "You are the 'Predictive Bug Fortune Teller', a developer memory engine sub-module designed to foresee bugs.\n"
+        "You are the 'Predictive Bug Fortune Teller 🔮', a developer memory engine sub-module designed to foresee bugs.\n"
         "Analyze the following late-night chaotic work sessions. These sessions were conducted in the middle of the night, "
         "often with failing commands, repeating test cycles, or desperate commit amends.\n"
         "Your task is to predict the potential bugs/issues the developer likely introduced during these sessions.\n\n"
+        "CHAOS SIGNALS TO WATCH FOR (from issue #39):\n"
+        "  - Frantic `git add .` / `git add --all` → likely committed secrets, .env files, build artifacts, or node_modules.\n"
+        "  - Bypassed tests (`pytest --deselect`, `pytest -k 'not ...'`, `--ignore`, `--skip`, `@skip`) → a real edge case is now unguarded.\n"
+        "  - Force-pushes / history rewrites (`git push --force`, `git push -f`, `git commit --amend`, `git reset --hard`) → detached HEAD, rebased-over fixes, silent merge conflicts.\n"
+        "  - Repeated failing commands → sleep-deprived off-by-one errors, typos in env vars, reversed boolean logic.\n"
+        "  - Docker churn at 2 AM → zombie containers holding ports, mismatched host/container arch.\n\n"
         "YOUR CORE GOALS:\n"
-        "1. Predict 1-2 highly plausible, funny, yet technically accurate bug types (e.g. race conditions, off-by-one errors, unresolved merge markers, config path typos, logic reversals) for each chaotic session.\n"
-        "2. Formulate your predictions as a warning in a sarcastic, developer-to-developer style.\n"
+        "1. Predict 1-2 highly plausible, funny, yet technically accurate bug types (e.g. race conditions, off-by-one errors, unresolved merge markers, config path typos, logic reversals, leaked secrets, zombie containers) for each chaotic session.\n"
+        "2. Formulate your predictions as ominous, mystical fortunes — the tone is a crystal-ball warning, not a bug tracker. Sarcastic developer-to-developer voice.\n"
         "3. Output a clean, high-density, CLI-styled console block using ASCII symbols. No markdown formatting, no code blocks, no conversational preamble/filler.\n\n"
         "Telemetry Payload:\n"
         f"{payload}\n\n"

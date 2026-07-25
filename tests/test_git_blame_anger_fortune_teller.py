@@ -212,7 +212,183 @@ def test_formatters():
     assert "Heuristic Fallback Mode" in output_bugs_h
     assert "Predicted Bug:" in output_bugs_h
 
+def test_format_bug_predictions_heuristics_force_push_branch():
+    """Force-push / amend / reset / revert sessions predict git desync bugs."""
+    sessions = [
+        {
+            "session_id": 42,
+            "hour": 2,
+            "project_name": "termstory",
+            "failed_commands": [],
+            "commands": ["git push --force origin main", "git commit --amend"],
+            "commits": [],
+        }
+    ]
+    out = format_bug_predictions_heuristics(sessions)
+    assert "Detached HEAD or Git Desynchronization" in out
+    assert "history corruption" in out
 
+
+def test_format_bug_predictions_heuristics_git_add_all_branch():
+    """Frantic `git add .` predicts committed secrets / artifacts."""
+    sessions = [
+        {
+            "session_id": 7,
+            "hour": 3,
+            "project_name": "side-project",
+            "failed_commands": [],
+            "commands": ["git add .", "git commit -m wip"],
+            "commits": [],
+        }
+    ]
+    out = format_bug_predictions_heuristics(sessions)
+    assert "Accidentally Committed Secrets" in out
+    assert "git filter-repo" in out
+
+
+def test_format_bug_predictions_heuristics_test_bypass_branch():
+    """`pytest --deselect` / `-k not` / `--skip` predict silently bypassed tests."""
+    sessions = [
+        {
+            "session_id": 9,
+            "hour": 1,
+            "project_name": "termstory",
+            "failed_commands": [],
+            "commands": ["pytest --deselect tests/test_hard.py", "pytest -k 'not slow'"],
+            "commits": [],
+        }
+    ]
+    out = format_bug_predictions_heuristics(sessions)
+    assert "Silently Bypassed Test" in out
+
+
+def test_format_bug_predictions_heuristics_docker_branch():
+    """Docker churn predicts zombie containers."""
+    sessions = [
+        {
+            "session_id": 11,
+            "hour": 2,
+            "project_name": "infra",
+            "failed_commands": [],
+            "commands": ["docker compose up -d", "docker ps"],
+            "commits": [],
+        }
+    ]
+    out = format_bug_predictions_heuristics(sessions)
+    assert "Docker Port Bind Collision" in out
+
+
+def test_format_bug_predictions_heuristics_off_by_one_fallback():
+    """No matching chaos signal falls through to the sleep-deprived off-by-one branch."""
+    sessions = [
+        {
+            "session_id": 13,
+            "hour": 4,
+            "project_name": "misc",
+            "failed_commands": [],
+            "commands": ["ls -la", "cat README.md", "echo hi"] * 4,
+            "commits": [],
+        }
+    ]
+    out = format_bug_predictions_heuristics(sessions)
+    assert "Sleep-Deprived Off-by-One" in out
+
+
+def test_detect_late_night_chaotic_sessions_excludes_legacy(tmp_path):
+    """Legacy/synthetic sessions must be excluded from chaotic detection (issue #39 pitfall)."""
+    db_file = tmp_path / "test_legacy.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    late_night_start = int(datetime(2026, 6, 16, 2, 0, 0).timestamp())
+    p = Project(
+        id=1, name="Project Alpha", path="~/alpha",
+        first_seen=late_night_start, last_seen=late_night_start,
+        session_count=1, total_time=1,
+    )
+
+    # 10 legacy commands — every command is_legacy=True, so the whole
+    # session is legacy and must be filtered out by the detector.
+    legacy_cmds = [
+        Command(
+            id=i, timestamp=late_night_start + i,
+            command=f"git push --force {i}",  # desperate pattern, but legacy
+            exit_code=1, session_id=1, project_id=1, is_legacy=True,
+        )
+        for i in range(10)
+    ]
+    s = Session(
+        id=1, start_time=late_night_start, end_time=late_night_start + 100,
+        duration_seconds=100, project_id=1, commands=legacy_cmds,
+    )
+    db.save_data([p], [s], legacy_cmds)
+
+    sessions = detect_late_night_chaotic_sessions(db)
+    assert sessions == [], "legacy/synthetic late-night session should be excluded"
+
+
+def test_detect_late_night_chaotic_sessions_frantic_git_add(tmp_path):
+    """A single frantic `git add .` in a late-night session marks it chaotic."""
+    db_file = tmp_path / "test_git_add.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    late_night_start = int(datetime(2026, 6, 16, 3, 0, 0).timestamp())
+    p = Project(
+        id=1, name="Project Beta", path="~/beta",
+        first_seen=late_night_start, last_seen=late_night_start,
+        session_count=1, total_time=1,
+    )
+    # Only 1 command — below the total_count>=10 threshold — but it's a
+    # desperate `git add .`, so has_desperate_command should flag it.
+    cmds = [
+        Command(
+            id=0, timestamp=late_night_start,
+            command="git add .", exit_code=0,
+            session_id=1, project_id=1, is_legacy=False,
+        )
+    ]
+    s = Session(
+        id=1, start_time=late_night_start, end_time=late_night_start + 30,
+        duration_seconds=30, project_id=1, commands=cmds,
+    )
+    db.save_data([p], [s], cmds)
+
+    sessions = detect_late_night_chaotic_sessions(db)
+    assert len(sessions) == 1
+    assert sessions[0]["session_id"] == 1
+    assert "git add ." in sessions[0]["commands"]
+
+
+def test_detect_late_night_chaotic_sessions_test_bypass(tmp_path):
+    """A `pytest --deselect` in a late-night session marks it chaotic."""
+    db_file = tmp_path / "test_bypass.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    late_night_start = int(datetime(2026, 6, 16, 1, 0, 0).timestamp())
+    p = Project(
+        id=1, name="Project Gamma", path="~/gamma",
+        first_seen=late_night_start, last_seen=late_night_start,
+        session_count=1, total_time=1,
+    )
+    cmds = [
+        Command(
+            id=0, timestamp=late_night_start,
+            command="pytest --deselect tests/test_flaky.py",
+            exit_code=0, session_id=1, project_id=1, is_legacy=False,
+        )
+    ]
+    s = Session(
+        id=1, start_time=late_night_start, end_time=late_night_start + 30,
+        duration_seconds=30, project_id=1, commands=cmds,
+    )
+    db.save_data([p], [s], cmds)
+
+    sessions = detect_late_night_chaotic_sessions(db)
+    assert len(sessions) == 1
+    assert "deselect" in sessions[0]["commands"][0].lower()
+    
 def test_cli_commands(tmp_path, monkeypatch):
     monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2026-06-16 12:00:00")
     db_file = tmp_path / "test_cli.db"
