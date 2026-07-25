@@ -432,6 +432,15 @@ def analyze_all(db=None) -> Dict:
 def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
     """Detect late-night sessions (between 11 PM and 5 AM) that exhibit chaotic characteristics
     (e.g., high command frequency, high failure count, or specific developer desperation patterns).
+
+    Legacy / synthetic sessions are excluded: a session whose every command is flagged
+    ``is_legacy`` (e.g. imported from a recovered shell history with imprecise timestamps)
+    is dropped before chaos scoring, matching the behaviour of the other insight functions
+    (``calculate_streak``, ``vampire_index``, ``rpg_class``).
+
+    Desperation patterns cover the signals called out in issue #39: frantic ``git add .``,
+    bypassed tests (``--deselect``, ``-k not``, ``--ignore``, ``--skip``), and force-pushes /
+    history rewrites (``--force``, ``-f``, ``--amend``, ``reset``, ``revert``).
     """
     if db is None:
         from termstory.config import get_db_path
@@ -442,11 +451,28 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
     try:
         cursor = conn.cursor()
 
-        # Load all sessions
+        # Load all sessions, including the derived is_legacy flag.
+        #
+        # A session is "legacy" when ALL of its commands are legacy (e.g.
+        # synthetic timestamps imported from a recovered shell history).
+        # The other insight functions (calculate_streak, vampire_index,
+        # rpg_class) all exclude legacy sessions, and the issue's "Pitfalls"
+        # section explicitly calls out that the fortune-teller must respect
+        # the is_legacy flag too. Without this filter, synthetic late-night
+        # sessions (which are common because imported history often has
+        # imprecise timestamps) would dominate the chaotic-session set and
+        # produce nonsense predictions.
+        #
+        # The subquery mirrors the pattern used at insights.py:321:
+        #   (SELECT IFNULL(SUM(c.is_legacy) = COUNT(c.id), 0) FROM commands c
+        #    WHERE c.session_id = s.id) AS is_legacy
         cursor.execute("""
-            SELECT id, start_time, end_time, duration_seconds, project_id
-            FROM sessions
-            ORDER BY start_time DESC
+            SELECT s.id, s.start_time, s.end_time, s.duration_seconds, s.project_id,
+                   (SELECT IFNULL(SUM(c.is_legacy) = COUNT(c.id), 0)
+                      FROM commands c
+                     WHERE c.session_id = s.id) AS is_legacy
+            FROM sessions s
+            ORDER BY s.start_time DESC
         """)
         session_rows = cursor.fetchall()
 
@@ -460,7 +486,11 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
         candidate_sessions = []
         candidate_ids = []
         for row in session_rows:
-            s_id, start, end, duration, p_id = row
+            s_id, start, end, duration, p_id, is_legacy = row
+            # Exclude legacy/synthetic sessions — same behaviour as the
+            # other insight functions (see insights.py:371, 723, 773).
+            if is_legacy:
+                continue
             try:
                 dt = datetime.fromtimestamp(start)
             except (OSError, ValueError, OverflowError):
@@ -506,7 +536,41 @@ def detect_late_night_chaotic_sessions(db=None) -> List[Dict]:
             failed_count = len(failed_cmds)
             total_count = len(commands)
 
-            has_desperate_command = any("amend" in cmd or "revert" in cmd or "force" in cmd or "reset" in cmd for cmd in commands)
+            # Desperation patterns — expanded to cover the exact signals the
+            # issue calls out: "frantic git add .", "bypassed tests", and
+            # "fast force-pushes". Matching is case-insensitive so we catch
+            # `git push --force`, `git push -f`, `git commit --amend`,
+            # `git add .`, `git reset --hard`, `git revert`, plus test-
+            # bypass flags like `--deselect`, `-k not`, `--ignore`,
+            # `@skip`, and `DISABLE_TESTS`.
+            lowered = [cmd.lower() for cmd in commands]
+            has_desperate_command = any(
+                kw in lc
+                for lc in lowered
+                for kw in (
+                    "amend",
+                    "revert",
+                    "force",
+                    "reset",
+                    # frantic `git add .` — staging everything in a hurry
+                    "git add .",
+                    "git add -a",
+                    "git add --all",
+                    # test bypasses
+                    "deselect",
+                    "--ignore",
+                    "skipif",
+                    "disabled_tests",
+                    "disable_tests",
+                )
+            ) or any(
+                # `-k not` / `-k "not ..."` style pytest deselectors and
+                # `npm test -- --skip` style flags. Checked separately so
+                # we don't false-positive on commands that merely contain
+                # the substring "not".
+                (" -k " in lc and "not" in lc) or ("--skip" in lc)
+                for lc in lowered
+            )
             is_chaotic = (total_count >= 10 or failed_count >= 3 or has_desperate_command)
 
             if is_chaotic:

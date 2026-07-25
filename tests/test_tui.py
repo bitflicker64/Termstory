@@ -339,6 +339,77 @@ async def test_tui_action_show_onboarding():
 
 
 @pytest.mark.asyncio
+async def test_tui_skips_onboarding_when_ai_already_configured():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = os.path.join(tmp_dir, "test.db")
+        db = Database(db_path)
+        db.init_db()
+
+        app = TermStoryWorkspace(
+            db,
+            days_limit=30,
+            config_override={
+                "has_seen_onboarding": False,
+                "ai_enabled": True,
+                "active_provider": "groq",
+                "providers": {
+                    "groq": {
+                        "api_key": "dummy-key"
+                    }
+                },
+            },
+        )
+
+        async with app.run_test():
+            assert not isinstance(app.screen, OnboardingScreen)
+
+
+@pytest.mark.asyncio
+async def test_tui_shows_onboarding_when_api_key_missing():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = os.path.join(tmp_dir, "test.db")
+        db = Database(db_path)
+        db.init_db()
+
+        app = TermStoryWorkspace(
+            db,
+            days_limit=30,
+            config_override={
+                "has_seen_onboarding": False,
+                "ai_enabled": True,
+                "active_provider": "groq",
+                "providers": {
+                    "groq": {}
+                },
+            },
+        )
+
+        async with app.run_test():
+            assert isinstance(app.screen, OnboardingScreen)
+
+
+@pytest.mark.asyncio
+async def test_tui_shows_onboarding_when_provider_disabled():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = os.path.join(tmp_dir, "test.db")
+        db = Database(db_path)
+        db.init_db()
+
+        app = TermStoryWorkspace(
+            db,
+            days_limit=30,
+            config_override={
+                "has_seen_onboarding": False,
+                "ai_enabled": True,
+                "active_provider": "disabled",
+            },
+        )
+
+        async with app.run_test():
+            assert isinstance(app.screen, OnboardingScreen)
+
+
+@pytest.mark.asyncio
 async def test_tui_onboarding_click_disabled():
     """Verify 'Keep Local Only' (ctrl+d -> action_choose_disabled) sets
     has_seen_onboarding=True, ai_enabled=False on OnboardingScreen.config.
