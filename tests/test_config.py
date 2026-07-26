@@ -1,10 +1,9 @@
 import os
 import json
-import pytest
 import multiprocessing
 from unittest.mock import patch
 
-from termstory.config import load_config, save_config, get_config_path
+from termstory.config import load_config, save_config
 
 
 def test_load_config_corrupted_file(tmp_path):
@@ -28,7 +27,10 @@ def test_load_config_missing_file(tmp_path):
         assert config["max_query_log"] == 10000
 
 def test_save_config_error_handling(tmp_path):
-    with patch("termstory.config.get_config_path", return_value="/invalid/path/that/does/not/exist/config.json"):
+    config_file = tmp_path / "config.json"
+    lock_file = tmp_path / "config.lock"
+    with patch("termstory.config.get_config_path", return_value=str(config_file)), \
+         patch("termstory.config.get_config_lock_path", return_value=str(lock_file)):
         save_config({"test": "data"})  # Should silently pass
 
 def test_env_var_overrides(tmp_path, monkeypatch):
@@ -55,9 +57,10 @@ def test_env_var_overrides(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _reader_worker(config_path, queue, iterations):
+def _reader_worker(config_path, lock_path, queue, iterations):
     import termstory.config as cfg_mod
     cfg_mod.get_config_path = lambda: config_path
+    cfg_mod.get_config_lock_path = lambda: lock_path
 
     for _ in range(iterations):
         try:
@@ -78,9 +81,10 @@ def _reader_worker(config_path, queue, iterations):
     queue.put("ok")
 
 
-def _writer_worker(config_path, queue, iterations):
+def _writer_worker(config_path, lock_path, queue, iterations):
     import termstory.config as cfg_mod
     cfg_mod.get_config_path = lambda: config_path
+    cfg_mod.get_config_lock_path = lambda: lock_path
 
     states = [
         {"ai_enabled": True,  "has_seen_onboarding": True},
@@ -97,9 +101,10 @@ def _writer_worker(config_path, queue, iterations):
     queue.put("ok")
 
 
-def _combined_reader_worker(config_path, queue, iterations):
+def _combined_reader_worker(config_path, lock_path, queue, iterations):
     import termstory.config as cfg_mod
     cfg_mod.get_config_path = lambda: config_path
+    cfg_mod.get_config_lock_path = lambda: lock_path
 
     for _ in range(iterations):
         try:
@@ -120,12 +125,31 @@ def _combined_reader_worker(config_path, queue, iterations):
     queue.put("ok")
 
 
+def _migration_reader(path, lk_path, queue, iterations):
+    import termstory.config as cfg_mod
+    cfg_mod.get_config_path = lambda: path
+    cfg_mod.get_config_lock_path = lambda: lk_path
+
+    for _ in range(iterations):
+        try:
+            config = cfg_mod.load_config()
+            assert isinstance(config, dict)
+            assert config.get("active_provider") == "groq"
+            assert config.get("providers", {}).get("groq", {}).get("api_key") == "secret-key-1"
+        except (json.JSONDecodeError, OSError, RecursionError, ValueError, AssertionError):
+            queue.put("corrupted")
+            return
+
+    queue.put("ok")
+
+
 class TestConcurrentConfigAccess:
     """Regression tests for Issue #338."""
 
     def test_concurrent_readers_never_observe_invalid_json(self, tmp_path):
         ctx = multiprocessing.get_context("spawn")
         config_path = str(tmp_path / "config.json")
+        lock_path = str(tmp_path / "config.lock")
 
         with open(config_path, "w", encoding="utf-8") as fh:
             json.dump({"ai_enabled": True, "has_seen_onboarding": True}, fh)
@@ -138,11 +162,11 @@ class TestConcurrentConfigAccess:
         read_queue = ctx.Queue()
 
         writers = [
-            ctx.Process(target=_writer_worker, args=(config_path, write_queue, iterations))
+            ctx.Process(target=_writer_worker, args=(config_path, lock_path, write_queue, iterations))
             for _ in range(num_writers)
         ]
         readers = [
-            ctx.Process(target=_reader_worker, args=(config_path, read_queue, iterations * 10))
+            ctx.Process(target=_reader_worker, args=(config_path, lock_path, read_queue, iterations * 10))
             for _ in range(num_readers)
         ]
 
@@ -177,6 +201,7 @@ class TestConcurrentConfigAccess:
     def test_concurrent_writers_do_not_corrupt_config(self, tmp_path):
         ctx = multiprocessing.get_context("spawn")
         config_path = str(tmp_path / "config.json")
+        lock_path = str(tmp_path / "config.lock")
 
         with open(config_path, "w", encoding="utf-8") as fh:
             json.dump({"ai_enabled": False, "has_seen_onboarding": False}, fh)
@@ -186,7 +211,7 @@ class TestConcurrentConfigAccess:
 
         write_queue = ctx.Queue()
         writers = [
-            ctx.Process(target=_writer_worker, args=(config_path, write_queue, iterations))
+            ctx.Process(target=_writer_worker, args=(config_path, lock_path, write_queue, iterations))
             for _ in range(num_writers)
         ]
 
@@ -209,6 +234,7 @@ class TestConcurrentConfigAccess:
     def test_specific_keys_preserved_after_concurrent_access(self, tmp_path):
         ctx = multiprocessing.get_context("spawn")
         config_path = str(tmp_path / "config.json")
+        lock_path = str(tmp_path / "config.lock")
 
         seed = {"ai_enabled": True, "has_seen_onboarding": True}
         with open(config_path, "w", encoding="utf-8") as fh:
@@ -222,11 +248,11 @@ class TestConcurrentConfigAccess:
         read_queue = ctx.Queue()
 
         writers = [
-            ctx.Process(target=_writer_worker, args=(config_path, write_queue, iterations))
+            ctx.Process(target=_writer_worker, args=(config_path, lock_path, write_queue, iterations))
             for _ in range(num_writers)
         ]
         readers = [
-            ctx.Process(target=_combined_reader_worker, args=(config_path, read_queue, iterations * 10))
+            ctx.Process(target=_combined_reader_worker, args=(config_path, lock_path, read_queue, iterations * 10))
             for _ in range(num_readers)
         ]
 
@@ -258,6 +284,7 @@ class TestConcurrentConfigAccess:
     def test_config_json_is_always_valid_json(self, tmp_path):
         ctx = multiprocessing.get_context("spawn")
         config_path = str(tmp_path / "config.json")
+        lock_path = str(tmp_path / "config.lock")
 
         with open(config_path, "w", encoding="utf-8") as fh:
             json.dump({"ai_enabled": False}, fh)
@@ -265,7 +292,7 @@ class TestConcurrentConfigAccess:
         iterations = 300
         write_queue = ctx.Queue()
         writers = [
-            ctx.Process(target=_writer_worker, args=(config_path, write_queue, iterations))
+            ctx.Process(target=_writer_worker, args=(config_path, lock_path, write_queue, iterations))
             for _ in range(3)
         ]
 
@@ -280,3 +307,38 @@ class TestConcurrentConfigAccess:
         assert isinstance(final, dict)
         assert "ai_enabled" in final
         assert "has_seen_onboarding" in final
+
+    def test_concurrent_migration_does_not_lose_updates(self, tmp_path):
+        ctx = multiprocessing.get_context("spawn")
+        config_path = str(tmp_path / "config.json")
+        lock_path = str(tmp_path / "config.lock")
+
+        seed = {"ai_provider": "groq", "groq_api_key": "secret-key-1"}
+        with open(config_path, "w", encoding="utf-8") as fh:
+            json.dump(seed, fh)
+
+        num_readers = 3
+        iterations = 50
+        queue = ctx.Queue()
+        readers = [
+            ctx.Process(target=_migration_reader, args=(config_path, lock_path, queue, iterations))
+            for _ in range(num_readers)
+        ]
+
+        for p in readers:
+            p.start()
+        for p in readers:
+            p.join(timeout=30)
+            assert not p.exitcode, "migration reader process crashed"
+
+        results = []
+        while not queue.empty():
+            results.append(queue.get_nowait())
+        assert len(results) == num_readers
+        assert all(r == "ok" for r in results), f"Concurrent migration lost updates: {results}"
+
+        with open(config_path, "r", encoding="utf-8") as fh:
+            parsed = json.load(fh)
+        assert isinstance(parsed, dict)
+        assert parsed.get("active_provider") == "groq"
+        assert parsed.get("providers", {}).get("groq", {}).get("api_key") == "secret-key-1"

@@ -1,8 +1,8 @@
 import os
 import json
-import sys
 import logging
 import tempfile
+import random
 from typing import List, Any
 
 if os.name == "nt":
@@ -13,18 +13,50 @@ else:
 logger = logging.getLogger(__name__)
 
 def _acquire_lock(fd: int) -> None:
-    """Acquire an exclusive file lock (cross-platform)."""
+    """Acquire an exclusive file lock (cross-platform).
+
+    On Windows, retry on transient errors caused by concurrent lock
+    contention (`EACCES` and `EDEADLK`). Under high contention we back
+    off with jitter to reduce thundering-herd retries.
+    """
     if os.name == "nt":
-        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        last_err = None
+        for attempt in range(100):
+            try:
+                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                return
+            except OSError as e:
+                last_err = e
+                if e.errno not in (13, 36):  # EACCES / EDEADLK
+                    raise
+                import time
+                delay = min(0.01 + (attempt * 0.005) + (random.random() * 0.01), 0.25)
+                time.sleep(delay)
+        raise last_err  # type: ignore[misc]
     else:
         fcntl.flock(fd, fcntl.LOCK_EX)
 
 def _release_lock(fd: int) -> None:
     """Release the file lock."""
-    if os.name == "nt":
-        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-    else:
-        fcntl.flock(fd, fcntl.LOCK_UN)
+    try:
+        if os.name == "nt":
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        # On Windows, unlocking an fd that never acquired the lock raises
+        # PermissionError. Swallow it so cleanup cannot crash the caller.
+        pass
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge override into base. Override wins for leaf values."""
+    result = dict(base)
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
 
 def get_app_dir(dir_type: str = "data") -> str:
     """Get the appropriate application directory.
@@ -163,9 +195,72 @@ def set_config_value(config: dict, path: str, value: Any) -> None:
         curr = curr[part]
     curr[parts[-1]] = value
 
+def _open_lock_file(lock_path: str) -> int:
+    """Open the lock file, retrying on transient permission errors (Windows).
+
+    Under extreme contention (many processes, short-lived locks) Windows
+    can transiently reject open() against the lock file. We retry with
+    linear backoff and jitter so callers see eventual success instead of
+    spurious permission errors.
+    """
+    fd = None
+    last_err = None
+    for attempt in range(100):
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+            return fd
+        except OSError as e:
+            last_err = e
+            if e.errno != 13:  # EACCES / Permission denied
+                raise
+            import time
+            # Linear backoff with jitter, capped at 250ms
+            delay = min(0.01 + (attempt * 0.005) + (random.random() * 0.01), 0.25)
+            time.sleep(delay)
+    raise last_err  # type: ignore[misc]
+
+
+def _atomic_write_config(config_path: str, config: dict, lock_fd: int) -> None:
+    """Write config to disk atomically using an already-acquired lock_fd.
+
+    The caller is responsible for holding and releasing the lock around this call.
+    """
+    tmp_path = None
+    try:
+        dir_name = os.path.dirname(config_path)
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
+
+        fd_tmp, tmp_path = tempfile.mkstemp(
+            dir=dir_name or ".", prefix=".config.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd_tmp, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, config_path)
+            tmp_path = None
+        except Exception as e:
+            logger.error("Failed to write config file '%s': %s", config_path, e)
+        finally:
+            if tmp_path is not None and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+    except OSError as e:
+        logger.error("Failed to write config file '%s': %s", config_path, e)
+
+
+class _ConfigLockError(Exception):
+    """Raised when the config lock cannot be acquired after retries."""
+
+
 def load_config() -> dict:
     """Load configuration dictionary from disk, returning defaults and migrating legacy config if needed"""
     config_path = get_config_path()
+    lock_path = get_config_lock_path()
     defaults = {
         "ai_enabled": False,
         "active_provider": "disabled",  # "groq", "openai", "ollama", "disabled"
@@ -213,109 +308,130 @@ def load_config() -> dict:
 ],
         "nfs_timeout_cache_ttl": 60,
     }
-    
-    config = {}
 
-    if os.path.exists(config_path):
-        fd = None
-        f = None
-        try:
-            fd = os.open(config_path, os.O_RDONLY)
-            _acquire_lock(fd)
-            f = os.fdopen(fd, "r", encoding="utf-8")
-            config = json.load(f)
-        except (
-            json.JSONDecodeError,
-            UnicodeDecodeError,
-            OSError,
-            ValueError,
-            RecursionError,
-        ) as e:
-            logger.warning(
-                "Config file '%s' contains invalid data and will be ignored (%s).",
-                config_path,
-                e,
-            )
-            config = {}
+    # The shared lock covers the entire read→migrate→save sequence so that
+    # concurrent readers and writers (and concurrent migrations) cannot
+    # interleave and overwrite each other.
+    fd = None
+    try:
+        fd = _open_lock_file(lock_path)
+        _acquire_lock(fd)
+    except OSError as e:
+        logger.warning("Could not acquire config lock: %s", e)
+        return dict(defaults)
 
-        except OSError as e:
-            logger.warning(
-                "Could not read config file '%s': %s",
-                config_path,
-                e,
-            )
-            config = {}
-        finally:
+    try:
+        config = {}
+
+        if os.path.exists(config_path):
+            f = None
+            fd_config = None
             try:
-                if fd is not None:
-                    _release_lock(fd)
+                fd_config = os.open(config_path, os.O_RDONLY)
+                f = os.fdopen(fd_config, "r", encoding="utf-8")
+                config = json.load(f)
+            except (
+                json.JSONDecodeError,
+                UnicodeDecodeError,
+                ValueError,
+                RecursionError,
+            ) as e:
+                logger.warning(
+                    "Config file '%s' contains invalid data and will be ignored (%s).",
+                    config_path,
+                    e,
+                )
+                config = {}
+            except OSError as e:
+                logger.warning(
+                    "Could not read config file '%s': %s",
+                    config_path,
+                    e,
+                )
+                config = {}
+            finally:
+                if f is not None:
+                    try:
+                        f.close()
+                    except OSError:
+                        pass
+                elif fd_config is not None:
+                    try:
+                        os.close(fd_config)
+                    except OSError:
+                        pass
+
+        if not isinstance(config, dict):
+            config = {}
+
+        # 2. Perform legacy key migrations (while holding the shared lock)
+        migrated = False
+        if "ai_provider" in config:
+            config["active_provider"] = config.pop("ai_provider")
+            migrated = True
+        if "groq_api_key" in config:
+            if "providers" not in config:
+                config["providers"] = {}
+            if "groq" not in config["providers"]:
+                config["providers"]["groq"] = {}
+            config["providers"]["groq"]["api_key"] = config.pop("groq_api_key")
+            migrated = True
+
+        if "api_base_url" in config:
+            val = config.pop("api_base_url")
+            prov = config.get("active_provider") or "groq"
+            if prov == "disabled":
+                prov = "groq"
+            if "providers" not in config:
+                config["providers"] = {}
+            if prov not in config["providers"]:
+                config["providers"][prov] = {}
+            config["providers"][prov]["api_base_url"] = val
+            migrated = True
+
+        if "model_name" in config:
+            val = config.pop("model_name")
+            prov = config.get("active_provider") or "groq"
+            if prov == "disabled":
+                prov = "groq"
+            if "providers" not in config:
+                config["providers"] = {}
+            if prov not in config["providers"]:
+                config["providers"][prov] = {}
+            config["providers"][prov]["model_name"] = val
+            migrated = True
+
+        # 3. Recursively merge defaults
+        def merge_defaults(tgt: dict, src: dict) -> bool:
+            changed = False
+            for k, v in src.items():
+                if k not in tgt:
+                    tgt[k] = json.loads(json.dumps(v))
+                    changed = True
+                elif isinstance(v, dict) and isinstance(tgt[k], dict):
+                    if merge_defaults(tgt[k], v):
+                        changed = True
+            return changed
+
+        defaults_merged = merge_defaults(config, defaults)
+
+        # 4. Persist any changes atomically while still holding the same lock.
+        #    _atomic_write_config reuses the already-acquired lock_fd, so we
+        #    do not attempt to re-acquire it here.
+        if migrated or defaults_merged:
+            _atomic_write_config(config_path, config, fd)
+
+    finally:
+        if fd is not None:
+            try:
+                _release_lock(fd)
             except OSError:
                 pass
-            if f is not None:
-                f.close()
-            elif fd is not None:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
-    if not isinstance(config, dict):
-        config = {}
-            
-    # 2. Perform legacy key migrations
-    migrated = False
-    if "ai_provider" in config:
-        config["active_provider"] = config.pop("ai_provider")
-        migrated = True
-    if "groq_api_key" in config:
-        if "providers" not in config:
-            config["providers"] = {}
-        if "groq" not in config["providers"]:
-            config["providers"]["groq"] = {}
-        config["providers"]["groq"]["api_key"] = config.pop("groq_api_key")
-        migrated = True
-        
-    if "api_base_url" in config:
-        val = config.pop("api_base_url")
-        prov = config.get("active_provider") or "groq"
-        if prov == "disabled":
-            prov = "groq"
-        if "providers" not in config:
-            config["providers"] = {}
-        if prov not in config["providers"]:
-            config["providers"][prov] = {}
-        config["providers"][prov]["api_base_url"] = val
-        migrated = True
-        
-    if "model_name" in config:
-        val = config.pop("model_name")
-        prov = config.get("active_provider") or "groq"
-        if prov == "disabled":
-            prov = "groq"
-        if "providers" not in config:
-            config["providers"] = {}
-        if prov not in config["providers"]:
-            config["providers"][prov] = {}
-        config["providers"][prov]["model_name"] = val
-        migrated = True
-        
-    # 3. Recursively merge defaults
-    def merge_defaults(tgt: dict, src: dict) -> bool:
-        changed = False
-        for k, v in src.items():
-            if k not in tgt:
-                tgt[k] = json.loads(json.dumps(v))
-                changed = True
-            elif isinstance(v, dict) and isinstance(tgt[k], dict):
-                if merge_defaults(tgt[k], v):
-                    changed = True
-        return changed
-        
-    defaults_merged = merge_defaults(config, defaults)
-    
-    if migrated or defaults_merged:
-        save_config(config)
-        
     return config
 
 
@@ -326,31 +442,44 @@ def save_config(config: dict) -> None:
     tmp_path = None
     
     try:
-        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
-        try:
-            _acquire_lock(fd)
-            
-            dir_name = os.path.dirname(config_path)
-            if dir_name:
-                os.makedirs(dir_name, exist_ok=True)
-            
-            fd_tmp, tmp_path = tempfile.mkstemp(
-                dir=dir_name or ".", prefix=".config.", suffix=".tmp"
-            )
+        fd = _open_lock_file(lock_path)
+    except OSError as e:
+        logger.warning("Could not acquire config lock for write: %s", e)
+        return
+    try:
+        _acquire_lock(fd)
+
+        dir_name = os.path.dirname(config_path)
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
+        
+        # Re-read existing config to prevent lost updates from concurrent migrations
+        if os.path.exists(config_path):
             try:
-                with os.fdopen(fd_tmp, "w", encoding="utf-8") as f:
-                    json.dump(config, f, indent=4)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp_path, config_path)
-                tmp_path = None
-            except Exception:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+                config = _deep_merge(existing, config)
+            except (json.JSONDecodeError, OSError):
                 pass
-            finally:
-                if tmp_path is not None and os.path.exists(tmp_path):
-                    os.remove(tmp_path)
+        
+        fd_tmp, tmp_path = tempfile.mkstemp(
+            dir=dir_name or ".", prefix=".config.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd_tmp, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, config_path)
+            tmp_path = None
+        except Exception as e:
+            logger.error("Failed to write config file '%s': %s", config_path, e)
         finally:
-            _release_lock(fd)
-            os.close(fd)
-    except OSError:
-        pass
+            if tmp_path is not None and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+    finally:
+        _release_lock(fd)
+        os.close(fd)
