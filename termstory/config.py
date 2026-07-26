@@ -196,13 +196,7 @@ def set_config_value(config: dict, path: str, value: Any) -> None:
     curr[parts[-1]] = value
 
 def _open_lock_file(lock_path: str) -> int:
-    """Open the lock file, retrying on transient permission errors (Windows).
-
-    Under extreme contention (many processes, short-lived locks) Windows
-    can transiently reject open() against the lock file. We retry with
-    linear backoff and jitter so callers see eventual success instead of
-    spurious permission errors.
-    """
+    """Open the lock file, retrying on transient permission errors (Windows)."""
     fd = None
     last_err = None
     for attempt in range(100):
@@ -214,7 +208,6 @@ def _open_lock_file(lock_path: str) -> int:
             if e.errno != 13:  # EACCES / Permission denied
                 raise
             import time
-            # Linear backoff with jitter, capped at 250ms
             delay = min(0.01 + (attempt * 0.005) + (random.random() * 0.01), 0.25)
             time.sleep(delay)
     raise last_err  # type: ignore[misc]
@@ -251,10 +244,6 @@ def _atomic_write_config(config_path: str, config: dict, lock_fd: int) -> None:
                     pass
     except OSError as e:
         logger.error("Failed to write config file '%s': %s", config_path, e)
-
-
-class _ConfigLockError(Exception):
-    """Raised when the config lock cannot be acquired after retries."""
 
 
 def load_config() -> dict:
@@ -318,6 +307,11 @@ def load_config() -> dict:
         _acquire_lock(fd)
     except OSError as e:
         logger.warning("Could not acquire config lock: %s", e)
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         return dict(defaults)
 
     try:
@@ -439,14 +433,9 @@ def save_config(config: dict) -> None:
     """Save configuration dictionary to disk atomically"""
     config_path = get_config_path()
     lock_path = get_config_lock_path()
-    tmp_path = None
-    
+    fd = None
     try:
         fd = _open_lock_file(lock_path)
-    except OSError as e:
-        logger.warning("Could not acquire config lock for write: %s", e)
-        return
-    try:
         _acquire_lock(fd)
 
         dir_name = os.path.dirname(config_path)
@@ -462,6 +451,7 @@ def save_config(config: dict) -> None:
             except (json.JSONDecodeError, OSError):
                 pass
         
+        tmp_path = None
         fd_tmp, tmp_path = tempfile.mkstemp(
             dir=dir_name or ".", prefix=".config.", suffix=".tmp"
         )
@@ -480,6 +470,15 @@ def save_config(config: dict) -> None:
                     os.remove(tmp_path)
                 except OSError:
                     pass
+    except OSError as e:
+        logger.error("Failed to acquire lock or write config file '%s': %s", config_path, e)
     finally:
-        _release_lock(fd)
-        os.close(fd)
+        if fd is not None:
+            try:
+                _release_lock(fd)
+            except OSError:
+                pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
