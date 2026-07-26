@@ -372,16 +372,19 @@ def test_cd_minus(monkeypatch):
 def test_listdir_timeout_caching(monkeypatch):
     import time
     import pytest
-    from termstory.project import _listdir_with_timeout, _timed_out_paths
+    from termstory.project import _listdir_with_timeout, _BLACKLISTED_MOUNTS
     
-    _timed_out_paths.clear()
+    _BLACKLISTED_MOUNTS.clear()
     
     def mock_listdir_hang(path):
         time.sleep(2.0)
         return []
         
     import os
+    import threading
     monkeypatch.setattr(os, "listdir", mock_listdir_hang)
+    
+    initial_threads = threading.active_count()
     
     # First call should time out after 0.1s (we'll use timeout=0.1)
     t0 = time.time()
@@ -389,6 +392,9 @@ def test_listdir_timeout_caching(monkeypatch):
         _listdir_with_timeout("/some/hung/mount", timeout=0.1)
     t1 = time.time()
     assert 0.08 <= (t1 - t0) <= 0.5  # timed out correctly
+    
+    # Verify exactly one worker thread was created and is currently hung
+    assert threading.active_count() == initial_threads + 1
     
     # Second call should time out immediately from cache
     t2 = time.time()
@@ -398,15 +404,18 @@ def test_listdir_timeout_caching(monkeypatch):
     
     assert (t3 - t2) < 0.05  # should be virtually instant
     assert "cached" in str(exc_info.value)
+    
+    # Verify NO additional worker thread was created
+    assert threading.active_count() == initial_threads + 1
 
 def test_listdir_timeout_caching_custom_ttl(monkeypatch):
     """Custom nfs_timeout_cache_ttl from config is respected."""
     import time
     import pytest
     import termstory.project as project_module
-    from termstory.project import _listdir_with_timeout, _timed_out_paths
+    from termstory.project import _listdir_with_timeout, _BLACKLISTED_MOUNTS
 
-    _timed_out_paths.clear()
+    _BLACKLISTED_MOUNTS.clear()
 
     # Patch the module-level constant directly to 1 second
     monkeypatch.setattr(project_module, "_NFS_TIMEOUT_CACHE_TTL", 1)
