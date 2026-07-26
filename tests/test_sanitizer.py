@@ -85,21 +85,23 @@ def test_custom_termstoryignore(tmp_path):
         # Mock expanduser to return our temp ignore file for the first path only
         mock_expanduser.side_effect = lambda x: str(ignore_file) if x == '~/.termstoryignore' else str(tmp_path / "nonexistent")
         
-        # Clear existing patterns and reload
-        original_patterns = sanitizer.CUSTOM_REDACTION_PATTERNS
-        sanitizer.CUSTOM_REDACTION_PATTERNS = tuple()
+        # Reset cache
+        original_rules = sanitizer._cached_ignore_rules
+        original_mtime = sanitizer._cached_ignore_mtime
+        sanitizer._cached_ignore_rules = tuple()
+        sanitizer._cached_ignore_mtime = -1.0
         
-        sanitizer.CUSTOM_REDACTION_PATTERNS = sanitizer.load_custom_ignore_rules()
-        
-        assert len(sanitizer.CUSTOM_REDACTION_PATTERNS) == 2
+        rules = sanitizer.load_custom_ignore_rules()
+        assert len(rules) == 2
         
         # Test if it redacts
         cmd = "echo my_custom_secret_pattern is here"
         redacted = sanitizer.redact_command(cmd)
         assert redacted == "echo [REDACTED_CUSTOM] is here"
         
-        # Restore original patterns
-        sanitizer.CUSTOM_REDACTION_PATTERNS = original_patterns
+        # Restore
+        sanitizer._cached_ignore_rules = original_rules
+        sanitizer._cached_ignore_mtime = original_mtime
 
 def test_high_entropy_heuristic():
     # Length >= 24, high entropy
@@ -179,6 +181,7 @@ def test_custom_redaction_patterns_race_condition():
     def import_sanitizer():
         try:
             import termstory.sanitizer
+            termstory.sanitizer.load_custom_ignore_rules()
         except Exception as e:
             errors.append(e)
         
@@ -193,7 +196,42 @@ def test_custom_redaction_patterns_race_condition():
         
     assert not errors, f"Exceptions occurred in threads: {errors}"
     import termstory.sanitizer
-    assert isinstance(termstory.sanitizer.CUSTOM_REDACTION_PATTERNS, tuple)
+    assert isinstance(termstory.sanitizer.load_custom_ignore_rules(), tuple)
+
+import time
+
+def test_live_reload_termstoryignore(tmp_path):
+    import termstory.sanitizer as sanitizer
+    
+    ignore_file = tmp_path / ".termstoryignore"
+    ignore_file.write_text("initial_secret")
+    
+    with patch("termstory.sanitizer.os.path.expanduser") as mock_expanduser:
+        mock_expanduser.side_effect = lambda x: str(ignore_file) if x == '~/.termstoryignore' else str(tmp_path / "nonexistent")
+        
+        # Reset cache
+        sanitizer._cached_ignore_rules = tuple()
+        sanitizer._cached_ignore_mtime = -1.0
+        
+        # First check
+        cmd = "echo initial_secret"
+        assert sanitizer.redact_command(cmd) == "echo [REDACTED_CUSTOM]"
+        
+        # Write new rules and set mtime to the future
+        ignore_file.write_text("new_secret_only")
+        os.utime(str(ignore_file), (time.time() + 10, time.time() + 10))
+        
+        # Should live reload
+        cmd2 = "echo initial_secret"
+        cmd3 = "echo new_secret_only"
+        
+        assert sanitizer.redact_command(cmd2) == "echo initial_secret"
+        assert sanitizer.redact_command(cmd3) == "echo [REDACTED_CUSTOM]"
+        
+        # Unchanged file reuse logic implicitly covered since mtime didn't change
+        # Missing file test
+        ignore_file.unlink()
+        assert sanitizer.redact_command(cmd3) == "echo new_secret_only"
 
 
 def test_high_entropy_git_shas_not_redacted():
