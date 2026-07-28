@@ -411,6 +411,179 @@ def test_cli_reset_cleanup_rc_files(tmp_path, monkeypatch):
     assert "alias l='ls'" in new_bashrc
     assert "alias foo=bar" in new_bashrc
 
+def test_config_set_numeric_validation(tmp_path, monkeypatch):
+    """Issue #342: config set rejects invalid numeric values."""
+    config_file = tmp_path / "config.json"
+    monkeypatch.setattr("termstory.config.get_config_path", lambda: str(config_file))
+
+    runner = CliRunner()
+
+    # Valid timeout values
+    for val in ("30", "45", "60", "0.5", "2.5"):
+        result = runner.invoke(app, ["config", "set", "request_timeout_seconds", val])
+        assert result.exit_code == 0, f"Expected 0 for {val}, got {result.exit_code}: {result.stdout}"
+        import json
+        with open(config_file, "r") as f:
+            data = json.load(f)
+        if "." in val:
+            assert data["request_timeout_seconds"] == float(val)
+        else:
+            assert data["request_timeout_seconds"] == int(val)
+
+    # Invalid timeout values
+    for val in ("abc", "xyz", "ten", "NaN", "inf", "0"):
+        result = runner.invoke(app, ["config", "set", "request_timeout_seconds", val])
+        assert result.exit_code != 0, f"Expected non-zero for {val}, got {result.exit_code}: {result.stdout}"
+        assert "Expected a positive number" in result.stdout or "Expected a positive number" in result.stderr
+
+    # Negative values must also be rejected (use -- to prevent typer option parsing)
+    result = runner.invoke(app, ["config", "set", "request_timeout_seconds", "--", "-5"])
+    assert result.exit_code != 0, f"Expected non-zero for -5, got {result.exit_code}: {result.stdout}"
+    assert "Expected a positive number" in result.stdout or "Expected a positive number" in result.stderr
+
+    # Config file must NOT be modified on failure (request_timeout_seconds should retain last valid value)
+    import json
+    with open(config_file, "r") as f:
+        data = json.load(f)
+    assert data["request_timeout_seconds"] == 2.5  # Last valid value
+
+
+def test_config_set_boolean_validation(tmp_path, monkeypatch):
+    """Issue #342: config set rejects invalid boolean values."""
+    config_file = tmp_path / "config.json"
+    monkeypatch.setattr("termstory.config.get_config_path", lambda: str(config_file))
+
+    runner = CliRunner()
+
+    # Valid boolean values (case-insensitive)
+    for val in ("true", "false", "yes", "no", "1", "0", "TRUE", "False", "YES", "No"):
+        result = runner.invoke(app, ["config", "set", "ai_enabled", val])
+        assert result.exit_code == 0, f"Expected 0 for {val}, got {result.exit_code}: {result.stdout}"
+        expected = val.lower() in ("true", "yes", "1")
+        import json
+        with open(config_file, "r") as f:
+            data = json.load(f)
+        assert data["ai_enabled"] is expected, f"Expected {expected} for {val}"
+
+    # Invalid boolean values
+    for val in ("maybe", "enable", "disable", "on", "off", "null", "abc", "random"):
+        result = runner.invoke(app, ["config", "set", "ai_enabled", val])
+        assert result.exit_code != 0, f"Expected non-zero for {val}, got {result.exit_code}: {result.stdout}"
+        assert "Invalid boolean value" in result.stdout or "Invalid boolean value" in result.stderr
+
+
+def test_config_set_api_key_preserves_leading_zeros(tmp_path, monkeypatch):
+    """Issue #342: API keys must remain raw strings, no numeric conversion."""
+    config_file = tmp_path / "config.json"
+    monkeypatch.setattr("termstory.config.get_config_path", lambda: str(config_file))
+
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["config", "set", "groq_api_key", "000012345"])
+    assert result.exit_code == 0
+    import json
+    with open(config_file, "r") as f:
+        data = json.load(f)
+    # Legacy key should be translated to providers.groq.api_key
+    assert data["providers"]["groq"]["api_key"] == "000012345"
+
+
+def test_config_set_ai_enabled_with_disabled_provider_warns(tmp_path, monkeypatch):
+    """Issue #342 req 5: setting ai_enabled=true with disabled provider prints warning."""
+    config_file = tmp_path / "config.json"
+    monkeypatch.setattr("termstory.config.get_config_path", lambda: str(config_file))
+
+    # Pre-set active_provider to disabled
+    import json
+    with open(config_file, "w") as f:
+        json.dump({"active_provider": "disabled"}, f)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "set", "ai_enabled", "true"])
+    assert result.exit_code == 0
+    assert "AI has been enabled, but no provider is configured" in result.stdout or \
+           "AI has been enabled, but no provider is configured" in result.stderr
+
+    # Verify config was still saved
+    with open(config_file, "r") as f:
+        data = json.load(f)
+    assert data["ai_enabled"] is True
+
+
+def test_config_set_ai_enabled_with_provider_no_warning(tmp_path, monkeypatch):
+    """Issue #342 req 5: setting ai_enabled=true with configured provider does NOT warn."""
+    config_file = tmp_path / "config.json"
+    monkeypatch.setattr("termstory.config.get_config_path", lambda: str(config_file))
+
+    import json
+    with open(config_file, "w") as f:
+        json.dump({"active_provider": "groq"}, f)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "set", "ai_enabled", "true"])
+    assert result.exit_code == 0
+    assert "AI has been enabled, but no provider is configured" not in result.stdout
+
+
+def test_config_set_unknown_key_preserved(tmp_path, monkeypatch):
+    """Issue #342: unknown/custom keys must be stored as raw strings."""
+    config_file = tmp_path / "config.json"
+    monkeypatch.setattr("termstory.config.get_config_path", lambda: str(config_file))
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "set", "custom_key", "some_value"])
+    assert result.exit_code == 0
+    import json
+    with open(config_file, "r") as f:
+        data = json.load(f)
+    assert data["custom_key"] == "some_value"
+
+
+def test_config_set_legacy_key_validation(tmp_path, monkeypatch):
+    """Issue #342: legacy keys should be validated using translated key's type."""
+    config_file = tmp_path / "config.json"
+    monkeypatch.setattr("termstory.config.get_config_path", lambda: str(config_file))
+
+    runner = CliRunner()
+
+    # ai_provider is a legacy key that maps to active_provider (string type)
+    result = runner.invoke(app, ["config", "set", "ai_provider", "groq"])
+    assert result.exit_code == 0
+    import json
+    with open(config_file, "r") as f:
+        data = json.load(f)
+    assert data["active_provider"] == "groq"
+
+
+def test_config_set_invalid_value_does_not_modify_config(tmp_path, monkeypatch):
+    """Issue #342: invalid values must never modify config.json."""
+    config_file = tmp_path / "config.json"
+    monkeypatch.setattr("termstory.config.get_config_path", lambda: str(config_file))
+
+    import json
+    # Start with an empty config
+    with open(config_file, "w") as f:
+        json.dump({}, f)
+
+    # First set a valid timeout
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "set", "request_timeout_seconds", "30"])
+    assert result.exit_code == 0
+
+    with open(config_file, "r") as f:
+        before = json.load(f)
+    assert before.get("request_timeout_seconds") == 30
+
+    # Now try to set an invalid timeout
+    result = runner.invoke(app, ["config", "set", "request_timeout_seconds", "abc"])
+    assert result.exit_code != 0
+
+    # request_timeout_seconds must still be 30 (unchanged)
+    with open(config_file, "r") as f:
+        after = json.load(f)
+    assert after["request_timeout_seconds"] == 30
+
+
 def test_cli_error_states(tmp_path, monkeypatch):
     db_file = tmp_path / "test_cli_errors.db"
     monkeypatch.setattr("termstory.cli.get_db_path", lambda: str(db_file))
@@ -741,7 +914,3 @@ def test_cli_predict_enhanced_command(tmp_path, monkeypatch):
     result_days = runner.invoke(app, ["predict", "--days", "7"])
     assert result_days.exit_code == 0
     assert "HugeGraph" in result_days.stdout
-
-
-
-

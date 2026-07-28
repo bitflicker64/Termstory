@@ -1377,41 +1377,84 @@ def config_set(key: str, value: str):
     from termstory.config import load_config, save_config, set_config_value, get_config_value
     config = load_config()
     
-    current_val = get_config_value(config, key)
-    if isinstance(current_val, bool):
-        converted_value = value.lower() in ("true", "1", "yes")
-    elif isinstance(current_val, int):
-        try:
-            converted_value = int(value)
-        except ValueError:
-            converted_value = value
-    elif isinstance(current_val, float):
-        try:
-            converted_value = float(value)
-        except ValueError:
+    from termstory.config import translate_legacy_key
+    effective_key = translate_legacy_key(config, key)
+
+    KNOWN_DEFAULTS = {
+        "ai_enabled": False,
+        "active_provider": "disabled",
+        "request_timeout_seconds": 30,
+        "ai_max_failures": 3,
+        "ai_cooldown_seconds": 60.0,
+        "has_seen_onboarding": False,
+        "has_seen_timestamp_prompt": False,
+        "has_seen_onboarding_reminder": False,
+        "max_history_age": 5,
+        "max_query_log": 10000,
+        "db_timeout": 30.0,
+        "reminder_poll_interval": 300,
+        "clustering_threshold": 0.6,
+        "nfs_timeout_cache_ttl": 60,
+    }
+
+    default_val = KNOWN_DEFAULTS.get(effective_key)
+    if default_val is not None:
+        if isinstance(default_val, bool):
+            lowered = value.lower()
+            if lowered not in ("true", "false", "yes", "no", "1", "0"):
+                Console(stderr=True).print(
+                    "[bold red]Invalid boolean value.[/]\n"
+                    "Expected one of:\n"
+                    "true, false, yes, no, 1, 0"
+                )
+                raise typer.Exit(code=1)
+            converted_value = lowered in ("true", "yes", "1")
+        elif isinstance(default_val, (int, float)):
+            try:
+                parsed = float(value)
+            except ValueError:
+                Console(stderr=True).print(
+                    f"[bold red]Invalid value for {key}.[/]\n"
+                    f"Expected a positive number."
+                )
+                raise typer.Exit(code=1)
+            if (
+                parsed <= 0
+                or parsed != parsed
+                or parsed == float('inf')
+                or parsed == float('-inf')
+            ):
+                Console(stderr=True).print(
+                    f"[bold red]Invalid value for {key}.[/]\n"
+                    f"Expected a positive number."
+                )
+                raise typer.Exit(code=1)
+            if isinstance(default_val, int) and parsed == int(parsed):
+                converted_value = int(parsed)
+            else:
+                converted_value = parsed
+        else:
             converted_value = value
     else:
-        if key in ("ai_enabled", "has_seen_onboarding") or key.endswith(".ai_enabled") or key.endswith(".has_seen_onboarding"):
-            converted_value = value.lower() in ("true", "1", "yes")
-        elif "api_key" in key or "token" in key or "password" in key:
-            converted_value = value
-        else:
-            try:
-                if "." in value:
-                    converted_value = float(value)
-                elif value.isdigit() and value.startswith("0") and len(value) > 1:
-                    converted_value = value
-                else:
-                    converted_value = int(value)
-            except ValueError:
-                converted_value = value
-        
+        converted_value = value
+
     set_config_value(config, key, converted_value)
     save_config(config)
     
     set_val = get_config_value(config, key)
     from rich.markup import escape
     console.print(f"[green]Set config key '{escape(key)}' to '{escape(str(set_val))}'[/]")
+
+    # Issue #342 req 5: guidance when enabling AI with no provider configured
+    if effective_key == "ai_enabled" and converted_value is True:
+        current_provider = config.get("active_provider") or config.get("ai_provider", "disabled")
+        if current_provider == "disabled":
+            Console(stderr=True).print(
+                "\n[bold yellow]AI has been enabled, but no provider is configured.[/]\n"
+                "Run:\n"
+                "  [cyan]termstory config set active_provider groq[/cyan]\n"
+                "or configure another provider before using AI features.\n"
+            )
 
 @config_app.command("get")
 def config_get(key: str):
