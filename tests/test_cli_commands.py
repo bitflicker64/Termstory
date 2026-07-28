@@ -501,8 +501,8 @@ def test_config_set_ai_enabled_with_disabled_provider_warns(tmp_path, monkeypatc
     runner = CliRunner()
     result = runner.invoke(app, ["config", "set", "ai_enabled", "true"])
     assert result.exit_code == 0
-    assert "AI has been enabled, but no provider is configured" in result.stdout or \
-           "AI has been enabled, but no provider is configured" in result.stderr
+    warning_msg = "AI has been enabled, but no provider is configured"
+    assert warning_msg in result.stdout or warning_msg in result.stderr
 
     # Verify config was still saved
     with open(config_file, "r") as f:
@@ -522,7 +522,9 @@ def test_config_set_ai_enabled_with_provider_no_warning(tmp_path, monkeypatch):
     runner = CliRunner()
     result = runner.invoke(app, ["config", "set", "ai_enabled", "true"])
     assert result.exit_code == 0
-    assert "AI has been enabled, but no provider is configured" not in result.stdout
+    warning_msg = "AI has been enabled, but no provider is configured"
+    assert warning_msg not in result.stdout
+    assert warning_msg not in result.stderr
 
 
 def test_config_set_unknown_key_preserved(tmp_path, monkeypatch):
@@ -537,6 +539,35 @@ def test_config_set_unknown_key_preserved(tmp_path, monkeypatch):
     with open(config_file, "r") as f:
         data = json.load(f)
     assert data["custom_key"] == "some_value"
+
+
+def test_config_set_integer_keys_reject_fractions(tmp_path, monkeypatch):
+    """Issue #342: integer config keys must reject fractional values."""
+    config_file = tmp_path / "config.json"
+    monkeypatch.setattr("termstory.config.get_config_path", lambda: str(config_file))
+
+    runner = CliRunner()
+
+    # Valid integer values
+    for key, val in [("max_query_log", "10"), ("ai_max_failures", "5"), ("max_query_log", "999")]:
+        result = runner.invoke(app, ["config", "set", key, val])
+        assert result.exit_code == 0, f"Expected 0 for {key}={val}, got {result.exit_code}: {result.stdout}"
+        import json
+        with open(config_file, "r") as f:
+            data = json.load(f)
+        assert data[key] == int(val)
+
+    # Invalid fractional values for integer keys
+    for key, val in [("max_query_log", "10.5"), ("max_query_log", "2.1"), ("ai_max_failures", "1.5")]:
+        result = runner.invoke(app, ["config", "set", key, val])
+        assert result.exit_code != 0, f"Expected non-zero for {key}={val}"
+        assert "Expected a positive integer" in result.stdout or "Expected a positive integer" in result.stderr
+
+    # Config file unchanged for integer keys (max_query_log should still be 999)
+    import json
+    with open(config_file, "r") as f:
+        data = json.load(f)
+    assert data["max_query_log"] == 999
 
 
 def test_config_set_legacy_key_validation(tmp_path, monkeypatch):

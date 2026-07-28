@@ -1383,7 +1383,7 @@ def config_set(key: str, value: str):
     KNOWN_DEFAULTS = {
         "ai_enabled": False,
         "active_provider": "disabled",
-        "request_timeout_seconds": 30,
+        "request_timeout_seconds": 30.0,
         "ai_max_failures": 3,
         "ai_cooldown_seconds": 60.0,
         "has_seen_onboarding": False,
@@ -1429,7 +1429,13 @@ def config_set(key: str, value: str):
                     f"Expected a positive number."
                 )
                 raise typer.Exit(code=1)
-            if isinstance(default_val, int) and parsed == int(parsed):
+            if isinstance(default_val, int):
+                if parsed != int(parsed):
+                    Console(stderr=True).print(
+                        f"[bold red]Invalid value for {key}.[/]\n"
+                        f"Expected a positive integer."
+                    )
+                    raise typer.Exit(code=1)
                 converted_value = int(parsed)
             else:
                 converted_value = parsed
