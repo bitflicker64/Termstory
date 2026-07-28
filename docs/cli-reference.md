@@ -103,9 +103,8 @@ Toggle observability settings (such as Nemo relay / DeepWiki settings) for Herme
 ```bash
 termstory                    # Today's timeline
 termstory today              # Same as above
-termstory today --detailed   # All commands, no noise filtering, with timestamps
+termstory today --detailed   # All commands and commits inside each session, with timestamps
 termstory today --compare    # Side-by-side with yesterday
-termstory today --stats      # Command category frequency table
 ```
 
 ### Search
@@ -132,13 +131,10 @@ termstory month --last       # Previous month
 ### Projects
 
 ```bash
-termstory project <name>                       # 30-day deep dive
-termstory project myapp --files                # Files edited, by frequency
-termstory project myapp --stats                # Command category breakdown
-termstory projects                             # All tracked projects
-termstory projects --sort time                 # By total hours (default)
-termstory projects --sort recent               # By last active date
-termstory projects --sort name                 # Alphabetically
+termstory project <name>                       # Project history grouped by day
+termstory project myapp --files                # All commands and commits inside each session
+termstory project myapp --stats                # Aggregate stats: commands, sessions, duration
+termstory projects                             # All tracked projects with total time and session count
 termstory project context <name> "description" # Set goals/context for a project
 termstory project context <name> --show        # View project context description
 ```
