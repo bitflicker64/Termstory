@@ -103,7 +103,7 @@ Toggle observability settings (such as Nemo relay / DeepWiki settings) for Herme
 ```bash
 termstory                    # Today's timeline
 termstory today              # Same as above
-termstory today --detailed   # All commands and commits inside each session, with timestamps
+termstory today --detailed   # All commands and commits inside each session, with session and command timestamps
 termstory today --compare    # Side-by-side with yesterday
 ```
 
@@ -134,7 +134,7 @@ termstory month --last       # Previous month
 termstory project <name>                       # Project history grouped by day
 termstory project myapp --files                # All commands and commits inside each session
 termstory project myapp --stats                # Aggregate stats: commands, sessions, duration
-termstory projects                             # All tracked projects with total time and session count
+termstory projects                             # All tracked projects with total time, session count, and active date range
 termstory project context <name> "description" # Set goals/context for a project
 termstory project context <name> --show        # View project context description
 ```

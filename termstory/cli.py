@@ -297,7 +297,6 @@ def show_today(
         output = format_detailed_sessions(sessions)
         from rich.text import Text
         console.print(Text.from_ansi(output))
-        return
 
     compare_sessions = None
     if compare:
@@ -382,28 +381,38 @@ def show_project(
         output = format_detailed_sessions(sessions)
         from rich.text import Text
         console.print(Text.from_ansi(output))
-        return
 
     if stats:
         # Show aggregate statistics for this specific project
         from termstory.stats import project_breakdown
         from termstory.models import format_duration
+        from rich.markup import escape
         breakdown = project_breakdown(db)
-        proj_key = target.name if target.name else "Other"
-        proj_stats = breakdown.get(proj_key)
+        
+        proj_stats = None
+        proj_key = None
+        
+        # Try finding exact project ID match first
+        for k, v in breakdown.items():
+            if v.get("id") == target.id:
+                proj_stats = v
+                proj_key = k
+                break
+                
+        # Fallback to mapped name match
         if proj_stats is None:
-            # Try to find by partial match
-            for k, v in breakdown.items():
-                if name.lower() in k.lower():
-                    proj_key = k
-                    proj_stats = v
-                    break
+            mapped_name = target.name
+            if not mapped_name or mapped_name == "General / No Project":
+                mapped_name = "Other"
+            proj_key = mapped_name
+            proj_stats = breakdown.get(proj_key)
+            
         if proj_stats:
             from datetime import datetime as _dt
             def _fmt_ts(ts):
                 return _dt.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else "N/A"
             lines = [
-                f"\U0001f4ca Project Stats: [bold cyan]{proj_key}[/]",
+                f"\U0001f4ca Project Stats: [bold cyan]{escape(proj_key)}[/]",
                 "────────────────────────────────────────",
                 f"Commands   : {proj_stats['commands_count']}",
                 f"Sessions   : {proj_stats['sessions_count']}",
@@ -413,12 +422,13 @@ def show_project(
             ]
             console.print("\n".join(lines))
         else:
-            console.print(f"[yellow]No aggregated stats found for project '{name}'.[/]")
-        return
+            console.print(f"[yellow]No aggregated stats found for project '{escape(target.name)}'.[/]")
 
-    output = format_project_output(sessions, target)
-    from rich.text import Text
-    console.print(Text.from_ansi(output))
+    # Show default output if neither files nor stats were requested
+    if not files and not stats:
+        output = format_project_output(sessions, target)
+        from rich.text import Text
+        console.print(Text.from_ansi(output))
 
 
 @app.command("projects")

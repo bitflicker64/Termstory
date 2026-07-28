@@ -493,19 +493,28 @@ def format_projects_list(projects: List[Project]) -> str:
     table.add_column("Active Range", style="dim")
     
     display_names = disambiguate_project_names(projects)
-    sorted_projects = sorted(projects, key=lambda p: p.last_seen, reverse=True)
+    sorted_projects = sorted(projects, key=lambda p: p.last_seen or 0, reverse=True)
     for idx, p in enumerate(sorted_projects, 1):
         name = display_names.get(p.id, p.name)
-        first_dt = datetime.fromtimestamp(p.first_seen)
-        last_dt = datetime.fromtimestamp(p.last_seen)
-        first_str = f"{first_dt.strftime('%b')} {first_dt.day}, {first_dt.strftime('%Y')}"
-        last_str = f"{last_dt.strftime('%b')} {last_dt.day}, {last_dt.strftime('%Y')}"
+        
+        first_str = "N/A"
+        if p.first_seen:
+            first_dt = datetime.fromtimestamp(p.first_seen)
+            first_str = f"{first_dt.strftime('%b')} {first_dt.day}, {first_dt.strftime('%Y')}"
+            
+        last_str = "N/A"
+        if p.last_seen:
+            last_dt = datetime.fromtimestamp(p.last_seen)
+            last_str = f"{last_dt.strftime('%b')} {last_dt.day}, {last_dt.strftime('%Y')}"
+            
+        date_range_str = f"{first_str} - {last_str}" if p.first_seen or p.last_seen else "N/A"
+        
         table.add_row(
             str(idx),
             escape(name),
             format_duration(p.total_time),
             str(p.session_count),
-            f"{first_str} - {last_str}"
+            date_range_str
         )
         
     footer_text = f"Total: [bold]{len(projects)}[/] projects, [bold]{total_sessions}[/] sessions, [bold green]{format_duration(total_time)}[/] worked"
