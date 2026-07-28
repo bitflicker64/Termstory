@@ -434,12 +434,14 @@ def test_config_set_numeric_validation(tmp_path, monkeypatch):
     for val in ("abc", "xyz", "ten", "NaN", "inf", "0"):
         result = runner.invoke(app, ["config", "set", "request_timeout_seconds", val])
         assert result.exit_code != 0, f"Expected non-zero for {val}, got {result.exit_code}: {result.stdout}"
-        assert "Expected a positive number" in result.stdout or "Expected a positive number" in result.stderr
+        output = result.output or result.stdout
+        assert "Expected a positive number" in output
 
     # Negative values must also be rejected (use -- to prevent typer option parsing)
     result = runner.invoke(app, ["config", "set", "request_timeout_seconds", "--", "-5"])
     assert result.exit_code != 0, f"Expected non-zero for -5, got {result.exit_code}: {result.stdout}"
-    assert "Expected a positive number" in result.stdout or "Expected a positive number" in result.stderr
+    output = result.output or result.stdout
+    assert "Expected a positive number" in output
 
     # Config file must NOT be modified on failure (request_timeout_seconds should retain last valid value)
     import json
@@ -469,7 +471,8 @@ def test_config_set_boolean_validation(tmp_path, monkeypatch):
     for val in ("maybe", "enable", "disable", "on", "off", "null", "abc", "random"):
         result = runner.invoke(app, ["config", "set", "ai_enabled", val])
         assert result.exit_code != 0, f"Expected non-zero for {val}, got {result.exit_code}: {result.stdout}"
-        assert "Invalid boolean value" in result.stdout or "Invalid boolean value" in result.stderr
+        output = result.output or result.stdout
+        assert "Invalid boolean value" in output
 
 
 def test_config_set_api_key_preserves_leading_zeros(tmp_path, monkeypatch):
@@ -502,7 +505,8 @@ def test_config_set_ai_enabled_with_disabled_provider_warns(tmp_path, monkeypatc
     result = runner.invoke(app, ["config", "set", "ai_enabled", "true"])
     assert result.exit_code == 0
     warning_msg = "AI has been enabled, but no provider is configured"
-    assert warning_msg in result.stdout or warning_msg in result.stderr
+    output = result.output or result.stdout
+    assert warning_msg in output
 
     # Verify config was still saved
     with open(config_file, "r") as f:
@@ -523,8 +527,8 @@ def test_config_set_ai_enabled_with_provider_no_warning(tmp_path, monkeypatch):
     result = runner.invoke(app, ["config", "set", "ai_enabled", "true"])
     assert result.exit_code == 0
     warning_msg = "AI has been enabled, but no provider is configured"
-    assert warning_msg not in result.stdout
-    assert warning_msg not in result.stderr
+    output = result.output or result.stdout
+    assert warning_msg not in output
 
 
 def test_config_set_unknown_key_preserved(tmp_path, monkeypatch):
@@ -561,7 +565,8 @@ def test_config_set_integer_keys_reject_fractions(tmp_path, monkeypatch):
     for key, val in [("max_query_log", "10.5"), ("max_query_log", "2.1"), ("ai_max_failures", "1.5")]:
         result = runner.invoke(app, ["config", "set", key, val])
         assert result.exit_code != 0, f"Expected non-zero for {key}={val}"
-        assert "Expected a positive integer" in result.stdout or "Expected a positive integer" in result.stderr
+        output = result.output or result.stdout
+        assert "Expected a positive integer" in output
 
     # Config file unchanged for integer keys (max_query_log should still be 999)
     import json
@@ -625,24 +630,28 @@ def test_cli_error_states(tmp_path, monkeypatch):
     # 1. search with invalid --since date
     result = runner.invoke(app, ["search", "query", "--since", "invalid-date"])
     assert result.exit_code == 1
-    assert "Invalid date" in result.stdout or "Invalid date" in result.stderr
+    output = result.output or result.stdout
+    assert "Invalid date" in output
     
     # 2. project with unknown name
     db = Database(str(db_file))
     db.init_db()
     result = runner.invoke(app, ["project", "non-existent-project-xyz"])
     assert result.exit_code == 1
-    assert "Could not find project matching" in result.stdout or "Could not find project matching" in result.stderr
+    output = result.output or result.stdout
+    assert "Could not find project matching" in output
     
     # 3. config get with missing key
     result = runner.invoke(app, ["config", "get", "some.missing.key"])
     assert result.exit_code == 1
-    assert "Config key 'some.missing.key' not found" in result.stdout or "Config key 'some.missing.key' not found" in result.stderr
+    output = result.output or result.stdout
+    assert "Config key 'some.missing.key' not found" in output
     
     # 4. global --date invalid format
     result = runner.invoke(app, ["--date", "not-a-date"])
     assert result.exit_code == 1
-    assert "Invalid date format" in result.stdout or "Invalid date format" in result.stderr
+    output = result.output or result.stdout
+    assert "Invalid date format" in output
 def test_global_date_accepts_natural_language(tmp_path, monkeypatch):
     db_file = tmp_path / "test_date_override.db"
 
@@ -740,7 +749,8 @@ def test_cli_agy_command(monkeypatch):
     
     result2 = runner.invoke(app, ["agy"])
     assert result2.exit_code == 1
-    assert "Error: 'agy' command not found" in result2.stdout or "Error: 'agy' command not found" in result2.stderr
+    output = result2.output or result2.stdout
+    assert "Error: 'agy' command not found" in output
 
 
 def test_cli_insights_command(tmp_path, monkeypatch):
