@@ -218,7 +218,7 @@ def test_cli_archive_rejects_days_zero(tmp_path, monkeypatch):
     result = runner.invoke(app, ["archive", "--days", "0", "--archive-db", str(archive_file)])
     
     assert result.exit_code == 1, result.stdout
-    assert "days must be greater than 0" in (result.stdout or result.stderr or "").lower()
+    assert "days must be greater than 0" in result.output.lower()
     
     # Verify archive logic was not executed (no archive db created)
     assert not archive_file.exists()
@@ -241,7 +241,7 @@ def test_cli_archive_rejects_days_negative(tmp_path, monkeypatch):
     result = runner.invoke(app, ["archive", "--days", "-5", "--archive-db", str(archive_file)])
     
     assert result.exit_code == 1, result.stdout
-    assert "days must be greater than 0" in (result.stdout or result.stderr or "").lower()
+    assert "days must be greater than 0" in result.output.lower()
     
     # Verify archive logic was not executed (no archive db created)
     assert not archive_file.exists()

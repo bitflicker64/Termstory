@@ -29,7 +29,7 @@ def test_archive_rejects_days_zero(tmp_path, monkeypatch):
     result = runner.invoke(app, ["archive", "--days", "0"])
 
     assert result.exit_code != 0
-    output = result.stdout + (result.stderr or "")
+    output = result.output
     assert "--days must be greater than 0" in output
 
     conn = db.get_connection()
@@ -62,7 +62,7 @@ def test_archive_rejects_days_negative(tmp_path, monkeypatch):
     result = runner.invoke(app, ["archive", "--days", "-5"])
 
     assert result.exit_code != 0
-    output = result.stdout + (result.stderr or "")
+    output = result.output
     assert "--days must be greater than 0" in output
 
     conn = db.get_connection()
