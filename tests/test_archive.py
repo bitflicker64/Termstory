@@ -199,3 +199,49 @@ def test_cli_archive_command(tmp_path, monkeypatch):
     c_arch.execute("SELECT COUNT(*) FROM sessions")
     assert c_arch.fetchone()[0] == 1
     conn_arch.close()
+
+
+def test_cli_archive_rejects_days_zero(tmp_path, monkeypatch):
+    monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2026-06-14 12:00:00")
+    
+    db_file = tmp_path / "main_cli.db"
+    archive_file = tmp_path / "archive_cli.db"
+    
+    monkeypatch.setattr("termstory.cli.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.config.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.cli.get_history_files", lambda: [])
+    
+    db = Database(str(db_file))
+    db.init_db()
+    
+    runner = CliRunner()
+    result = runner.invoke(app, ["archive", "--days", "0", "--archive-db", str(archive_file)])
+    
+    assert result.exit_code == 1, result.stdout
+    assert "days must be greater than 0" in result.output.lower()
+    
+    # Verify archive logic was not executed (no archive db created)
+    assert not archive_file.exists()
+
+
+def test_cli_archive_rejects_days_negative(tmp_path, monkeypatch):
+    monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2026-06-14 12:00:00")
+    
+    db_file = tmp_path / "main_cli.db"
+    archive_file = tmp_path / "archive_cli.db"
+    
+    monkeypatch.setattr("termstory.cli.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.config.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.cli.get_history_files", lambda: [])
+    
+    db = Database(str(db_file))
+    db.init_db()
+    
+    runner = CliRunner()
+    result = runner.invoke(app, ["archive", "--days", "-5", "--archive-db", str(archive_file)])
+    
+    assert result.exit_code == 1, result.stdout
+    assert "days must be greater than 0" in result.output.lower()
+    
+    # Verify archive logic was not executed (no archive db created)
+    assert not archive_file.exists()
