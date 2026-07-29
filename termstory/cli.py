@@ -1187,6 +1187,10 @@ def archive_cmd(
     archive_db: Optional[str] = typer.Option(None, "--archive-db", "-a", help="Path to the archive SQLite database file (defaults to archive.db next to the main database)"),
 ):
     """Archive old sessions and associated data (older than N days) to a separate database."""
+    if days <= 0:
+        Console(stderr=True).print("[bold red]Error: --days must be greater than 0[/]")
+        raise typer.Exit(code=1)
+    
     db_path = get_db_path()
     db = Database(db_path)
     safe_init_db(db)
@@ -1198,7 +1202,7 @@ def archive_cmd(
         archive_db = os.path.join(os.path.dirname(db_path), "archive.db")
     else:
         archive_db = os.path.realpath(os.path.abspath(os.path.expanduser(archive_db)))
-        
+    
     console.print(f"Archiving data older than [bold]{days}[/] days...")
     console.print(f"Main Database: [bold]{db_path}[/]")
     console.print(f"Archive Database: [bold]{archive_db}[/]")
