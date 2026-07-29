@@ -13,8 +13,11 @@ Please read our [Code of Conduct](CODE_OF_CONDUCT.md) before contributing to hel
    cd termstory
    ```
 2. Install the package in editable mode with development dependencies:
-   ```
-
+   ```bash
+   python3 -m venv .venv --upgrade-deps
+   source .venv/bin/activate       # on Windows: .venv\Scripts\activate
+   pip install -e ".[test]"
+    ```
 ## Running Tests
 
 To run the test suite, simply use pytest:
