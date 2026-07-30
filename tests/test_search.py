@@ -91,6 +91,60 @@ def test_database_commits_and_search(tmp_path, monkeypatch):
 
 
 
+def test_project_filter_matches_per_command_project(tmp_path, monkeypatch):
+    """#339: project-filtered search must surface sessions whose *commands*
+    ran in the filtered project, even when the session's final project is
+    different (i.e. the session ``cd``-ed between projects mid-stream).
+    """
+    monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2026-06-06 12:00:00")
+    db_file = tmp_path / "test_per_cmd_search.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    from datetime import datetime
+    now = int(datetime(2026, 6, 6, 12, 0, 0).timestamp())
+
+    # Two distinct projects
+    p_acme = Project(
+        id=1, name="Acme Billing", path="~/Projects/acme-billing",
+        first_seen=now, last_seen=now, session_count=1, total_time=100,
+    )
+    p_mobile = Project(
+        id=2, name="Mobile Companion", path="~/Projects/mobile-companion",
+        first_seen=now, last_seen=now, session_count=1, total_time=100,
+    )
+
+    # Session that ran in Acme, then cd'd to Mobile and finished there.
+    # session.project_id is Mobile (the final project), but the matching
+    # command "stripe ..." ran in Acme and is attributed to Acme via
+    # cmd.project_id == p_acme.id.
+    cmd1 = Command(timestamp=now, command="stripe curl https://api.stripe.com/v1/charges", session_id=1, project_id=1)
+    cmd2 = Command(timestamp=now + 100, command="cd ~/Projects/mobile-companion", session_id=1, project_id=1)
+    cmd3 = Command(timestamp=now + 200, command="npm run test", session_id=1, project_id=2)
+    s1 = Session(
+        id=1, start_time=now, end_time=now + 300, duration_seconds=300,
+        project_id=2, commands=[cmd1, cmd2, cmd3],
+    )
+
+    db.save_data([p_acme, p_mobile], [s1], [cmd1, cmd2, cmd3])
+
+    from termstory.search import advanced_search
+
+    # Filter by Acme: should return s1 because cmd1 ran in Acme.
+    results = advanced_search(db, query="stripe", project_filter="Acme Billing")
+    assert len(results) == 1
+    assert results[0]["session_id"] == 1
+
+    # Filter by Mobile: should also return s1 because cmd3 ran in Mobile
+    # (and the session itself ended in Mobile).
+    results = advanced_search(db, query="npm", project_filter="Mobile Companion")
+    assert len(results) == 1
+
+    # Filter by a project that didn't see this command at all — no match.
+    results = advanced_search(db, query="stripe", project_filter="Nonexistent Project")
+    assert len(results) == 0
+
+
 def test_advanced_search(tmp_path, monkeypatch):
     monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2026-06-06 12:00:00")
     db_file = tmp_path / "test_advanced_search.db"

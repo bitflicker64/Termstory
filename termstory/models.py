@@ -62,7 +62,7 @@ class Session:
     is_legacy: bool = False     # True = every command in this session has a synthetic timestamp
     tags: Optional[str] = None # Added for session tags as comma-separated list
 
-    
+
     @property
     def duration_readable(self) -> str:
         """Return '2h 15m' format"""
@@ -79,6 +79,18 @@ class Session:
         if not hasattr(self, "_cached_start_time_formatted") or self._cached_start_time_formatted is None:
             self._cached_start_time_formatted = datetime.fromtimestamp(self.start_time).strftime("%I:%M %p")
         return self._cached_start_time_formatted
+
+    @property
+    def project_ids(self) -> set:
+        """Return the set of distinct project IDs assigned to commands in this session.
+
+        A session that switches projects mid-stream (e.g. ``cd ~/A; ...; cd ~/B; ...``)
+        will report both project IDs here, even though ``session.project_id`` only
+        reflects the final project. Useful for project-filtered search that needs
+        to surface sessions whose *any* command ran in the filtered project
+        (see #337, #339).
+        """
+        return {c.project_id for c in self.commands if c.project_id is not None}
 
 @dataclass
 class Project:

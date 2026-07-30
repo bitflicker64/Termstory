@@ -293,11 +293,43 @@ def _extract_file_args(cmd_str: str) -> List[str]:
     return file_args
 
 
-def _assign_project_to_session(session, project, projects_dict) -> None:
-    """Helper to link a session and its commands to a project."""
+def _assign_project_to_session(
+    session,
+    project,
+    projects_dict,
+    overwrite_per_command: bool = True,
+) -> None:
+    """Link a session and (optionally) every command to a project.
+
+    ``overwrite_per_command=True`` is used by Pass 2/3 to attribute every
+    command in an inferred session to the same project (because we only know
+    the session-level project).
+
+    ``overwrite_per_command=False`` is used by Pass 1 after the per-command
+    walk has already populated ``cmd.project_id`` based on the cwd at the time
+    each command was issued (#337, #339). In that mode we only set
+    ``session.project_id`` and leave any pre-existing per-command values
+    alone — including ``None`` for commands that ran in home before any
+    ``cd`` into a project.
+    """
     session.project_id = project.id
-    for cmd in session.commands:
-        cmd.project_id = project.id
+    if overwrite_per_command:
+        for cmd in session.commands:
+            cmd.project_id = project.id
+
+
+def _effective_end_time(session) -> int:
+    """Return the effective end timestamp for a session.
+
+    Active/open sessions can have ``end_time = None`` (e.g. ``Session(end_time=None,
+    duration_seconds=0)``). To keep project inference and time-gap arithmetic
+    type-safe, fall back to the session's ``start_time`` so that
+    comparisons/subtractions never see ``None``.
+    """
+    end = getattr(session, "end_time", None)
+    if end is None:
+        return session.start_time
+    return end
 
 
 def detect_projects(sessions: List[Session]) -> List[Project]:
@@ -322,14 +354,58 @@ def detect_projects(sessions: List[Session]) -> List[Project]:
     # ── Pass 1: cd-tracking (existing logic) ──────────────────────────
     last_session_end = None
     for session in sorted_sessions:
+        effective_end = _effective_end_time(session)
+
         if last_session_end is not None and session.start_time - last_session_end > 7200:
             old_cwd = home
             cwd = home
-        
+
+        # Helper: register or fetch the project rooted at the current cwd.
+        # Each command's ``project_id`` is set to whatever project was active
+        # at the time the command was issued (i.e. the cwd's project root),
+        # so a session that switches projects mid-stream preserves per-command
+        # attribution (see #337, #339). The session's overall project_id is
+        # still set to the final cwd's project for backward compatibility.
+        def _project_for_cwd(cwd_path: str, ts: int):
+            nonlocal project_id_counter
+            project_root = find_project_root(cwd_path)
+            if project_root == home or project_root == "/":
+                return None
+            if project_root not in projects_dict:
+                display_path = project_root
+                if project_root == home:
+                    display_path = "~"
+                elif project_root.startswith(home + "/"):
+                    display_path = "~" + project_root[len(home):]
+                name = humanize_project_name(project_root)
+                project = Project(
+                    id=project_id_counter,
+                    name=name,
+                    path=display_path,
+                    first_seen=ts,
+                    last_seen=ts,
+                    session_count=0,
+                    total_time=0,
+                )
+                projects_dict[project_root] = project
+                project_id_counter += 1
+            else:
+                project = projects_dict[project_root]
+                project.first_seen = min(project.first_seen, ts)
+                project.last_seen = max(project.last_seen, ts)
+            return project
+
         for cmd in session.commands:
+            # Attribute this command to whatever project the cwd resolved to
+            # *before* its embedded cd subcommands fire. This preserves the
+            # invariant "the command itself ran in cwd, then the cwd changed
+            # for the next command".
+            active_project = _project_for_cwd(cwd, cmd.timestamp)
+            cmd.project_id = active_project.id if active_project is not None else None
+
             cmd_full = cmd.command.strip()
             subcommands = split_chained_commands(cmd_full)
-            
+
             for subcmd in subcommands:
                 # Must start with cd followed by space/tab/EOF
                 if subcmd == "cd" or subcmd.startswith("cd ") or subcmd.startswith("cd\t"):
@@ -356,7 +432,7 @@ def detect_projects(sessions: List[Session]) -> List[Project]:
                                     if os.path.exists(test_path_ancestor):
                                         resolved = test_path_ancestor
                                         break
-                                        
+
                                 if not resolved:
                                     # Try relative to home directory
                                     test_path_home = os.path.abspath(os.path.join(home, path))
@@ -365,52 +441,58 @@ def detect_projects(sessions: List[Session]) -> List[Project]:
                                     else:
                                         # Fallback: just join it relative to current cwd
                                         resolved = test_path
-                                    
+
                         if resolved:
                             if resolved != cwd:
                                 old_cwd = cwd
                                 cwd = resolved
-                        
-        # The project path is the resolved cwd at the end of the session
+
+        # The project path is the resolved cwd at the end of the session.
+        # Session-level project_id remains the final project so existing
+        # callers (formatter/web/insights) keep working unchanged.
         project_root = find_project_root(cwd)
         is_valid_project = project_root != home and project_root != "/"
-        
+
         if is_valid_project:
-            if project_root not in projects_dict:
-                # Convert absolute project root back to a user-friendly path (using ~ if possible)
+            final_project = projects_dict.get(project_root)
+            if final_project is None:
+                # Edge case: cwd walked to a path we haven't registered yet
+                # (e.g. final cwd differs from every cwd seen mid-session).
                 display_path = project_root
                 if project_root == home:
                     display_path = "~"
                 elif project_root.startswith(home + "/"):
                     display_path = "~" + project_root[len(home):]
-                    
                 name = humanize_project_name(project_root)
-                project = Project(
+                final_project = Project(
                     id=project_id_counter,
                     name=name,
                     path=display_path,
                     first_seen=session.start_time,
-                    last_seen=session.end_time,
+                    last_seen=effective_end,
                     session_count=1,
                     total_time=session.duration_seconds
                 )
-                projects_dict[project_root] = project
+                projects_dict[project_root] = final_project
                 project_id_counter += 1
             else:
-                project = projects_dict[project_root]
-                project.first_seen = min(project.first_seen, session.start_time)
-                project.last_seen = max(project.last_seen, session.end_time)
-                project.session_count += 1
-                project.total_time += session.duration_seconds
-                
-            # Link session and commands to project
-            _assign_project_to_session(session, project, projects_dict)
+                final_project.first_seen = min(final_project.first_seen, session.start_time)
+                final_project.last_seen = max(final_project.last_seen, effective_end)
+                final_project.session_count += 1
+                final_project.total_time += session.duration_seconds
+
+            # Link session to final project. Per-command project_id was
+            # already populated by the inline attribution loop above and
+            # must be preserved (don't overwrite).
+            _assign_project_to_session(
+                session, final_project, projects_dict, overwrite_per_command=False
+            )
         else:
             session.project_id = None
             for cmd in session.commands:
                 cmd.project_id = None
-        
-        last_session_end = session.end_time
+
+        last_session_end = effective_end
     
     # ── Pass 2: Command-based inference for "Other" sessions ──────────
     # Build a reverse lookup: abs_path -> project for known projects
