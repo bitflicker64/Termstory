@@ -772,6 +772,13 @@ class TimestampDetective:
             if ts:
                 return (ts, f"gem: {gem_name}")
 
+        # ── uv add / uv pip install → uv.lock ──
+        if re.match(r'^uv\s+(?:add|pip\s+install)\s', cmd):
+            lock_path = os.path.join(virtual_cwd, "uv.lock")
+            ts = self._get_file_timestamp(lock_path)
+            if ts:
+                return (ts, "uv: uv.lock")
+
         return None
 
     def _get_pip_package_timestamp(self, package: str) -> Optional[int]:
