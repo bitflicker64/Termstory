@@ -85,21 +85,18 @@ def test_custom_termstoryignore(tmp_path):
         # Mock expanduser to return our temp ignore file for the first path only
         mock_expanduser.side_effect = lambda x: str(ignore_file) if x == '~/.termstoryignore' else str(tmp_path / "nonexistent")
         
-        # Clear existing patterns and reload
-        original_patterns = sanitizer.CUSTOM_REDACTION_PATTERNS
-        sanitizer.CUSTOM_REDACTION_PATTERNS = tuple()
+        # Reset cache and reload
+        sanitizer._cached_ignore_rules = ()
+        sanitizer._cached_ignore_mtime = 0
         
-        sanitizer.CUSTOM_REDACTION_PATTERNS = sanitizer.load_custom_ignore_rules()
+        rules = sanitizer.load_custom_ignore_rules()
         
-        assert len(sanitizer.CUSTOM_REDACTION_PATTERNS) == 2
+        assert len(rules) == 2
         
         # Test if it redacts
         cmd = "echo my_custom_secret_pattern is here"
         redacted = sanitizer.redact_command(cmd)
         assert redacted == "echo [REDACTED_CUSTOM] is here"
-        
-        # Restore original patterns
-        sanitizer.CUSTOM_REDACTION_PATTERNS = original_patterns
 
 def test_high_entropy_heuristic():
     # Length >= 24, high entropy
@@ -193,7 +190,7 @@ def test_custom_redaction_patterns_race_condition():
         
     assert not errors, f"Exceptions occurred in threads: {errors}"
     import termstory.sanitizer
-    assert isinstance(termstory.sanitizer.CUSTOM_REDACTION_PATTERNS, tuple)
+    assert isinstance(termstory.sanitizer._cached_ignore_rules, tuple)
 
 
 def test_high_entropy_git_shas_not_redacted():
