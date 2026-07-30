@@ -53,6 +53,13 @@ from termstory.config import load_config, save_config
 from termstory.ai import generate_ai_summary, generate_timeframe_summary, generate_daily_chronicle, generate_wrapped_summary
 from termstory.insights import calculate_focus_score, calculate_time_of_day_distribution, assign_daily_rpg_class
 
+# Gap before rendering a debounced search update.
+_FRAME_GAP = 0.25
+
+# Timeout between bulk-summary animation renders.
+_ANIMATION_RENDER_TIMEOUT = 2.0
+
+
 def is_worker_cancelled() -> bool:
     try:
         from textual.worker import get_current_worker, NoActiveWorker
@@ -2660,7 +2667,7 @@ class TermStoryWorkspace(App):
     @work(exclusive=True)
     async def debounce_search(self, query: str) -> None:
         """Debounced search — waits briefly then repopulates the tree."""
-        await asyncio.sleep(0.25)
+        await asyncio.sleep(_FRAME_GAP)
         tree = self.query_one("#history-navigator")
         tree.populate(self.projects, self.sessions, search_query=query, is_deep_search=getattr(self, "is_deep_search_active", False))
         self.refresh_details_canvas()
@@ -3119,7 +3126,7 @@ class TermStoryWorkspace(App):
             self.call_from_thread(update_progress)
             
             if idx < total - 1:
-                time.sleep(2.0)
+                time.sleep(_ANIMATION_RENDER_TIMEOUT)
                 
         self.bulk_running_timeframes.pop(timeframe_id, None)
         if aborted:
