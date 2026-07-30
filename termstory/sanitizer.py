@@ -269,8 +269,8 @@ def redact_command(cmd: str) -> str:
     # 9. Entropy-based heuristic for high-entropy strings
     cmd = redact_high_entropy(cmd)
     
-    # 10. Custom User Rules
-    for pattern in CUSTOM_REDACTION_PATTERNS:
+    # 10. Custom User Rules (live-reloaded from ~/.termstoryignore)
+    for pattern in load_custom_ignore_rules():
         cmd = pattern.sub('[REDACTED_CUSTOM]', cmd)
         
     return cmd
