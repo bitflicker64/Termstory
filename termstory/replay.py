@@ -10,6 +10,9 @@ from termstory.models import Session, Command, Project, format_duration
 
 console = Console()
 
+# Base delay divided by playback speed after each command is typed.
+_PLAYBACK_DIVISOR = 0.15
+
 MAX_REPLAY_GAP_SECONDS = 2.0
 INITIAL_REPLAY_PAUSE_SECONDS = 0.5
 
@@ -152,7 +155,7 @@ def run_replay(db: Database, session_id: Optional[int] = None, speed: float = 1.
                 time.sleep(char_delay)
 
             # Wait briefly after typing before executing
-            time.sleep(0.15 / speed)
+            time.sleep(_PLAYBACK_DIVISOR / speed)
             sys.stdout.write("\n")
             sys.stdout.flush()
 
