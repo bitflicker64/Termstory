@@ -475,10 +475,10 @@ class OnboardingScreen(_DeferredDismissMixin, ModalScreen[dict]):
                 id="modal-desc"
             ),
             Horizontal(
-                Button("Groq [Ctrl+g]", variant="default", id="btn-select-groq"),
-                Button("OpenAI [Ctrl+a]", variant="default", id="btn-select-openai"),
-                Button("Ollama [Ctrl+l]", variant="default", id="btn-select-ollama"),
-                Button("Custom [Ctrl+c]", variant="default", id="btn-select-custom"),
+                Button("Groq", variant="default", id="btn-select-groq"),
+                Button("OpenAI", variant="default", id="btn-select-openai"),
+                Button("Ollama", variant="default", id="btn-select-ollama"),
+                Button("Custom", variant="default", id="btn-select-custom"),
                 id="modal-provider-selector"
             ),
             Vertical(
