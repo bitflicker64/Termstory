@@ -1744,4 +1744,86 @@ def test_compute_ghost_typing_pacing_empty():
     assert compute_ghost_typing_pacing([]) == []
 
 
+@pytest.mark.asyncio
+async def test_chronicle_playback_clears_details_canvas_for_date_node(monkeypatch):
+    """Pressing ``p`` on a date node must mount ChroniclePlaybackCanvas inside
+    the DetailsCanvas (clearing its previous contents) — issue #43."""
+    from textual.css.query import NoMatches
+
+    from termstory.tui import ChroniclePlaybackCanvas
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = os.path.join(tmp_dir, "test.db")
+        db = Database(db_path)
+        db.init_db()
+
+        now = int(datetime.now().timestamp())
+        p = Project(
+            id=1, name="Ghost Project", path="~/ghost",
+            first_seen=now, last_seen=now, session_count=1, total_time=600,
+        )
+        # Three commands in a burst (gap < 2s) — should be "typed" instantly.
+        cmd1 = Command(timestamp=now, command="git add .", session_id=1, project_id=1)
+        cmd2 = Command(timestamp=now + 1, command="git commit -m w", session_id=1, project_id=1)
+        cmd3 = Command(timestamp=now + 2, command="git push", session_id=1, project_id=1)
+        # Then a big gap (90 minutes) to a fourth command — should pause.
+        cmd4 = Command(timestamp=now + 90 * 60, command="echo done", session_id=1, project_id=1)
+        s = Session(
+            id=1, start_time=now, end_time=now + 600, duration_seconds=600,
+            project_id=1, commands=[cmd1, cmd2, cmd3, cmd4],
+        )
+        db.save_data([p], [s], [cmd1, cmd2, cmd3, cmd4])
+
+        app = TermStoryWorkspace(
+            db,
+            days_limit=30,
+            config_override={
+                "has_seen_onboarding": True,
+                "ai_enabled": False,
+            },
+        )
+
+        today_str = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+        app.db.save_macro_summary(today_str, "date", "Today you shipped the ghost typer.")
+
+        async with app.run_test() as pilot:
+            tree = app.query_one("#history-navigator")
+            timeline_root = tree.root.children[0]
+            month_node = timeline_root.children[0]
+            month_node.expand()
+            await pilot.pause()
+            date_node = month_node.children[0]
+            date_node.expand()
+            await pilot.pause()
+            tree.select_node(date_node)
+            await pilot.pause()
+            assert tree.cursor_node is date_node
+
+            details = app.query_one("#details-canvas")
+            assert len(details.children) > 0
+
+            app.action_play_ghost_playback()
+            await pilot.pause()
+
+            mounted = None
+            try:
+                mounted = details.query_one("#chronicle-playback-canvas")
+            except NoMatches:
+                pytest.fail(
+                    "ChroniclePlaybackCanvas was not mounted into DetailsCanvas."
+                )
+            assert isinstance(mounted, ChroniclePlaybackCanvas)
+
+            assert len(details.children) == 1
+
+            assert len(mounted.pacing) == 4
+            assert mounted.pacing[1]["char_delay"] < 0.02
+            assert mounted.pacing[2]["char_delay"] < 0.02
+            assert mounted.pacing[3]["post_delay"] > 0.5
+
+            for _ in range(10):
+                await pilot.pause()
+                await asyncio.sleep(0.01)
+
+
 
