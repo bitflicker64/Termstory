@@ -434,3 +434,99 @@ def test_listdir_timeout_caching_custom_ttl(monkeypatch):
     with pytest.raises(TimeoutError) as exc_info2:
         _listdir_with_timeout("/some/custom/ttl/mount", timeout=0.1)
     assert "cached" not in str(exc_info2.value)
+
+
+def test_detect_projects_with_null_end_time(monkeypatch):
+    """Active sessions with end_time=None must not crash project inference.
+
+    Regression test for #312: ``Session(end_time=None, duration_seconds=0)``
+    was causing ``TypeError`` when ``detect_projects`` tried to compare or
+    subtract ``None`` for project last-seen / gap calculations.
+    """
+    import os
+    original_listdir = os.listdir
+
+    def mock_listdir(path):
+        if path == "/Users/username/active-project":
+            return [".git"]
+        return original_listdir(path)
+
+    monkeypatch.setattr(os, "listdir", mock_listdir)
+
+    # Completed session with cd (control)
+    s1 = Session(
+        id=1, start_time=1000, end_time=1100, duration_seconds=100,
+        project_id=None,
+        commands=[
+            Command(timestamp=1000, command="cd ~/projects/incubator-hugegraph"),
+            Command(timestamp=1050, command="git status"),
+        ],
+    )
+
+    # Active session with end_time=None and duration_seconds=0 (the bug)
+    s2 = Session(
+        id=2, start_time=2000, end_time=None, duration_seconds=0,
+        project_id=None,
+        commands=[Command(timestamp=2000, command="echo active session")],
+    )
+
+    # Should not raise TypeError
+    projects = detect_projects([s1, s2])
+
+    # The project should still be created from s1
+    proj = next((p for p in projects if "HugeGraph" in p.name), None)
+    assert proj is not None
+    assert s1.project_id == proj.id
+
+    # Project last_seen must remain a valid integer (start_time as fallback for active session)
+    assert isinstance(proj.last_seen, int)
+
+    # The active session should be propagated to the same project (it falls between
+    # s1 and no further session, so the neighbor-propagation forward path may
+    # not assign it — but the call must at least complete without error).
+    # The crucial assertion is the no-crash + last_seen integer invariant.
+
+
+def test_detect_projects_with_null_end_time_gap_arithmetic(monkeypatch):
+    """Gap arithmetic between a completed and an active session must not crash."""
+    import os
+    original_listdir = os.listdir
+
+    def mock_listdir(path):
+        if "project-alpha" in path or "project-beta" in path:
+            return [".git"]
+        return original_listdir(path)
+
+    monkeypatch.setattr(os, "listdir", mock_listdir)
+
+    # Completed session in project-alpha
+    s1 = Session(
+        id=1, start_time=1000, end_time=1100, duration_seconds=100,
+        project_id=None,
+        commands=[
+            Command(timestamp=1000, command="cd ~/projects/project-alpha"),
+            Command(timestamp=1050, command="git status"),
+        ],
+    )
+    # Active session with end_time=None — sandwiched neighbor propagation target
+    s2 = Session(
+        id=2, start_time=2000, end_time=None, duration_seconds=0,
+        project_id=None,
+        commands=[Command(timestamp=2000, command="git commit -m 'wip'")],
+    )
+    # Completed session in project-alpha again — sandwich with s2 in middle
+    s3 = Session(
+        id=3, start_time=3000, end_time=3100, duration_seconds=100,
+        project_id=None,
+        commands=[
+            Command(timestamp=3000, command="cd ~/projects/project-alpha"),
+            Command(timestamp=3050, command="git log"),
+        ],
+    )
+
+    # Must not raise
+    projects = detect_projects([s1, s2, s3])
+
+    # s2 has a git command so it could be assigned via Pass 2; what matters is
+    # detect_projects returns without raising.
+    assert isinstance(projects, list)

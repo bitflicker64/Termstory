@@ -300,36 +300,56 @@ def _assign_project_to_session(session, project, projects_dict) -> None:
         cmd.project_id = project.id
 
 
+def _effective_end_time(session) -> int:
+    """Return the effective end timestamp for a session.
+
+    Active/open sessions can have ``end_time = None`` (e.g. ``Session(end_time=None,
+    duration_seconds=0)``). To keep project inference and time-gap arithmetic
+    type-safe, fall back to the session's ``start_time`` so that
+    comparisons/subtractions never see ``None``.
+    """
+    end = getattr(session, "end_time", None)
+    if end is None:
+        return session.start_time
+    return end
+
+
 def detect_projects(sessions: List[Session]) -> List[Project]:
     """Detect projects from cd commands in sessions, humanize names, and update links in sessions/commands.
-    
+
     Uses a 3-pass approach:
       Pass 1: Track cd commands to maintain simulated CWD (existing logic)
       Pass 2: Command-based inference — git/build commands + file path matching for 'Other' sessions
       Pass 3: Neighbor propagation — assign 'Other' sessions based on adjacent session context
+
+    Active sessions with ``end_time=None`` are handled gracefully via
+    :func:`_effective_end_time` so project inference never crashes on
+    ``TypeError`` from comparing/subtracting ``None``.
     """
     projects_dict = {}
     project_id_counter = 1
-    
+
     # Sort sessions by start_time to keep timelines linear
     sorted_sessions = sorted(sessions, key=lambda s: s.start_time)
-    
+
     # Persist cwd state across sessions to mirror terminal tab preservation
     cwd = os.path.expanduser("~")
     home = os.path.abspath(os.path.expanduser("~"))
     old_cwd = home
-    
+
     # ── Pass 1: cd-tracking (existing logic) ──────────────────────────
     last_session_end = None
     for session in sorted_sessions:
+        effective_end = _effective_end_time(session)
+
         if last_session_end is not None and session.start_time - last_session_end > 7200:
             old_cwd = home
             cwd = home
-        
+
         for cmd in session.commands:
             cmd_full = cmd.command.strip()
             subcommands = split_chained_commands(cmd_full)
-            
+
             for subcmd in subcommands:
                 # Must start with cd followed by space/tab/EOF
                 if subcmd == "cd" or subcmd.startswith("cd ") or subcmd.startswith("cd\t"):
@@ -356,7 +376,7 @@ def detect_projects(sessions: List[Session]) -> List[Project]:
                                     if os.path.exists(test_path_ancestor):
                                         resolved = test_path_ancestor
                                         break
-                                        
+
                                 if not resolved:
                                     # Try relative to home directory
                                     test_path_home = os.path.abspath(os.path.join(home, path))
@@ -365,16 +385,16 @@ def detect_projects(sessions: List[Session]) -> List[Project]:
                                     else:
                                         # Fallback: just join it relative to current cwd
                                         resolved = test_path
-                                    
+
                         if resolved:
                             if resolved != cwd:
                                 old_cwd = cwd
                                 cwd = resolved
-                        
+
         # The project path is the resolved cwd at the end of the session
         project_root = find_project_root(cwd)
         is_valid_project = project_root != home and project_root != "/"
-        
+
         if is_valid_project:
             if project_root not in projects_dict:
                 # Convert absolute project root back to a user-friendly path (using ~ if possible)
@@ -383,14 +403,14 @@ def detect_projects(sessions: List[Session]) -> List[Project]:
                     display_path = "~"
                 elif project_root.startswith(home + "/"):
                     display_path = "~" + project_root[len(home):]
-                    
+
                 name = humanize_project_name(project_root)
                 project = Project(
                     id=project_id_counter,
                     name=name,
                     path=display_path,
                     first_seen=session.start_time,
-                    last_seen=session.end_time,
+                    last_seen=effective_end,
                     session_count=1,
                     total_time=session.duration_seconds
                 )
@@ -399,18 +419,18 @@ def detect_projects(sessions: List[Session]) -> List[Project]:
             else:
                 project = projects_dict[project_root]
                 project.first_seen = min(project.first_seen, session.start_time)
-                project.last_seen = max(project.last_seen, session.end_time)
+                project.last_seen = max(project.last_seen, effective_end)
                 project.session_count += 1
                 project.total_time += session.duration_seconds
-                
+
             # Link session and commands to project
             _assign_project_to_session(session, project, projects_dict)
         else:
             session.project_id = None
             for cmd in session.commands:
                 cmd.project_id = None
-        
-        last_session_end = session.end_time
+
+        last_session_end = effective_end
     
     # ── Pass 2: Command-based inference for "Other" sessions ──────────
     # Build a reverse lookup: abs_path -> project for known projects
@@ -458,13 +478,15 @@ def detect_projects(sessions: List[Session]) -> List[Project]:
             if any(cmd.command.strip().startswith("git ") for cmd in session.commands):
                 closest_project = None
                 closest_gap = float("inf")
-                
+                session_effective_end = _effective_end_time(session)
+
                 for other_session in sorted_sessions:
                     if other_session.project_id is None or other_session is session:
                         continue
+                    other_effective_end = _effective_end_time(other_session)
                     gap = min(
-                        abs(session.start_time - other_session.end_time),
-                        abs(other_session.start_time - session.end_time)
+                        abs(session.start_time - other_effective_end),
+                        abs(other_session.start_time - session_effective_end)
                     )
                     if gap < closest_gap and gap < 3600:  # within 1 hour
                         closest_gap = gap
@@ -474,7 +496,7 @@ def detect_projects(sessions: List[Session]) -> List[Project]:
                             if proj.id == closest_project_id:
                                 closest_project = proj
                                 break
-                
+
                 if closest_project:
                     _assign_project_to_session(session, closest_project, projects_dict)
                     closest_project.session_count += 1
@@ -484,34 +506,35 @@ def detect_projects(sessions: List[Session]) -> List[Project]:
     # If an "Other" session is sandwiched between two sessions of the same project,
     # or immediately follows a known project session (within 2 hours), assign it.
     PROPAGATION_GAP_THRESHOLD = 7200  # 2 hours in seconds
-    
+
     for i, session in enumerate(sorted_sessions):
         if session.project_id is not None:
             continue  # already assigned
-        
+
         prev_project_id = None
         next_project_id = None
         prev_gap = float("inf")
         next_gap = float("inf")
         prev_project = None
         next_project = None
-        
+        session_effective_end = _effective_end_time(session)
+
         # Look backward for the nearest assigned session
         for j in range(i - 1, -1, -1):
             if sorted_sessions[j].project_id is not None:
                 prev_project_id = sorted_sessions[j].project_id
-                prev_gap = session.start_time - sorted_sessions[j].end_time
+                prev_gap = session.start_time - _effective_end_time(sorted_sessions[j])
                 for proj in projects_dict.values():
                     if proj.id == prev_project_id:
                         prev_project = proj
                         break
                 break
-        
+
         # Look forward for the nearest assigned session
         for j in range(i + 1, len(sorted_sessions)):
             if sorted_sessions[j].project_id is not None:
                 next_project_id = sorted_sessions[j].project_id
-                next_gap = sorted_sessions[j].start_time - session.end_time
+                next_gap = sorted_sessions[j].start_time - session_effective_end
                 for proj in projects_dict.values():
                     if proj.id == next_project_id:
                         next_project = proj
