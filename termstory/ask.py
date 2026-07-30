@@ -196,7 +196,7 @@ def search_ask(query: str, db) -> List[Session]:
                 LEFT JOIN commands c ON s.id = c.session_id
                 LEFT JOIN commits co ON s.project_id = co.project_id
                     AND co.timestamp >= s.start_time - 300
-                    AND co.timestamp <= s.end_time + 600
+                    AND co.timestamp <= COALESCE(s.end_time, s.start_time) + 600
                 WHERE {" OR ".join(where_clauses)}
             """
             cursor.execute(sql, params)
