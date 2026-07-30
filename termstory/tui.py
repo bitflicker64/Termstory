@@ -44,7 +44,7 @@ from textual.screen import ModalScreen
 from textual.binding import Binding
 from textual.markup import escape
 
-from termstory.models import Session, Project, format_duration
+from termstory.models import Session, Project, Command, format_duration
 from termstory.database import Database
 from termstory.project import disambiguate_project_names
 from termstory.formatter import _is_noise_command, clean_command_to_memory, generate_daily_activity_punch_card, get_operator_handle, get_github_avatar_ascii
@@ -356,6 +356,55 @@ def get_session_memory_str(session: Session) -> str:
     session._cached_memory_str = val
     return val
 
+
+def compute_ghost_typing_pacing(commands: List[Command]) -> List[Dict[str, float]]:
+    """Compute dynamic per-command typing pacing for the Ghost Typer playback.
+
+    The pacing list has one entry per command (same order as ``commands``). Each
+    entry contains:
+      - ``char_delay``: seconds to wait between individual character reveals
+      - ``post_delay``: seconds to wait AFTER finishing this command and BEFORE
+        starting the next one
+      - ``pre_delay``: seconds to wait BEFORE starting this command (typically 0)
+
+    Rules (issue #43):
+      - Fast bursts (gap to previous command < 2s) -> ``char_delay`` collapses to
+        near-zero so the command is "typed" almost instantly.
+      - Normal gaps (2s <= gap <= 60min) -> ``char_delay`` is a comfortable
+        typing pace (~0.03s/char).
+      - Big session gaps (gap > 60min) -> ``post_delay`` is scaled up so the
+        typing visibly pauses between sessions, while per-character speed stays
+        at the normal rate.
+
+    Commands with ``timestamp == 0`` (legacy / synthetic) are treated as part of
+    a single burst since no per-command gaps can be reliably inferred for them.
+    """
+    pacing: List[Dict[str, float]] = []
+    prev_ts: Optional[int] = None
+    for cmd in commands:
+        ts = getattr(cmd, "timestamp", 0) or 0
+        gap: Optional[float] = None
+        if prev_ts is not None and ts > 0 and prev_ts > 0:
+            gap = float(ts - prev_ts)
+
+        if gap is not None and gap < 2.0:
+            char_delay = 0.005
+            post_delay = 0.02
+        elif gap is not None and gap > 60 * 60:
+            char_delay = 0.03
+            post_delay = min(2.5, gap / 60.0)
+        else:
+            char_delay = 0.03
+            post_delay = 0.08
+
+        pacing.append({
+            "char_delay": char_delay,
+            "post_delay": post_delay,
+            "pre_delay": 0.0,
+        })
+        if ts > 0:
+            prev_ts = ts
+    return pacing
 
 
 # ==========================================
