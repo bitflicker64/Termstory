@@ -1,5 +1,5 @@
 import importlib.metadata
 
-__version__ = "0.6.4"
+__version__ = importlib.metadata.version("termstory")
 
 
