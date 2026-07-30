@@ -72,6 +72,7 @@ import getpass
 import subprocess
 import difflib
 import site
+from collections import OrderedDict
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -97,7 +98,7 @@ class TimestampDetective:
         self.project_paths = [os.path.expanduser(p) for p in (project_paths or [])]
 
         # Cache: repo_path -> list of commit dicts  (avoid repeated git log calls)
-        self._git_log_cache: Dict[str, List[Dict]] = {}
+        self._git_log_cache: OrderedDict[str, List[Dict]] = OrderedDict()
 
         # Lazily resolved package manager roots — populated on first use
         self._brew_prefix: Optional[str] = None   # e.g. /opt/homebrew
@@ -216,6 +217,7 @@ class TimestampDetective:
         Returns an empty list if the repo is invalid or git is unavailable.
         """
         if repo_path in self._git_log_cache:
+            self._git_log_cache.move_to_end(repo_path)
             return self._git_log_cache[repo_path]
 
         commits = []
