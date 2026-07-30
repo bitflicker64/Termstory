@@ -3667,28 +3667,67 @@ class TermStoryWorkspace(App):
         if not node or not node.data:
             self.notify("Select a session or date node to play back.", severity="warning")
             return
-            
+
         node_type = node.data.get("type")
-        commands = []
         if node_type == "session":
             session_id = node.data.get("session_id")
             session = next((s for s in self.sessions if s.id == session_id), None)
+            commands: List[str] = []
             if session:
                 commands = [cmd.command for cmd in session.commands]
-        elif node_type == "date":
-            date_str = node.data.get("date_str")
-            matched = [s for s in self.sessions if s.date_str == date_str]
-            for s in matched:
-                commands.extend(cmd.command for cmd in s.commands)
-        else:
-            self.notify("Select a session or date node to play back.", severity="warning")
-            return
-            
-        if not commands:
+            if commands:
+                self.push_screen(GhostTyperScreen(commands))
+                return
             self.notify("No commands found in selection.", severity="warning")
             return
-            
-        self.push_screen(GhostTyperScreen(commands))
+
+        if node_type == "date":
+            date_str = node.data.get("date_str")
+            matched = [s for s in self.sessions if s.date_str == date_str]
+            all_cmds: List[Command] = []
+            for s in matched:
+                all_cmds.extend(s.commands)
+            all_cmds.sort(key=lambda c: c.timestamp)
+            if not all_cmds:
+                self.notify("No commands found in selection.", severity="warning")
+                return
+
+            ai_narrative = ""
+            try:
+                cached = self.app.db.get_macro_summary(date_str)
+                if cached:
+                    ai_narrative = cached
+            except Exception as e:
+                logger.debug("TUI UI exception suppressed: %s", e)
+
+            try:
+                details = self.query_one("#details-canvas")
+            except Exception:
+                self.notify("Details canvas unavailable.", severity="error")
+                return
+
+            details.remove_children()
+
+            def _restore_chronicle() -> None:
+                try:
+                    self.refresh_details_canvas()
+                except Exception as e:
+                    logger.debug("TUI UI exception suppressed: %s", e)
+
+            canvas = ChroniclePlaybackCanvas(
+                ai_narrative,
+                all_cmds,
+                on_complete=_restore_chronicle,
+                id="chronicle-playback-canvas",
+            )
+            details.mount(canvas)
+            self.notify(
+                f"\u2620 Ghost Playback: {date_str} ({len(all_cmds)} commands)",
+                timeout=3.0,
+            )
+            return
+
+        self.notify("Select a session or date node to play back.", severity="warning")
 
     def action_show_onboarding(self) -> None:
         self.push_screen(OnboardingScreen(self.config), self.handle_onboarding_result)
