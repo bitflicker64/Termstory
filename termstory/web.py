@@ -6,6 +6,7 @@ import webbrowser
 from typing import Optional
 from termstory.insights import analyze_all
 from termstory.formatter import _is_noise_command
+from termstory.sanitizer import redact_command
 from termstory.database import Database
 
 logger = logging.getLogger(__name__)
