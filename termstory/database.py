@@ -6,6 +6,9 @@ from termstory.models import Command, Session, Project
 from termstory.config import get_config_value, load_config
 import time
 
+# Delay between retries when database initialization encounters a lock.
+_RETRY_SLEEP = 0.1
+
 
 def _safe_rollback_and_reraise(conn, original_exception):
     """Roll back a failed transaction, surfacing the *original* exception.
@@ -259,7 +262,7 @@ class Database:
                 if "database is locked" in str(e).lower():
                     if conn:
                         conn.close()
-                    time.sleep(0.1)
+                    time.sleep(_RETRY_SLEEP)
                     continue
                 else:
                     if conn:
