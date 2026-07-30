@@ -439,7 +439,7 @@ class OnboardingScreen(_DeferredDismissMixin, ModalScreen[dict]):
         ("ctrl+a", "choose_openai", "Select OpenAI"),
         ("ctrl+l", "choose_ollama", "Select Ollama"),
         ("ctrl+c", "choose_custom", "Select Custom"),
-        ("ctrl+d", "choose_disabled", "Keep Local Only (No AI)"),
+        ("ctrl+d", "choose_disabled", "No AI (Local)"),
         ("escape", "dismiss_none", "Close"),
     ]
     
@@ -495,8 +495,8 @@ class OnboardingScreen(_DeferredDismissMixin, ModalScreen[dict]):
             ),
             Horizontal(
                 Button("Save & Enable", variant="success", id="btn-save"),
-                Button("Keep Local Only (No AI)", variant="error", id="btn-disable-ai"),
-                Button("Read Privacy Policy", variant="default", id="btn-read-privacy"),
+                Button("No AI (Local)", variant="error", id="btn-disable-ai"),
+                Button("Privacy Policy", variant="default", id="btn-read-privacy"),
                 id="modal-actions"
             ),
             id="modal-panel"
