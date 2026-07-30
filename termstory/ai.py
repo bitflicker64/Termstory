@@ -12,6 +12,9 @@ from termstory.sanitizer import sanitize_session_commands, redact_command
 
 logger = logging.getLogger(__name__)
 
+# Polling interval for cancellation checks during LLM retry backoff.
+_LLM_RETRY_SLEEP = 0.1
+
 _local_ai_state = threading.local()
 
 # Circuit Breaker Configuration
@@ -222,7 +225,7 @@ def _send_llm_request(
             while time.time() - sleep_start < backoff:
                 if _is_current_worker_cancelled():
                     return None
-                time.sleep(0.1)
+                time.sleep(_LLM_RETRY_SLEEP)
             backoff *= 2.0
             
         if _is_current_worker_cancelled():
