@@ -7,9 +7,6 @@ from typing import List, Tuple, Optional
 logger = logging.getLogger(__name__)
 
 # Load custom redaction patterns from .termstoryignore
-# IMPORTANT: This loads once at module import time (called at the bottom of this file).
-# Edits to ~/.termstoryignore take effect only after restarting TermStory — there is no
-# live-reload. This is a known limitation documented in SECURITY.md.
 def load_custom_ignore_rules() -> tuple:
     local_patterns = []
     paths = [
@@ -30,7 +27,6 @@ def load_custom_ignore_rules() -> tuple:
             except Exception:
                 pass
     return tuple(local_patterns)
-CUSTOM_REDACTION_PATTERNS = load_custom_ignore_rules()
 # Blacklist patterns - if a command matches any of these, the entire session is dropped from AI
 BLACKLIST_PATTERNS = [
     re.compile(r'\bvault\b', re.IGNORECASE),
