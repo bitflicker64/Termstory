@@ -93,11 +93,15 @@ class TimestampDetective:
         be mapped to a valid git root.
     """
 
+    MAX_GIT_LOG_CACHE: int = 50
+    """Maximum number of git log entries to keep in the LRU cache."""
+
     def __init__(self, search_root: str, project_paths: Optional[List[str]] = None):
         self.search_root = os.path.expanduser(search_root)
         self.project_paths = [os.path.expanduser(p) for p in (project_paths or [])]
 
         # Cache: repo_path -> list of commit dicts  (avoid repeated git log calls)
+        # Bounded LRU cache — evicts least-recently-used entries when full.
         self._git_log_cache: OrderedDict[str, List[Dict]] = OrderedDict()
 
         # Lazily resolved package manager roots — populated on first use
@@ -251,6 +255,9 @@ class TimestampDetective:
             logger.debug("timestamp_detective probe failed: %s", e)
 
         self._git_log_cache[repo_path] = commits
+        self._git_log_cache.move_to_end(repo_path)
+        if len(self._git_log_cache) > self.MAX_GIT_LOG_CACHE:
+            self._git_log_cache.popitem(last=False)
         return commits
 
     def _clean_for_match(self, msg: str) -> str:
