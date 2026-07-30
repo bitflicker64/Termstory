@@ -89,11 +89,11 @@ def get_web_data(db: Database, start_ts: Optional[int] = None, end_ts: Optional[
                 "cleaned_message": c.get("cleaned_message", "")
             })
 
-        # Mapped commands
+        # Mapped commands (redacted to avoid embedding secrets in the report)
         commands = []
         for cmd in s.commands:
             commands.append({
-                "command": cmd.command,
+                "command": redact_command(cmd.command),
                 "timestamp": cmd.timestamp,
                 "exit_code": cmd.exit_code,
                 "is_legacy": cmd.is_legacy,
