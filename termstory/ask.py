@@ -156,7 +156,7 @@ def search_ask(query: str, db) -> List[Session]:
                 OR (f.type = 'command' AND CAST(f.ref_id AS INTEGER) = s.id)
                 OR (f.type = 'commit' AND s.project_id = CAST(f.project_id AS INTEGER)
                     AND CAST(f.timestamp AS INTEGER) >= s.start_time - 300
-                    AND CAST(f.timestamp AS INTEGER) <= s.end_time + 600)
+                    AND CAST(f.timestamp AS INTEGER) <= COALESCE(s.end_time, s.start_time) + 600)
             )
             WHERE f.ref_id IS NOT NULL
         """
