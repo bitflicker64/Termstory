@@ -17,6 +17,7 @@ from termstory.tui import (
     calculate_dashboard_stats,
     calculate_streak,
     clean_command_to_memory,
+    compute_ghost_typing_pacing,
     deduplicate_sessions,
     generate_heatmap,
     get_session_memory_str,
@@ -1664,3 +1665,83 @@ async def test_tui_matrix_defrag_no_extra_ui_panels(monkeypatch):
             # Final pause to drain any _finish_defrag cleanup messages before
             # the test app is torn down (avoids noisy stderr during teardown).
             await pilot.pause()
+
+
+# ---------------------------------------------------------------------------
+# Issue #43 — Ghost Typer Playback (pacing helper)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_ghost_typing_pacing_burst_collapses_char_delay():
+    """Tight command bursts (< 2s gap) collapse ``char_delay`` so commands
+    appear nearly instantly — see issue #43."""
+    base = 1_700_000_000
+    cmds = [
+        Command(timestamp=base, command="git add ."),
+        Command(timestamp=base + 1, command="git commit -m w"),
+        Command(timestamp=base + 2, command="git push"),
+    ]
+    pacing = compute_ghost_typing_pacing(cmds)
+    assert len(pacing) == 3
+    assert pacing[0]["char_delay"] >= 0.02  # first command uses default
+    assert pacing[1]["char_delay"] < 0.02   # 1s after first → burst
+    assert pacing[2]["char_delay"] < 0.02   # 1s after previous → burst
+    for entry in pacing:
+        assert "post_delay" in entry
+        assert "pre_delay" in entry
+
+
+def test_compute_ghost_typing_pacing_long_gap_triggers_pause():
+    """Big session gaps (> 60min) scale ``post_delay`` so the typing visibly
+    pauses between sessions."""
+    base = 1_700_000_000
+    cmds = [
+        Command(timestamp=base, command="echo morning"),
+        Command(timestamp=base + 90 * 60, command="echo afternoon"),
+        Command(timestamp=base + 5 * 60 * 60, command="echo evening"),
+    ]
+    pacing = compute_ghost_typing_pacing(cmds)
+    assert pacing[0]["char_delay"] >= 0.02
+    assert pacing[1]["post_delay"] > 0.5
+    assert pacing[2]["post_delay"] >= 0.5
+    assert pacing[2]["post_delay"] <= 2.5
+
+
+def test_compute_ghost_typing_pacing_normal_gap():
+    """Normal gaps (2s ≤ gap ≤ 60min) use the default typing pace."""
+    base = 1_700_000_000
+    cmds = [
+        Command(timestamp=base, command="ls"),
+        Command(timestamp=base + 30, command="cd /tmp"),
+        Command(timestamp=base + 120, command="pwd"),
+    ]
+    pacing = compute_ghost_typing_pacing(cmds)
+    for entry in pacing:
+        assert isinstance(entry["char_delay"], float)
+        assert isinstance(entry["post_delay"], float)
+        assert entry["char_delay"] >= 0.001
+        assert entry["post_delay"] >= 0.0
+    assert pacing[0]["char_delay"] >= 0.02
+
+
+def test_compute_ghost_typing_pacing_zero_timestamp_does_not_crash():
+    """Legacy / synthetic commands with ``timestamp == 0`` are treated as a
+    single burst — the function must still return a well-formed pacing list."""
+    cmds = [
+        Command(timestamp=0, command="ls"),
+        Command(timestamp=0, command="cd /tmp"),
+        Command(timestamp=0, command="pwd"),
+    ]
+    pacing = compute_ghost_typing_pacing(cmds)
+    assert len(pacing) == 3
+    for entry in pacing:
+        assert "char_delay" in entry
+        assert "post_delay" in entry
+
+
+def test_compute_ghost_typing_pacing_empty():
+    """Empty input returns an empty pacing list."""
+    assert compute_ghost_typing_pacing([]) == []
+
+
+
