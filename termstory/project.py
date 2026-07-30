@@ -102,9 +102,9 @@ _timeout_lock = threading.Lock()
 def _get_nfs_timeout_cache_ttl() -> int:
     from termstory.config import load_config
     try:
-        return max(load_config().get("nfs_timeout_cache_ttl", 60), 1)
+        return max(load_config().get("nfs_timeout_cache_ttl", 600), 1)
     except Exception:
-        return 60
+        return 600
 
 _NFS_TIMEOUT_CACHE_TTL: int = _get_nfs_timeout_cache_ttl()
 
