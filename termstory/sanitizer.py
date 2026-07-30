@@ -6,13 +6,29 @@ from typing import List, Tuple, Optional
 
 logger = logging.getLogger(__name__)
 
-# Load custom redaction patterns from .termstoryignore
+# Live-reloaded custom redaction patterns from ~/.termstoryignore
+# Patterns are cached with mtime-based invalidation; changes to the file
+# are picked up automatically on the next call to load_custom_ignore_rules().
+_cached_ignore_rules: tuple = ()
+_cached_ignore_mtime: float = 0
+
 def load_custom_ignore_rules() -> tuple:
-    local_patterns = []
+    global _cached_ignore_rules, _cached_ignore_mtime
     paths = [
         os.path.expanduser('~/.termstoryignore'),
         os.path.expanduser('~/.termstory/.termstoryignore')
     ]
+    latest_mtime = 0.0
+    found = False
+    for path in paths:
+        if os.path.exists(path):
+            found = True
+            mtime = os.path.getmtime(path)
+            if mtime > latest_mtime:
+                latest_mtime = mtime
+    if found and latest_mtime <= _cached_ignore_mtime:
+        return _cached_ignore_rules
+    local_patterns = []
     for path in paths:
         if os.path.exists(path):
             try:
@@ -26,7 +42,9 @@ def load_custom_ignore_rules() -> tuple:
                                 pass
             except Exception:
                 pass
-    return tuple(local_patterns)
+    _cached_ignore_rules = tuple(local_patterns)
+    _cached_ignore_mtime = latest_mtime
+    return _cached_ignore_rules
 # Blacklist patterns - if a command matches any of these, the entire session is dropped from AI
 BLACKLIST_PATTERNS = [
     re.compile(r'\bvault\b', re.IGNORECASE),
