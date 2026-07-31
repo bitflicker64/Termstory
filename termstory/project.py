@@ -546,8 +546,8 @@ def detect_projects(sessions: List[Session]) -> List[Project]:
                     if other_session.project_id is None or other_session is session:
                         continue
                     gap = min(
-                        abs(session.start_time - other_session.end_time),
-                        abs(other_session.start_time - session.end_time)
+                        abs(session.start_time - _effective_end_time(other_session)),
+                        abs(other_session.start_time - _effective_end_time(session))
                     )
                     if gap < closest_gap and gap < 3600:  # within 1 hour
                         closest_gap = gap
@@ -583,7 +583,7 @@ def detect_projects(sessions: List[Session]) -> List[Project]:
         for j in range(i - 1, -1, -1):
             if sorted_sessions[j].project_id is not None:
                 prev_project_id = sorted_sessions[j].project_id
-                prev_gap = session.start_time - sorted_sessions[j].end_time
+                prev_gap = session.start_time - _effective_end_time(sorted_sessions[j])
                 for proj in projects_dict.values():
                     if proj.id == prev_project_id:
                         prev_project = proj
@@ -594,7 +594,7 @@ def detect_projects(sessions: List[Session]) -> List[Project]:
         for j in range(i + 1, len(sorted_sessions)):
             if sorted_sessions[j].project_id is not None:
                 next_project_id = sorted_sessions[j].project_id
-                next_gap = sorted_sessions[j].start_time - session.end_time
+                next_gap = sorted_sessions[j].start_time - _effective_end_time(session)
                 for proj in projects_dict.values():
                     if proj.id == next_project_id:
                         next_project = proj
