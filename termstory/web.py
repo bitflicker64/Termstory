@@ -425,6 +425,16 @@ def generate_and_open_report(
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
     <style>
+        *, *::before, *::after {{
+            box-sizing: border-box;
+        }}
+
+        /* Grid/flex children must be allowed to shrink below their content size,
+           otherwise padded panels force horizontal overflow on narrow screens. */
+        .main-grid > *, .panel {{
+            min-width: 0;
+        }}
+
         :root {{
             {theme_vars}
         }}
@@ -661,11 +671,13 @@ def generate_and_open_report(
         /* Search input & Toggle */
         .search-container {{
             display: flex;
+            flex-wrap: wrap;
             gap: 12px;
             margin-bottom: 24px;
         }}
         .search-input {{
-            flex: 1;
+            flex: 1 1 180px;
+            min-width: 0;
             background: rgba(0, 0, 0, 0.2);
             border: 1px solid var(--panel-border);
             border-radius: 8px;
@@ -964,9 +976,9 @@ def generate_and_open_report(
             const mins = Math.floor((seconds % 3600) / 60);
             const secs = seconds % 60;
             if (hours > 0) {{
-                return `${{hours}}h ${{mins}}m`;
+                return mins > 0 ? `${{hours}}h ${{mins}}m` : `${{hours}}h`;
             }}
-            return `${{mins}}m ${{secs}}s`;
+            return secs > 0 ? `${{mins}}m ${{secs}}s` : `${{mins}}m`;
         }}
 
         function formatDate(timestamp) {{
@@ -1074,7 +1086,10 @@ def generate_and_open_report(
                 
                 return matchesSearch && matchesDate;
             }});
-            
+
+            // Recent Work Timeline: show most-recent sessions first.
+            filtered.sort((a, b) => b.start_time - a.start_time);
+
             if (filtered.length === 0) {{
                 container.innerHTML = `<div style="color: var(--text-secondary); text-align: center; padding: 40px 0;">No matching sessions found.</div>`;
                 return;
