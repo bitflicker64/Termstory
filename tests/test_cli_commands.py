@@ -727,30 +727,32 @@ def test_cli_optimize_command(tmp_path, monkeypatch):
 def test_cli_agy_command(monkeypatch):
     import shutil
     import subprocess
-    
-    # Test case 1: agy command exists
+
+    # Test case 1: agy command exists — use --no-context so the call is
+    # exactly ["agy", "-p"] without a temp context file.  The full
+    # context-bridging path is tested in tests/test_agy.py.
     run_calls = []
-    
+
     monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/local/bin/agy" if cmd == "agy" else None)
-    
+
     def mock_run(args, **kwargs):
         run_calls.append(args)
         return subprocess.CompletedProcess(args, 0)
-    
+
     monkeypatch.setattr(subprocess, "run", mock_run)
-    
+
     runner = CliRunner()
-    result = runner.invoke(app, ["agy"])
+    result = runner.invoke(app, ["agy", "--no-context"])
     assert result.exit_code == 0
     assert run_calls == [["agy", "-p"]]
-    
+
     # Test case 2: agy command does not exist
     monkeypatch.setattr(shutil, "which", lambda cmd: None)
-    
-    result2 = runner.invoke(app, ["agy"])
+
+    result2 = runner.invoke(app, ["agy", "--no-context"])
     assert result2.exit_code == 1
     output = result2.output or result2.stdout
-    assert "Error: 'agy' command not found" in output
+    assert "not found" in output.lower()
 
 
 def test_cli_insights_command(tmp_path, monkeypatch):

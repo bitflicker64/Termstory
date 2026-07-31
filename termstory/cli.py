@@ -1093,22 +1093,39 @@ def optimize_cmd():
 
 
 @app.command("agy")
-def run_agy():
-    """Launch 'agy -p' for quick analysis (requires 'agy' command to be installed)"""
-    import shutil
-    import subprocess
-    agy_path = shutil.which("agy")
-    if not agy_path:
-        Console(stderr=True).print("[bold red]Error: 'agy' command not found on PATH.[/]")
-        raise typer.Exit(code=1)
-    
-    try:
-        subprocess.run(["agy", "-p"], check=True)
-    except subprocess.CalledProcessError as e:
-        Console(stderr=True).print(f"[bold red]Error running 'agy -p': {e}[/]")
-        raise typer.Exit(code=e.returncode)
-    except KeyboardInterrupt:
-        raise typer.Exit(code=130)
+def run_agy(
+    num_commands: int = typer.Option(
+        50, "--num-commands", "-n",
+        help="Number of recent shell commands to bridge into the agy session (default 50, max 500).",
+    ),
+    num_commits: int = typer.Option(
+        10, "--num-commits",
+        help="Number of recent git commit messages to bridge into the agy session (default 10).",
+    ),
+    no_context: bool = typer.Option(
+        False, "--no-context",
+        help="Launch agy without bridging TermStory history (legacy stub mode).",
+    ),
+):
+    """Launch agy -p with TermStory shell-history context bridged in.
+
+    Bridges your recent commands, commits, and active project into a live
+    AI pair-programming session. Requires the 'agy' CLI to be installed
+    and on PATH. All context is sanitized through TermStory's privacy
+    redactor before leaving the local machine.
+
+    Examples:
+        termstory agy                  # default: 50 commands, 10 commits
+        termstory agy -n 100           # bridge 100 recent commands
+        termstory agy --num-commits 20 # bridge 20 recent commits
+        termstory agy --no-context     # run agy without TermStory context
+    """
+    from termstory.agy import run_agy_bridge
+    raise typer.Exit(code=run_agy_bridge(
+        num_commands=num_commands,
+        num_commits=num_commits,
+        no_context=no_context,
+    ))
 
 
 @app.command("replay")
