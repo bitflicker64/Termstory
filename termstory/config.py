@@ -1,6 +1,7 @@
 import os
 import json
 import sys
+import tempfile
 import logging
 from typing import List, Any
 logger = logging.getLogger(__name__)
@@ -277,10 +278,28 @@ def load_config() -> dict:
 
 
 def save_config(config: dict) -> None:
-    """Save configuration dictionary to disk"""
+    """Save configuration dictionary to disk atomically
+
+    Writes to a temporary file in the same directory, then atomically
+    renames it over the target path. This prevents concurrent readers
+    from seeing a partially written config file.
+    """
     config_path = get_config_path()
+    dir_path = os.path.dirname(config_path)
     try:
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=4)
+        os.makedirs(dir_path, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp", prefix="config_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, config_path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+            raise
     except Exception:
         pass
