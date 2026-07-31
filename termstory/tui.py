@@ -126,23 +126,110 @@ def calculate_streak(sessions: List[Session]) -> int:
     return streak
 
 
-def generate_heatmap(sessions: List[Session], days_limit: int = 30, pulse_phase: int = 0) -> str:
-    """Generate a GitHub-like 30-day activity matrix representing command volume with pulse scan micro-animation."""
+# 8 hours in seconds — any single session at or above this duration is
+# considered an "8+ hour continuous session" and its day becomes a pulse-
+# eligible highlight target (issue #42).
+EIGHT_HOURS_SECONDS = 8 * 3600
+
+
+def _compute_highlight_days(day_counts: dict, sessions: List[Session]) -> set:
+    """Compute the set of dates that should be eligible for the magenta→pink
+    pulse animation (issue #42).
+
+    A day is highlight-eligible when EITHER:
+      (a) its total command count equals the personal best across the visible
+          window (ties included, so a plateau of equally-busy days all light
+          up — which feels more rewarding than picking an arbitrary one), OR
+      (b) at least one session that started on that day ran for 8+ continuous
+          hours (``duration_seconds >= EIGHT_HOURS_SECONDS``).
+
+    Returns an empty set when there is no activity at all (so the pulse has
+    nothing to highlight — the scan-line effect still runs on its own).
+
+    TODO: When ``days_limit`` is ``None`` ("All History" mode), the
+    personal-best computation scans the ENTIRE session history rather than
+    a bounded window. This is correct but may produce surprising results
+    for long-time users (a single prolific day months ago suppresses all
+    other days). A follow-up PR could scope the personal-best to the
+    visible window only. Out of scope for this PR — requires threading
+    ``days_limit`` through the call chain.
+    """
+    if not day_counts:
+        return set()
+
+    max_count = max(day_counts.values())
+    highlight = {d for d, c in day_counts.items() if c > 0 and c == max_count}
+
+    for s in sessions:
+        if getattr(s, "duration_seconds", 0) >= EIGHT_HOURS_SECONDS:
+            highlight.add(datetime.fromtimestamp(s.start_time).date())
+
+    return highlight
+
+
+def generate_heatmap(
+    sessions: List[Session],
+    days_limit: int = 30,
+    pulse_phase: int = 0,
+    highlight_days: Optional[set] = None,
+) -> str:
+    """Generate a GitHub-like 30-day activity matrix representing command volume.
+
+    Two animation layers run simultaneously:
+
+    1. **Scan-line wave** (the existing effect): a bright-green cursor sweeps
+       left→right across the heatmap on a 0.5s timer, driven by
+       ``pulse_phase``. This is unchanged from the pre-issue-#42 behaviour.
+
+    2. **Magenta→neon-pink pulse** (new, issue #42): days in
+       ``highlight_days`` (personal-best command counts OR 8+ hour
+       continuous sessions) cycle between dim magenta and neon pink in sync
+       with the scan-line phase. The cycle is keyed off ``pulse_phase % 2``
+       so it blinks once per 0.5s tick — slow enough to feel deliberate,
+       fast enough to read as "alive".
+
+    Highlighted days override the scan-line colour: instead of the bright-
+    green scan cursor, they show the magenta/pink pulse. Non-highlighted
+    days keep the existing scan-line behaviour exactly.
+    """
     now = get_current_time().date()
     day_counts = defaultdict(int)
     for s in sessions:
         s_date = datetime.fromtimestamp(s.start_time).date()
         day_counts[s_date] += len(s.commands)
-        
+
+    highlight = highlight_days or set()
+
     heatmap_blocks = []
     for i in range(days_limit - 1, -1, -1):
         target_date = now - timedelta(days=i)
         cmd_count = day_counts[target_date]
-        
+
         # Scan-line wave animation moving left to right based on pulse_phase
         dist = abs(((days_limit - 1) - i) - (pulse_phase % (days_limit + 5)))
         is_pulse = dist < 3
-        
+
+        # Issue #42: highlighted days pulse magenta↔neon pink on every tick.
+        # `pulse_phase % 2` flips each 0.5s tick, giving a 1s full cycle.
+        is_highlight = target_date in highlight
+        if is_highlight:
+            # Neon pink on odd ticks, dim magenta on even — the "pulse".
+            if pulse_phase % 2 == 1:
+                pulse_color = "bold deep_pink"
+            else:
+                pulse_color = "magenta"
+            # Block intensity still follows command volume so the heatmap
+            # remains readable.
+            if cmd_count == 0:
+                heatmap_blocks.append(f"[{pulse_color}]░[/]")
+            elif cmd_count < 5:
+                heatmap_blocks.append(f"[{pulse_color}]▄[/]")
+            elif cmd_count < 20:
+                heatmap_blocks.append(f"[bold {pulse_color}]■[/]")
+            else:
+                heatmap_blocks.append(f"[bold {pulse_color}]█[/]")
+            continue
+
         if cmd_count == 0:
             if is_pulse:
                 heatmap_blocks.append("[green]░[/]")
@@ -163,24 +250,61 @@ def generate_heatmap(sessions: List[Session], days_limit: int = 30, pulse_phase:
                 heatmap_blocks.append("[bold white]█[/]")
             else:
                 heatmap_blocks.append("[bold green]█[/]")
-            
+
     return " ".join(heatmap_blocks)
 
 
-def calculate_dashboard_stats(sessions: List[Session], projects: List[Project], days_limit: int = 30, pulse_phase: int = 0) -> Dict[str, Any]:
-    """Calculate cumulative dashboard stats."""
+def calculate_dashboard_stats(
+    sessions: List[Session],
+    projects: List[Project],
+    days_limit: int = 30,
+    pulse_phase: int = 0,
+    highlight_days: Optional[set] = None,
+) -> Dict[str, Any]:
+    """Calculate cumulative dashboard stats.
+
+    Issue #42 additions:
+      * ``highlight_days`` — set of dates that should pulse magenta→neon-pink
+        in the heatmap (personal-best command counts OR 8+ hour continuous
+        sessions). If passed as ``None`` (default), it is computed via
+        :func:`_compute_highlight_days`. Callers that invoke this function
+        on every pulse tick (e.g. ``update_stats_header``) should cache the
+        set and pass it in to avoid re-iterating all sessions every 0.5s.
+      * ``pulse_active`` — True when the current ``pulse_phase`` tick should
+        visibly pulse the highlighted days AND the "Time logged" text in the
+        StatsHeader. Flips every tick (so 1s full cycle), matching the
+        heatmap magenta/pink blink cadence.
+    """
     real_sessions = [s for s in sessions if not getattr(s, "is_legacy", False)]
-    
+
     active_dates = {
         datetime.fromtimestamp(s.start_time).date()
         for s in real_sessions
     }
-    
+
+    # Issue #42: compute highlight_days only if the caller didn't supply a
+    # cached set. This lets the pulse-tick hot path skip the O(n) iteration.
+    if highlight_days is None:
+        day_counts = defaultdict(int)
+        for s in real_sessions:
+            day_counts[datetime.fromtimestamp(s.start_time).date()] += len(s.commands)
+        highlight_days = _compute_highlight_days(day_counts, real_sessions)
+
     streak = calculate_streak(real_sessions)
     total_seconds = sum(s.duration_seconds for s in sessions)
     total_time_str = format_duration(total_seconds)
-    heatmap = generate_heatmap(real_sessions, days_limit=days_limit, pulse_phase=pulse_phase)
-    
+    heatmap = generate_heatmap(
+        real_sessions,
+        days_limit=days_limit,
+        pulse_phase=pulse_phase,
+        highlight_days=highlight_days,
+    )
+
+    # Pulse is "active" on odd ticks — this matches the neon-pink frame in
+    # generate_heatmap(). The StatsHeader reads this to colour the "Time
+    # logged" text in sync with the highlighted heatmap blocks.
+    pulse_active = bool(highlight_days) and (pulse_phase % 2 == 1)
+
     # Derive last ingestion time from the most recently ended session
     last_ingestion_str = ""
     if sessions:
@@ -200,6 +324,38 @@ def calculate_dashboard_stats(sessions: List[Session], projects: List[Project], 
         "last_ingestion": last_ingestion_str,
         "vampire_index": vamp_index,
         "rpg_class": rpg_class_str,
+        # Issue #42:
+        "highlight_days": highlight_days,
+        "pulse_active": pulse_active,
+    }
+
+    # Pulse is "active" on odd ticks — this matches the neon-pink frame in
+    # generate_heatmap(). The StatsHeader reads this to colour the "Time
+    # logged" text in sync with the highlighted heatmap blocks.
+    pulse_active = bool(highlight_days) and (pulse_phase % 2 == 1)
+
+    # Derive last ingestion time from the most recently ended session
+    last_ingestion_str = ""
+    if sessions:
+        latest_ts = max(s.end_time for s in sessions)
+        last_ingestion_str = datetime.fromtimestamp(latest_ts).strftime("%b %d %H:%M")
+
+    from termstory.insights import calculate_vampire_coder_index, assign_daily_rpg_class
+    vamp_index = calculate_vampire_coder_index(sessions)
+    rpg_class_str = assign_daily_rpg_class(sessions)
+
+    return {
+        "total_time": total_time_str,
+        "active_days": len(active_dates),
+        "streak": streak,
+        "projects_count": len(projects),
+        "heatmap": heatmap,
+        "last_ingestion": last_ingestion_str,
+        "vampire_index": vamp_index,
+        "rpg_class": rpg_class_str,
+        # Issue #42:
+        "highlight_days": highlight_days,
+        "pulse_active": pulse_active,
     }
 
 
@@ -633,35 +789,203 @@ class OnboardingScreen(_DeferredDismissMixin, ModalScreen[dict]):
 
 
 
+# Issue #42 — "Heatmap Pulse & Cyber-Glitch"
+#
+# Glitch effect parameters for the streak counter when an all-time record is
+# set. The glitch runs for ~0.5s (1 pulse tick) and then settles on the real
+# number.
+#
+# IMPORTANT: The glitch is driven by the EXISTING step_heatmap_pulse()
+# set_interval(0.5s) timer — it does NOT create any new set_timer() calls.
+# This is critical because Textual's set_timer creates an asyncio Task that
+# is NOT cancelled on app teardown, producing "Task was destroyed but it is
+# pending!" warnings and, on some Python versions (3.11/3.12), causing
+# NoMatches errors when the callback fires on a torn-down widget. By piggy-
+# backing on the existing interval, we add zero new timer tasks to the
+# event loop.
+GLITCH_TICKS = 1  # number of 0.5s pulse ticks the glitch lasts (~0.5s total)
+# ASCII characters used for the glitch scramble. Restricted to printable
+# ASCII digits/symbols so the streak counter width stays stable (avoids
+# layout jitter from wide CJK or emoji glyphs).
+_GLITCH_CHARS = "0123456789#!@#$%&*+=<>/\\"
+
+
+def _glitch_string(target: str, length: int) -> str:
+    """Return a length-`length` string of random glitch characters.
+
+    ``target`` is the real value we'll eventually settle on — only used to
+    guarantee the returned string has the same width, so the StatsHeader
+    layout doesn't jump when the glitch settles.
+    """
+    import random
+    if length <= 0:
+        return ""
+    return "".join(random.choice(_GLITCH_CHARS) for _ in range(length))
+
+
 class StatsHeader(Static):
-    """The cumulative stats header spanning the top of the interface."""
-    
+    """The cumulative stats header spanning the top of the interface.
+
+    Issue #42 additions:
+
+      * **Heatmap pulse sync** — when ``stats['pulse_active']`` is True (i.e.
+        there's at least one highlight-eligible day AND the pulse phase is
+        on its neon-pink frame), the "Time logged" text cycles to neon pink
+        so it visibly pulses in sync with the highlighted heatmap blocks.
+
+      * **Streak glitch on all-time record** — ``update_stats()`` tracks the
+        highest streak it has ever seen across the app's lifetime (in-memory
+        only; not persisted). When a new record arrives, the streak counter
+        shows random ASCII characters for ~0.5s (1 pulse tick) before
+        settling on the actual number.
+
+    Both effects are pure Rich-markup changes — no new widgets, no new CSS
+    layout, no external dependencies, and NO new timers. The glitch is
+    driven by the existing ``step_heatmap_pulse`` interval so it adds zero
+    asyncio tasks to the event loop.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # All-time best streak seen by this StatsHeader instance. Starts at
+        # -1 so that even a streak of 0 on first render doesn't trigger a
+        # spurious glitch (only *increases* trigger it).
+        self._all_time_best_streak: int = -1
+        # The streak value currently being shown. During a glitch this stays
+        # frozen at the *new* record value while the displayed text cycles
+        # through random ASCII; when the glitch ends, this is the settled
+        # value.
+        self._displayed_streak: int = 0
+        # Remaining pulse ticks for the glitch. When > 0, the streak counter
+        # shows glitch text. Decremented on each update_stats() call (which
+        # happens every 0.5s via step_heatmap_pulse). NO set_timer involved.
+        self._glitch_ticks_remaining: int = 0
+        # The most recent stats dict — kept so that glitch frames can
+        # re-render the full StatsHeader content without the caller having
+        # to re-supply it.
+        self._last_stats: Optional[Dict[str, Any]] = None
+        self._last_ai_status: str = ""
+        self._last_days_limit: Optional[int] = 30
+
     def update_stats(self, stats: Dict[str, Any], ai_status: str = "", days_limit: Optional[int] = 30) -> None:
+        """Render the stats header.
+
+        Triggers the streak glitch when ``stats['streak']`` exceeds the
+        highest streak previously seen by this StatsHeader instance.
+        Applies the magenta→pink pulse to "Time logged" when
+        ``stats['pulse_active']`` is True.
+
+        The glitch is driven by subsequent ``update_stats()`` calls (which
+        happen every 0.5s via ``step_heatmap_pulse``) — no ``set_timer``
+        is used, so there are no pending timer tasks to leak on teardown.
+        """
+        self._last_stats = stats
+        self._last_ai_status = ai_status
+        self._last_days_limit = days_limit
+
+        new_streak = int(stats.get("streak", 0))
+        # Only trigger the glitch on a STRICT increase from a previously-known
+        # best — NOT on the first-ever update_stats call (when
+        # _all_time_best_streak is still -1). This prevents a spurious glitch
+        # during on_mount when the StatsHeader first sees the current streak.
+        is_new_record = (
+            new_streak > self._all_time_best_streak
+            and self._all_time_best_streak >= 0  # skip first-ever call
+            and new_streak > 0
+        )
+        if is_new_record:
+            self._all_time_best_streak = new_streak
+            self._displayed_streak = new_streak
+            # Start the glitch: show random ASCII for GLITCH_TICKS pulse
+            # ticks. The glitch is advanced by subsequent update_stats()
+            # calls (from step_heatmap_pulse), NOT by set_timer.
+            self._glitch_ticks_remaining = GLITCH_TICKS
+            self._render_header(glitch_streak=_glitch_string(
+                str(new_streak), len(str(new_streak))
+            ))
+            return
+
+        # Establish / maintain the baseline best on the first call (and any
+        # non-record call) so the next increase is detected correctly.
+        if new_streak > self._all_time_best_streak:
+            self._all_time_best_streak = new_streak
+        self._displayed_streak = new_streak
+
+        # Advance any in-progress glitch. When ticks hit 0, render the real
+        # number IMMEDIATELY (not on the next tick) so the glitch lasts
+        # exactly GLITCH_TICKS × 0.5s — no extra pulse of glitch text.
+        if self._glitch_ticks_remaining > 0:
+            self._glitch_ticks_remaining -= 1
+            if self._glitch_ticks_remaining > 0:
+                # Still glitching — show random ASCII
+                self._render_header(glitch_streak=_glitch_string(
+                    str(self._displayed_streak), len(str(self._displayed_streak))
+                ))
+            else:
+                # Glitch just ended — show the real number NOW
+                self._render_header()
+        else:
+            self._render_header()
+
+    def _render_header(self, glitch_streak: Optional[str] = None) -> None:
+        """Build and push the full StatsHeader markup.
+
+        When ``glitch_streak`` is supplied, the streak counter shows that
+        string instead of the real number (used during the glitch frames).
+
+        When ``self._last_stats['pulse_active']`` is True, the "Time logged"
+        text is coloured neon pink to sync with the highlighted heatmap
+        blocks; otherwise it stays the default bold white.
+        """
         from termstory import __version__
+
+        stats = self._last_stats or {}
+        # If stats isn't populated yet (e.g. called before the first
+        # update_stats), render an empty placeholder so the widget doesn't
+        # crash with a KeyError on stats['total_time'].
+        if not stats:
+            self.update("")
+            return
+
+        ai_status = self._last_ai_status
+        days_limit = self._last_days_limit
+
         limit_str = f"Last {days_limit} Days" if days_limit is not None else "All History"
         ingestion_str = ""
         if stats.get("last_ingestion"):
             ingestion_str = f"  │  [dim]Synced: {stats['last_ingestion']}[/dim]"
-            
+
         vamp_str = ""
         if "vampire_index" in stats:
             vamp_str = f"  │  [bold red]Vampire Index:[/bold red] {stats['vampire_index']}%"
-            
+
         rpg_str = ""
         if "rpg_class" in stats:
             rpg_str = f"  │  [bold magenta]Class:[/bold magenta] {stats['rpg_class']}"
-            
+
+        # Issue #42: pulse the "Time logged" text in sync with the heatmap
+        # highlight blocks when pulse_active is True.
+        pulse_active = bool(stats.get("pulse_active"))
+        if pulse_active:
+            time_label = "[bold deep_pink]Time logged:[/bold deep_pink]"
+            time_value = f"[bold deep_pink]{stats['total_time']}[/bold deep_pink]"
+        else:
+            time_label = "[bold]Time logged:[/bold]"
+            time_value = f"{stats['total_time']}"
+
+        # Issue #42: glitch the streak counter when settling on a new record.
+        streak_value = glitch_streak if glitch_streak is not None else str(stats.get("streak", 0))
+
         self.update(
             f"[bold cyan]TermStory[/bold cyan] [dim]v{__version__}[/dim]  │  "
-            f"[bold]Time logged:[/bold] {stats['total_time']}  │  "
+            f"{time_label} {time_value}  │  "
             f"[bold]Active Days:[/bold] {stats['active_days']}  │  "
-            f"[bold green]Streak:[/bold green] {stats['streak']} Days  │  "
+            f"[bold green]Streak:[/bold green] {streak_value} Days  │  "
             f"[bold]Projects:[/bold] {stats['projects_count']}"
             f"{vamp_str}{rpg_str}"
             f"{ai_status}{ingestion_str}\n"
             f"[dim]Activity ({limit_str}):[/dim] {stats['heatmap']}"
         )
-
 
 class NavigationTree(Tree):
     """Collapsible date-grouped navigation timeline supporting Vim keys."""
@@ -2536,10 +2860,34 @@ class TermStoryWorkspace(App):
 
     def update_stats_header(self) -> None:
         pulse = getattr(self, "pulse_phase", 0)
-        stats = calculate_dashboard_stats(self.sessions, self.projects, days_limit=self.days_limit or 90, pulse_phase=pulse)
+        # Issue #42: highlight_days only changes when sessions change, not on
+        # every pulse tick. Cache it on the app instance and only recompute
+        # when the session count changes (a cheap proxy for "sessions changed").
+        # This avoids re-iterating all sessions every 0.5s — important for not
+        # perturbing the timing of background worker threads (e.g. the exec
+        # review worker) on slower Python versions (3.9/3.10).
+        real_sessions = [s for s in self.sessions if not getattr(s, "is_legacy", False)]
+        session_count = len(real_sessions)
+        if (
+            not hasattr(self, "_cached_highlight_days")
+            or getattr(self, "_cached_highlight_session_count", -1) != session_count
+        ):
+            day_counts = defaultdict(int)
+            for s in real_sessions:
+                day_counts[datetime.fromtimestamp(s.start_time).date()] += len(s.commands)
+            self._cached_highlight_days = _compute_highlight_days(day_counts, real_sessions)
+            self._cached_highlight_session_count = session_count
+
+        stats = calculate_dashboard_stats(
+            self.sessions, self.projects,
+            days_limit=self.days_limit or 90,
+            pulse_phase=pulse,
+            highlight_days=self._cached_highlight_days,
+        )
+
         ai_enabled = self.config.get("ai_enabled", False)
         provider = self.config.get("active_provider", "disabled")
-        
+
         if not ai_enabled or provider == "disabled":
             ai_status = "[dim]AI: DISABLED[/dim]"
         else:
@@ -2548,13 +2896,13 @@ class TermStoryWorkspace(App):
                 ai_status = f"[bold yellow]AI: ACTIVE ({provider.upper()}) (⏳ Summarizing...)[/bold yellow]"
             else:
                 ai_status = f"[bold cyan]AI: ACTIVE ({provider.upper()})[/bold cyan]"
-                
+
         try:
             from textual.css.query import NoMatches
             self.query_one("#stats-panel").update_stats(stats, ai_status=ai_status, days_limit=self.days_limit)
         except NoMatches:
             pass
-
+            
     def update_session_ui(self, session_id: int, new_summary: str, skip_canvas_refresh: bool = False) -> None:
         """Update tree node label and refresh details canvas if necessary. Safe to run on main thread."""
         tree = self.query_one("#history-navigator")
