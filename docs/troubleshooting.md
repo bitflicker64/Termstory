@@ -10,7 +10,7 @@ termstory ui   # Fresh start, re-runs onboarding
 ### Force a re-ingest
 
 ```bash
-termstory today --detailed
+termstory today
 ```
 
 Reads the history file fresh and updates the database.
