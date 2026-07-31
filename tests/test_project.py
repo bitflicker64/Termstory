@@ -553,10 +553,10 @@ def test_detect_projects_per_command_null_handling(monkeypatch):
 def test_detect_projects_with_null_end_time():
     """Active (end_time=None) session must not crash Pass 2 gap arithmetic (#312/#372).
 
-    ``s2`` resets cwd to ``/`` so it stays unassigned after Pass 1, and it contains a
-    git command, which drives it into Pass 2 Strategy B where ``session.end_time`` is
-    subtracted (``termstory/project.py`` ~549-550). Before the fix this raised
-    ``TypeError: unsupported operand type(s) for -: 'int' and 'NoneType'``.
+    ``s2`` sends cwd to home (``cd ~``) so it stays unassigned after Pass 1, and it
+    contains a git command, which drives it into Pass 2 Strategy B where
+    ``session.end_time`` is subtracted (``termstory/project.py`` ~549-550). Before the
+    fix this raised ``TypeError: unsupported operand type(s) for -: 'int' and 'NoneType'``.
     """
     # Completed session -> becomes an assigned project.
     s1 = Session(
@@ -628,3 +628,37 @@ def test_detect_projects_with_null_end_time_gap_arithmetic():
 
     projects = detect_projects([s1, s2, s3])  # must not raise
     assert isinstance(projects, list)
+
+
+def test_detect_projects_null_end_time_as_prev_neighbor():
+    """An active (end_time=None) session that is itself an *assigned* neighbour must
+    not crash Pass 3's backward gap (#312/#372).
+
+    ``s1`` has a valid ``cd`` so Pass 1 assigns it a project, but its ``end_time`` is
+    None. A following "Other" session then computes ``prev_gap`` against ``s1`` in
+    Pass 3 neighbour propagation, subtracting ``s1``'s None end_time
+    (``termstory/project.py`` ~586).
+    """
+    # Active but assigned (valid cd) -> becomes the backward neighbour with None end.
+    s1 = Session(
+        id=1, start_time=1000, end_time=None, duration_seconds=0,
+        project_id=None,
+        commands=[
+            Command(timestamp=1000, command="cd ~/projects/project-beta"),
+            Command(timestamp=1050, command="git status"),
+        ],
+    )
+    # "Other" session (cd ~, no git) after s1 -> Pass 3 backward gap uses s1.end_time.
+    s2 = Session(
+        id=2, start_time=2000, end_time=2100, duration_seconds=100,
+        project_id=None,
+        commands=[
+            Command(timestamp=2000, command="cd ~"),
+            Command(timestamp=2010, command="echo done"),
+        ],
+    )
+
+    projects = detect_projects([s1, s2])  # must not raise
+    assert isinstance(projects, list)
+    # s1 remains assigned despite its None end_time.
+    assert s1.project_id is not None
