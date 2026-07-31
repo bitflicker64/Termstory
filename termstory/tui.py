@@ -602,7 +602,7 @@ class OnboardingScreen(_DeferredDismissMixin, ModalScreen[dict]):
         ("ctrl+a", "choose_openai", "Select OpenAI"),
         ("ctrl+l", "choose_ollama", "Select Ollama"),
         ("ctrl+c", "choose_custom", "Select Custom"),
-        ("ctrl+d", "choose_disabled", "Keep Local Only (No AI)"),
+        ("ctrl+d", "choose_disabled", "No AI (Local)"),
         ("escape", "dismiss_none", "Close"),
     ]
     
@@ -638,10 +638,10 @@ class OnboardingScreen(_DeferredDismissMixin, ModalScreen[dict]):
                 id="modal-desc"
             ),
             Horizontal(
-                Button("Groq [Ctrl+g]", variant="default", id="btn-select-groq"),
-                Button("OpenAI [Ctrl+a]", variant="default", id="btn-select-openai"),
-                Button("Ollama [Ctrl+l]", variant="default", id="btn-select-ollama"),
-                Button("Custom [Ctrl+c]", variant="default", id="btn-select-custom"),
+                Button("Groq", variant="default", id="btn-select-groq"),
+                Button("OpenAI", variant="default", id="btn-select-openai"),
+                Button("Ollama", variant="default", id="btn-select-ollama"),
+                Button("Custom", variant="default", id="btn-select-custom"),
                 id="modal-provider-selector"
             ),
             Vertical(
@@ -658,8 +658,8 @@ class OnboardingScreen(_DeferredDismissMixin, ModalScreen[dict]):
             ),
             Horizontal(
                 Button("Save & Enable", variant="success", id="btn-save"),
-                Button("Keep Local Only (No AI)", variant="error", id="btn-disable-ai"),
-                Button("Read Privacy Policy", variant="default", id="btn-read-privacy"),
+                Button("No AI (Local)", variant="error", id="btn-disable-ai"),
+                Button("Privacy Policy", variant="default", id="btn-read-privacy"),
                 id="modal-actions"
             ),
             id="modal-panel"
