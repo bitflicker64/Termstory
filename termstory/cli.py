@@ -14,7 +14,7 @@ from termstory.session import create_sessions
 from termstory.project import detect_projects
 from termstory.database import Database
 from termstory.date_utils import get_current_time, get_today_range, parse_date_range_helper
-from termstory.formatter import format_search_results, format_today_output, format_project_output, format_insights_output, format_stats_output, format_profile_output, format_necromancer_score, format_rage_quit_signatures
+from termstory.formatter import format_search_results, format_today_output, format_project_output, format_projects_list, format_insights_output, format_stats_output, format_detailed_sessions, format_profile_output, format_necromancer_score, format_rage_quit_signatures
 import sqlite3
 
 from rich.console import Console
@@ -280,7 +280,8 @@ def search_history(
 
 @app.command("today")
 def show_today(
-    compare: bool = typer.Option(False, "--compare/--no-compare", help="Compare each project's time with yesterday")
+    compare: bool = typer.Option(False, "--compare/--no-compare", help="Compare each project's time with yesterday"),
+    detailed: bool = typer.Option(False, "--detailed", help="Show all individual commands and commits inside each session")
 ):
     """Show today's work summary"""
     db_path = get_db_path()
@@ -292,6 +293,11 @@ def show_today(
     sessions = db.get_today_sessions()
     projects = db.get_all_projects_with_stats()
     
+    if detailed:
+        output = format_detailed_sessions(sessions)
+        from rich.text import Text
+        console.print(Text.from_ansi(output))
+
     compare_sessions = None
     if compare:
         start_ts, end_ts = get_today_range()
@@ -308,7 +314,9 @@ def show_project(
     name: str = typer.Argument(..., help="Name or path of the project, or 'context' to manage project context"),
     arg2: Optional[str] = typer.Argument(None, help="Project name (required if first argument is 'context')"),
     arg3: Optional[str] = typer.Argument(None, help="Context description to set (if setting context)"),
-    show: bool = typer.Option(False, "--show", help="Show the current project context")
+    show: bool = typer.Option(False, "--show", help="Show the current project context"),
+    files: bool = typer.Option(False, "--files", help="Show all commands and commits for each session in detail"),
+    stats: bool = typer.Option(False, "--stats", help="Show aggregate statistics (commands, duration, sessions) for the project")
 ):
     """Show detailed history for a specific project, or manage project context"""
     db_path = get_db_path()
@@ -368,9 +376,76 @@ def show_project(
         
     sessions = db.get_project_sessions(target.id, start_ts=0)
     
-    output = format_project_output(sessions, target)
+    if files:
+        # Show every command and commit inside each session
+        output = format_detailed_sessions(sessions)
+        from rich.text import Text
+        console.print(Text.from_ansi(output))
+    
+    if stats:
+        # Show aggregate statistics for this specific project
+        from termstory.stats import project_breakdown
+        from termstory.models import format_duration
+        from rich.markup import escape
+        breakdown = project_breakdown(db)
+        
+        proj_stats = None
+        proj_key = None
+        
+        # Try finding exact project ID match first
+        for k, v in breakdown.items():
+            if v.get("id") == target.id:
+                proj_stats = v
+                proj_key = k
+                break
+        
+        # Fallback to mapped name match
+        if proj_stats is None:
+            mapped_name = target.name
+            if not mapped_name or mapped_name == "General / No Project":
+                mapped_name = "Other"
+            proj_key = mapped_name
+            proj_stats = breakdown.get(proj_key)
+        
+        if proj_stats:
+            from datetime import datetime as _dt
+            def _fmt_ts(ts):
+                return _dt.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else "N/A"
+            lines = [
+                f"📊 Project Stats: [bold cyan]{escape(proj_key)}[/]",
+                "────────────────────────────────────────",
+                f"Commands   : {proj_stats['commands_count']}",
+                f"Sessions   : {proj_stats['sessions_count']}",
+                f"Duration   : {format_duration(proj_stats['total_duration'])}",
+                f"First Seen : {_fmt_ts(proj_stats['first_seen'])}",
+                f"Last Active: {_fmt_ts(proj_stats['last_seen'])}",
+            ]
+            console.print("\n".join(lines))
+        else:
+            console.print(f"[yellow]No aggregated stats found for project '{escape(target.name)}'.[/]")
+
+    # Show default output if neither files nor stats were requested
+    if not files and not stats:
+        output = format_project_output(sessions, target)
+        from rich.text import Text
+        console.print(Text.from_ansi(output))
+
+
+@app.command("projects")
+def list_projects():
+    """List all tracked projects with their total time, session count, and active date range"""
+    db_path = get_db_path()
+    db = Database(db_path)
+    safe_init_db(db)
+
+    run_ingestion(db)
+
+    projects = db.get_all_projects_with_stats()
+
+    output = format_projects_list(projects)
     from rich.text import Text
     console.print(Text.from_ansi(output))
+
 
 @app.command("insights")
 def show_insights():
