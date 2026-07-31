@@ -799,7 +799,7 @@ class OnboardingScreen(_DeferredDismissMixin, ModalScreen[dict]):
             github_username = self.query_one("#input-github-username").value.strip().lstrip('@')
 
             error_label = self.query_one("#error-api-key")
-            if self.selected_provider in ("groq", "openai", "custom") and not api_key:
+            if self.selected_provider in ("groq", "openai", "nvidia", "custom") and not api_key:
                 error_label.update("API Key cannot be empty.")
                 error_label.styles.display = "block"
                 return
@@ -3200,7 +3200,7 @@ class TermStoryWorkspace(App):
         api_base_url = provider_config.get("api_base_url", "")
         model_name = provider_config.get("model_name", "")
 
-        if provider in ("groq", "openai") and not api_key:
+        if provider in ("groq", "openai", "nvidia") and not api_key:
             return
 
         from textual.worker import get_current_worker
@@ -3290,7 +3290,7 @@ class TermStoryWorkspace(App):
         api_base_url = provider_config.get("api_base_url", "")
         model_name = provider_config.get("model_name", "")
         
-        if provider in ("groq", "openai") and not api_key:
+        if provider in ("groq", "openai", "nvidia") and not api_key:
             return
         self.generating_reviews.add(timeframe_id)
         # Delete old cached summary from database so we start fresh on regeneration
@@ -3647,7 +3647,7 @@ class TermStoryWorkspace(App):
         api_base_url = provider_config.get("api_base_url", "")
         model_name = provider_config.get("model_name", "")
         
-        if provider in ("groq", "openai") and not api_key:
+        if provider in ("groq", "openai", "nvidia") and not api_key:
             return
             
         total = len(sessions_to_summarize)

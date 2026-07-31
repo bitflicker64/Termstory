@@ -142,7 +142,7 @@ def load_config() -> dict:
     config_path = get_config_path()
     defaults = {
         "ai_enabled": False,
-        "active_provider": "disabled",  # "groq", "openai", "ollama", "disabled"
+        "active_provider": "disabled",  # "groq", "openai", "nvidia", "ollama", "disabled"
         "request_timeout_seconds": 30,
         "nfs_timeout_cache_ttl": 10,
         "ai_max_failures": 3,
@@ -157,6 +157,11 @@ def load_config() -> dict:
                 "api_key": "",
                 "api_base_url": "https://api.openai.com/v1",
                 "model_name": "gpt-4o-mini"
+            },
+            "nvidia": {
+                "api_key": "",
+                "api_base_url": "https://integrate.api.nvidia.com/v1",
+                "model_name": "meta/llama-3.1-8b-instruct"
             },
             "ollama": {
                 "api_key": "",

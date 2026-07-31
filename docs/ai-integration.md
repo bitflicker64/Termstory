@@ -14,8 +14,17 @@
 |---|---|---|
 | **Groq** | `llama-3.1-8b-instant` | Fast, free tier available |
 | **OpenAI** | `gpt-4o-mini` | Requires API key |
+| **NVIDIA** | `meta/llama-3.1-8b-instruct` | NVIDIA NIM (`integrate.api.nvidia.com`), requires API key |
 | **Ollama** | `llama3` | Fully local, no key needed |
 | **Custom** | any | Any OpenAI-compatible endpoint |
+
+Example (NVIDIA):
+
+```bash
+termstory config set active_provider nvidia
+termstory config set providers.nvidia.api_key <your_nvapi_key>
+termstory config set ai_enabled true
+```
 
 ### Pre-LLM Sanitization
 

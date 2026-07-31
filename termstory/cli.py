@@ -1062,8 +1062,8 @@ def show_ui(
                 and _cfg.get("active_provider", "disabled") == "disabled"
             ):
                 console.print("\n[bold yellow]💡 Hint: TermStory works best with AI summaries enabled![/bold yellow]")
-                console.print("To configure a local or cloud AI provider (Groq, OpenAI, Ollama), run:")
-                console.print("  [cyan]termstory config set active_provider groq[/cyan] (or [cyan]openai[/cyan] / [cyan]ollama[/cyan])")
+                console.print("To configure a local or cloud AI provider (Groq, OpenAI, NVIDIA, Ollama), run:")
+                console.print("  [cyan]termstory config set active_provider groq[/cyan] (or [cyan]openai[/cyan] / [cyan]nvidia[/cyan] / [cyan]ollama[/cyan])")
                 console.print("  [cyan]termstory config set providers.groq.api_key <your_api_key>[/cyan]")
                 console.print("Alternatively, press [bold]? [/bold]inside the TUI to open the onboarding settings anytime.\n")
                 _cfg["has_seen_onboarding_reminder"] = True
