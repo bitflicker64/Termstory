@@ -748,7 +748,7 @@ class OnboardingScreen(_DeferredDismissMixin, ModalScreen[dict]):
             base_url = self.query_one("#input-base-url").value.strip()
             model_name = self.query_one("#input-model-name").value.strip()
             github_username = self.query_one("#input-github-username").value.strip().lstrip('@')
-            
+
             error_label = self.query_one("#error-api-key")
             if self.selected_provider in ("groq", "openai", "custom") and not api_key:
                 error_label.update("API Key cannot be empty.")
@@ -756,15 +756,19 @@ class OnboardingScreen(_DeferredDismissMixin, ModalScreen[dict]):
                 return
             else:
                 error_label.styles.display = "none"
-            
+
             if not base_url:
-                if self.selected_provider == "groq":
-                    base_url = "https://api.groq.com/openai/v1"
-                elif self.selected_provider == "openai":
-                    base_url = "https://api.openai.com/v1"
-                elif self.selected_provider == "ollama":
-                    base_url = "http://localhost:11434/v1"
-                    
+                # Fall back to the configured default for this provider instead
+                # of a hardcoded URL. ``load_config()`` already merges the
+                # default endpoints into the nested ``providers.*.api_base_url``
+                # keys, so this picks up customisations set via
+                # ``termstory config set providers.groq.api_base_url <url>``.
+                # Fixes #152.
+                from termstory.config import get_config_value
+                base_url = get_config_value(
+                    self.config, f"providers.{self.selected_provider}.api_base_url"
+                ) or ""
+
             if "providers" not in self.config:
                 self.config["providers"] = {}
             if self.selected_provider not in self.config["providers"]:

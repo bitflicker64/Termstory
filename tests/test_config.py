@@ -5,6 +5,54 @@ from unittest.mock import patch, mock_open
 
 from termstory.config import load_config, save_config, get_config_path
 
+def test_api_base_url_is_configurable_per_provider(tmp_path, monkeypatch):
+    """#152: the api_base_url for every provider must come from config and
+    be overridable via ``termstory config set providers.<p>.api_base_url``.
+    Hardcoded fallbacks (the old behaviour in cli.py / tui.py) silently
+    ignored user customisations.
+    """
+    config_file = tmp_path / "config.json"
+    config_data = {
+        "active_provider": "groq",
+        "providers": {
+            "groq": {
+                "api_key": "fake-key",
+                # User overrides Groq to point at a self-hosted proxy
+                "api_base_url": "https://my-proxy.example.com/openai/v1",
+                "model_name": "llama-3.1-8b-instant",
+            },
+        },
+    }
+    config_file.write_text(json.dumps(config_data))
+
+    with patch("termstory.config.get_config_path", return_value=str(config_file)):
+        config = load_config()
+
+        # get_config_value must use dot-path traversal (dict.get() does NOT)
+        from termstory.config import get_config_value
+
+        url = get_config_value(config, "providers.groq.api_base_url")
+        assert url == "https://my-proxy.example.com/openai/v1", (
+            "Configured api_base_url was not returned by get_config_value() "
+            "(regression of #152 dot-notation lookup bug)"
+        )
+
+        # Other providers must still return their defaults after merge
+        openai_url = get_config_value(config, "providers.openai.api_base_url")
+        assert openai_url == "https://api.openai.com/v1"
+
+        ollama_url = get_config_value(config, "providers.ollama.api_base_url")
+        assert ollama_url == "http://localhost:11434/v1"
+
+        # The helper that ai-aware callers use (cli.get_ai_provider_settings)
+        # must surface the custom URL, not a hardcoded fallback.
+        from termstory.cli import get_ai_provider_settings
+
+        provider, _api_key, base_url, _model = get_ai_provider_settings(config)
+        assert provider == "groq"
+        assert base_url == "https://my-proxy.example.com/openai/v1"
+
+
 def test_load_config_corrupted_file(tmp_path):
     # Mock get_config_path to point to our tmp_path
     config_file = tmp_path / "config.json"
