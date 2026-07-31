@@ -662,6 +662,14 @@ class TimestampDetective:
                 target_path = os.path.join(virtual_cwd, venv_name, "bin", "activate")
                 label = f"stat: venv/{venv_name}/bin/activate"
 
+        # ── uv venv [name] ──
+        if not target_path:
+            m = re.match(r'^uv\s+venv\s*(\S*)', cmd)
+            if m:
+                venv_name = m.group(1).strip().strip('"\'') or ".venv"
+                target_path = os.path.join(virtual_cwd, venv_name, "bin", "activate")
+                label = f"stat: uv venv/{venv_name}/bin/activate"
+
         # ── cargo init [dir] ──
         if not target_path:
             m = re.match(r'^cargo\s+init\s*(.*)', cmd)
@@ -676,6 +684,12 @@ class TimestampDetective:
             if re.match(r'^go\s+mod\s+init', cmd):
                 target_path = os.path.join(virtual_cwd, "go.mod")
                 label = "stat: go mod init → go.mod"
+
+        # ── uv init ──
+        if not target_path:
+            if re.match(r'^uv\s+init', cmd):
+                target_path = os.path.join(virtual_cwd, "pyproject.toml")
+                label = "stat: uv init → pyproject.toml"
 
         if not target_path:
             return None
@@ -766,6 +780,13 @@ class TimestampDetective:
             ts = self._get_gem_timestamp(gem_name)
             if ts:
                 return (ts, f"gem: {gem_name}")
+
+        # ── uv add / uv pip install → uv.lock ──
+        if re.match(r'^uv\s+(?:add|pip\s+install)\s', cmd):
+            lock_path = os.path.join(virtual_cwd, "uv.lock")
+            ts = self._get_file_timestamp(lock_path)
+            if ts:
+                return (ts, "uv: uv.lock")
 
         return None
 
