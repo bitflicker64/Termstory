@@ -927,6 +927,55 @@ def test_cli_today_no_compare_flag_explicit(tmp_path, monkeypatch):
     assert captured[0]["compare_sessions"] is None
 
 
+def test_discover_project_paths_uses_injected_custom_root(tmp_path, monkeypatch):
+    """Regression for #116: discover_project_paths() must honor a custom
+    `project_roots` value supplied via config, not only the hardcoded defaults."""
+
+    from termstory.cli import discover_project_paths
+
+    custom_root = tmp_path / "workspace"
+    custom_root.mkdir()
+
+    repo = custom_root / "myrepo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+
+    nested_repo = custom_root / "group" / "nested"
+    nested_repo.mkdir(parents=True)
+    (nested_repo / ".git").mkdir()
+
+    config_file = tmp_path / "config.json"
+    monkeypatch.setattr("termstory.config.get_config_path", lambda: str(config_file))
+
+    monkeypatch.setattr(
+        "termstory.cli.load_config",
+        lambda: {"project_roots": [str(custom_root)]},
+    )
+
+    discovered = discover_project_paths()
+
+    assert str(repo) in discovered
+    assert str(nested_repo) in discovered
+
+    # Inject an empty list — the function must return no paths (defaults are
+    # only used when the key is missing).
+    monkeypatch.setattr(
+        "termstory.cli.load_config",
+        lambda: {"project_roots": []},
+    )
+    assert discover_project_paths() == []
+
+    # Backward compatibility: missing key falls back to hardcoded defaults,
+    # which on this test machine resolves to nothing because ~/Projects and
+    # friends don't exist under tmp_path's HOME.
+    monkeypatch.setattr(
+        "termstory.cli.load_config",
+        lambda: {},
+    )
+    default_paths = discover_project_paths()
+    assert isinstance(default_paths, list)
+
+
 def test_cli_predict_enhanced_command(tmp_path, monkeypatch):
     db_file = tmp_path / "test_cli_predict_enhanced.db"
     monkeypatch.setattr("termstory.cli.get_db_path", lambda: str(db_file))
