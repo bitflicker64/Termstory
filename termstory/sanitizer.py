@@ -6,31 +6,56 @@ from typing import List, Tuple, Optional
 
 logger = logging.getLogger(__name__)
 
-# Load custom redaction patterns from .termstoryignore
-# IMPORTANT: This loads once at module import time (called at the bottom of this file).
-# Edits to ~/.termstoryignore take effect only after restarting TermStory — there is no
-# live-reload. This is a known limitation documented in SECURITY.md.
+_cached_ignore_rules: tuple = tuple()
+_cached_ignore_mtime: float = -1.0
+
 def load_custom_ignore_rules() -> tuple:
-    local_patterns = []
+    global _cached_ignore_rules
+    global _cached_ignore_mtime
+    
     paths = [
         os.path.expanduser('~/.termstoryignore'),
         os.path.expanduser('~/.termstory/.termstoryignore')
     ]
+    
+    current_max_mtime = -1.0
+    existing_paths = []
+    
     for path in paths:
-        if os.path.exists(path):
-            try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith('#'):
-                            try:
-                                local_patterns.append(re.compile(line, re.IGNORECASE))
-                            except re.error:
-                                pass
-            except Exception:
-                pass
-    return tuple(local_patterns)
-CUSTOM_REDACTION_PATTERNS = load_custom_ignore_rules()
+        try:
+            mtime = os.path.getmtime(path)
+            existing_paths.append(path)
+            if mtime > current_max_mtime:
+                current_max_mtime = mtime
+        except OSError:
+            pass
+            
+    if not existing_paths:
+        if _cached_ignore_mtime != -1.0:
+            _cached_ignore_rules = tuple()
+            _cached_ignore_mtime = -1.0
+        return _cached_ignore_rules
+        
+    if _cached_ignore_mtime == current_max_mtime:
+        return _cached_ignore_rules
+        
+    local_patterns = []
+    for path in existing_paths:
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        try:
+                            local_patterns.append(re.compile(line, re.IGNORECASE))
+                        except re.error:
+                            pass
+        except Exception:
+            pass
+            
+    _cached_ignore_rules = tuple(local_patterns)
+    _cached_ignore_mtime = current_max_mtime
+    return _cached_ignore_rules
 # Blacklist patterns - if a command matches any of these, the entire session is dropped from AI
 BLACKLIST_PATTERNS = [
     re.compile(r'\bvault\b', re.IGNORECASE),
@@ -256,7 +281,7 @@ def redact_command(cmd: str) -> str:
     cmd = redact_high_entropy(cmd)
     
     # 10. Custom User Rules
-    for pattern in CUSTOM_REDACTION_PATTERNS:
+    for pattern in load_custom_ignore_rules():
         cmd = pattern.sub('[REDACTED_CUSTOM]', cmd)
         
     return cmd
