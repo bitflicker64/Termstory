@@ -48,3 +48,7 @@ venv.bak/
 .coverage
 htmlcov/
 .batch-*
+
+# Stray home-dir artifact: created at the repo root when TermStory runs with HOME
+# unset (so "~" is not expanded) and writes its config/data. Never commit this.
+/~/
