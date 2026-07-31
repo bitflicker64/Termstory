@@ -96,15 +96,16 @@ def disambiguate_project_names(projects: List[Project]) -> Dict[int, str]:
 
 import threading
 
-_timed_out_paths = {}  # path -> timestamp of last timeout
+_BLACKLISTED_MOUNTS = {}  # path -> timestamp of last timeout
 _timeout_lock = threading.Lock()
 
 def _get_nfs_timeout_cache_ttl() -> int:
     from termstory.config import load_config
     try:
-        return max(load_config().get("nfs_timeout_cache_ttl", 60), 1)
+        ttl_minutes = max(load_config().get("nfs_timeout_cache_ttl", 10), 1)
+        return ttl_minutes * 60
     except Exception:
-        return 60
+        return 600
 
 _NFS_TIMEOUT_CACHE_TTL: int = _get_nfs_timeout_cache_ttl()
 
@@ -112,11 +113,11 @@ def _listdir_with_timeout(path: str, timeout: float = 0.5) -> List[str]:
     """Execute os.listdir in a daemon thread to enforce a timeout (e.g. on hung NFS mounts)"""
     now = time.time()
     with _timeout_lock:
-        if path in _timed_out_paths:
-            if now - _timed_out_paths[path] < _NFS_TIMEOUT_CACHE_TTL:
+        if path in _BLACKLISTED_MOUNTS:
+            if now - _BLACKLISTED_MOUNTS[path] < _NFS_TIMEOUT_CACHE_TTL:
                 raise TimeoutError(f"os.listdir recently timed out on path (cached): {path}")
             else:
-                del _timed_out_paths[path]
+                del _BLACKLISTED_MOUNTS[path]
 
     result = []
     exception_container = [None]
@@ -133,7 +134,7 @@ def _listdir_with_timeout(path: str, timeout: float = 0.5) -> List[str]:
     t.join(timeout)
     if t.is_alive():
         with _timeout_lock:
-            _timed_out_paths[path] = time.time()
+            _BLACKLISTED_MOUNTS[path] = time.time()
         raise TimeoutError(f"os.listdir timed out on path: {path}")
     if exception_container[0] is not None:
         raise exception_container[0]
