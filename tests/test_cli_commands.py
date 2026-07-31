@@ -946,9 +946,6 @@ def test_discover_project_paths_uses_injected_custom_root(tmp_path, monkeypatch)
     nested_repo.mkdir(parents=True)
     (nested_repo / ".git").mkdir()
 
-    config_file = tmp_path / "config.json"
-    monkeypatch.setattr("termstory.config.get_config_path", lambda: str(config_file))
-
     monkeypatch.setattr(
         "termstory.cli.load_config",
         lambda: {"project_roots": [str(custom_root)]},

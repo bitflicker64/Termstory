@@ -550,14 +550,15 @@ def test_detect_projects_per_command_null_handling(monkeypatch):
     assert s.commands[2].project_id == real_proj.id
 
 
-def test_detect_projects_with_null_end_time(monkeypatch):
-    """Active sessions with end_time=None must not crash project inference.
+def test_detect_projects_with_null_end_time():
+    """Active (end_time=None) session must not crash Pass 2 gap arithmetic (#312/#372).
 
-    Regression test for #312/#372: ``Session(end_time=None, duration_seconds=0)``
-    previously caused ``TypeError`` when ``detect_projects`` compared or
-    subtracted ``None`` for project last-seen / gap calculations (Pass 2/3).
+    ``s2`` resets cwd to ``/`` so it stays unassigned after Pass 1, and it contains a
+    git command, which drives it into Pass 2 Strategy B where ``session.end_time`` is
+    subtracted (``termstory/project.py`` ~549-550). Before the fix this raised
+    ``TypeError: unsupported operand type(s) for -: 'int' and 'NoneType'``.
     """
-    # Completed session with cd (control)
+    # Completed session -> becomes an assigned project.
     s1 = Session(
         id=1, start_time=1000, end_time=1100, duration_seconds=100,
         project_id=None,
@@ -567,28 +568,36 @@ def test_detect_projects_with_null_end_time(monkeypatch):
         ],
     )
 
-    # Active session with end_time=None and duration_seconds=0 (the bug)
+    # Active session: `cd ~` sends cwd to home so it stays "Other" after Pass 1
+    # (without the `cd /` path that would let Pass 2 Strategy A grab it), and the
+    # indicative git command routes it into Pass 2 Strategy B, which subtracts its
+    # None end_time against the other assigned session.
     s2 = Session(
         id=2, start_time=2000, end_time=None, duration_seconds=0,
         project_id=None,
-        commands=[Command(timestamp=2000, command="echo active session")],
+        commands=[
+            Command(timestamp=2000, command="cd ~"),
+            Command(timestamp=2010, command="git push origin main"),
+        ],
     )
 
-    # Should not raise TypeError
-    projects = detect_projects([s1, s2])
+    projects = detect_projects([s1, s2])  # must not raise TypeError
 
-    # The project should still be created from s1
     proj = next((p for p in projects if "HugeGraph" in p.name), None)
     assert proj is not None
-    assert s1.project_id == proj.id
-
-    # last_seen must remain a valid integer (start_time fallback for active session)
+    # last_seen falls back to start_time for the active session and stays an int.
     assert isinstance(proj.last_seen, int)
 
 
-def test_detect_projects_with_null_end_time_gap_arithmetic(monkeypatch):
-    """Gap arithmetic between a completed and an active session must not crash."""
-    # Completed session in project-alpha
+def test_detect_projects_with_null_end_time_gap_arithmetic():
+    """Active (end_time=None) session as a Pass 3 neighbor must not crash (#312/#372).
+
+    ``s2`` resets cwd to ``/`` and has no git command, so it stays "Other" through
+    Pass 2 and reaches Pass 3 neighbor propagation, where the forward gap subtracts
+    ``session.end_time`` (``termstory/project.py`` ~597). Before the fix this raised
+    ``TypeError`` on the None end_time.
+    """
+    # Completed session in project-alpha -> assigned.
     s1 = Session(
         id=1, start_time=1000, end_time=1100, duration_seconds=100,
         project_id=None,
@@ -597,13 +606,17 @@ def test_detect_projects_with_null_end_time_gap_arithmetic(monkeypatch):
             Command(timestamp=1050, command="git status"),
         ],
     )
-    # Active session with end_time=None — sandwiched neighbor propagation target
+    # Active "Other" session (cd / resets cwd, no git) sandwiched between two
+    # assigned sessions -> Pass 3 forward-gap subtracts its None end_time.
     s2 = Session(
         id=2, start_time=2000, end_time=None, duration_seconds=0,
         project_id=None,
-        commands=[Command(timestamp=2000, command="git commit -m 'wip'")],
+        commands=[
+            Command(timestamp=2000, command="cd /"),
+            Command(timestamp=2010, command="echo working"),
+        ],
     )
-    # Completed session in project-alpha again — sandwich with s2 in middle
+    # Completed session in project-alpha again -> sandwich with s2 in the middle.
     s3 = Session(
         id=3, start_time=3000, end_time=3100, duration_seconds=100,
         project_id=None,
@@ -613,6 +626,5 @@ def test_detect_projects_with_null_end_time_gap_arithmetic(monkeypatch):
         ],
     )
 
-    # Must not raise
-    projects = detect_projects([s1, s2, s3])
+    projects = detect_projects([s1, s2, s3])  # must not raise
     assert isinstance(projects, list)

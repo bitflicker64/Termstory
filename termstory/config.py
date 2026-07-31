@@ -191,7 +191,6 @@ def load_config() -> dict:
     "~/Work",
     "~",
 ],
-        "nfs_timeout_cache_ttl": 60,
     }
     
     config = {}
