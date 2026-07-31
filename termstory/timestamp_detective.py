@@ -1337,6 +1337,10 @@ class TimestampDetective:
     # Public API
     # =========================================================================
 
+    def clear_cache(self) -> None:
+        """Clear all internal caches to free memory."""
+        self._git_log_cache.clear()
+
     def resolve_all(self, legacy_items: List[dict]) -> List[dict]:
         """
         Main entry point for the Timestamp Detective pipeline.

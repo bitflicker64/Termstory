@@ -144,6 +144,7 @@ def load_config() -> dict:
         "ai_enabled": False,
         "active_provider": "disabled",  # "groq", "openai", "ollama", "disabled"
         "request_timeout_seconds": 30,
+        "nfs_timeout_cache_ttl": 10,
         "ai_max_failures": 3,
         "ai_cooldown_seconds": 60.0,
         "providers": {
