@@ -73,7 +73,7 @@ def _search_new_fts5(
         WITH matched_session_ids AS (
             -- Matches from commands_fts
             SELECT DISTINCT session_id AS id, 1 AS match_type, NULL as rank
-            FROM commands 
+            FROM commands
             WHERE id IN (SELECT rowid FROM commands_fts WHERE commands_fts MATCH ?)
               AND session_id IS NOT NULL
 
@@ -81,7 +81,7 @@ def _search_new_fts5(
 
             -- Matches from sessions_fts
             SELECT rowid AS id, 2 AS match_type, rank
-            FROM sessions_fts 
+            FROM sessions_fts
             WHERE sessions_fts MATCH ?
 
             UNION ALL
@@ -103,28 +103,35 @@ def _search_new_fts5(
         FROM sessions s
         JOIN best_matches bm ON s.id = bm.id
         LEFT JOIN projects p ON s.project_id = p.id
+        LEFT JOIN commands cmd_per_proj ON cmd_per_proj.session_id = s.id
+        LEFT JOIN projects p2 ON cmd_per_proj.project_id = p2.id
         WHERE 1=1
     """
     params = [fts_query, fts_query, fts_query]
-    
+
     if project_filter:
-        sql += " AND p.name LIKE ?"
+        # Match if the session's final project OR any per-command project
+        # matches the filter — fixes #339 where a session that switches
+        # projects mid-stream was filtered out when its commands ran in
+        # a different project than the final cd.
+        sql += " AND (p.name LIKE ? OR p2.name LIKE ?)"
         params.append(f"%{project_filter}%")
-        
+        params.append(f"%{project_filter}%")
+
     if since_ts:
         sql += " AND s.start_time >= ?"
         params.append(since_ts)
-        
+
     if until_ts:
         sql += " AND s.start_time <= ?"
         params.append(until_ts)
-        
+
     if tag_filters:
         for tag in tag_filters:
             sql += " AND s.tags LIKE ?"
             params.append(f"%{tag}%")
-            
-    sql += " ORDER BY bm.min_match_type ASC, bm.min_rank ASC, s.start_time DESC"
+
+    sql += " GROUP BY s.id ORDER BY bm.min_match_type ASC, bm.min_rank ASC, s.start_time DESC"
     if limit is not None:
         sql += " LIMIT ?"
         params.append(limit)
@@ -143,7 +150,7 @@ def _search_fts5(
     limit: Optional[int] = None
 ) -> List[Dict]:
     cursor = conn.cursor()
-    
+
     terms = query.split()
     sanitized_terms = []
     for term in terms:
@@ -151,12 +158,12 @@ def _search_fts5(
         if clean_term:
             sanitized_terms.append(f'"{clean_term}"*')
     fts_query = " ".join(sanitized_terms)
-    
+
     if not fts_query:
         return []
-        
+
     query_val = f"%{query}%"
-    
+
     sql = """
         WITH fts_matches AS (
             SELECT type, ref_id, project_id, timestamp, rank
@@ -166,39 +173,46 @@ def _search_fts5(
         SELECT s.id, s.start_time, s.end_time, s.duration_seconds, s.project_id, p.name, p.path, s.ai_summary
         FROM sessions s
         LEFT JOIN projects p ON s.project_id = p.id
+        LEFT JOIN commands cmd_per_proj ON cmd_per_proj.session_id = s.id
+        LEFT JOIN projects p2 ON cmd_per_proj.project_id = p2.id
         LEFT JOIN fts_matches f ON (
             (f.type = 'session_summary' AND CAST(f.ref_id AS INTEGER) = s.id)
             OR (f.type = 'command' AND CAST(f.ref_id AS INTEGER) = s.id)
-            OR (f.type = 'commit' AND s.project_id = CAST(f.project_id AS INTEGER) 
-                AND CAST(f.timestamp AS INTEGER) >= s.start_time - 300 
+            OR (f.type = 'commit' AND s.project_id = CAST(f.project_id AS INTEGER)
+                AND CAST(f.timestamp AS INTEGER) >= s.start_time - 300
                 AND CAST(f.timestamp AS INTEGER) <= COALESCE(s.end_time, s.start_time) + 600)
         )
-        WHERE (f.rank IS NOT NULL OR p.name LIKE ?)
+        WHERE (f.rank IS NOT NULL OR p.name LIKE ? OR p2.name LIKE ?)
     """
-    params = [fts_query, query_val]
-    
+    params = [fts_query, query_val, query_val]
+
     if project_filter:
-        sql += " AND p.name LIKE ?"
+        # Match if the session's final project OR any per-command project
+        # matches the filter — fixes #339 where a session that switches
+        # projects mid-stream was filtered out when its commands ran in
+        # a different project than the final cd.
+        sql += " AND (p.name LIKE ? OR p2.name LIKE ?)"
         params.append(f"%{project_filter}%")
-        
+        params.append(f"%{project_filter}%")
+
     if since_ts:
         sql += " AND s.start_time >= ?"
         params.append(since_ts)
-        
+
     if until_ts:
         sql += " AND s.start_time <= ?"
         params.append(until_ts)
-        
+
     if tag_filters:
         for tag in tag_filters:
             sql += " AND s.tags LIKE ?"
             params.append(f"%{tag}%")
-            
+
     sql += " GROUP BY s.id ORDER BY CASE WHEN MIN(f.rank) IS NOT NULL THEN 0 ELSE 1 END, MIN(f.rank) ASC, s.start_time DESC"
     if limit is not None:
         sql += " LIMIT ?"
         params.append(limit)
-    
+
     cursor.execute(sql, params)
     rows = cursor.fetchall()
     return _populate_results(cursor, rows, query)
@@ -222,43 +236,52 @@ def _search_standard(
             FROM sessions s
             LEFT JOIN projects p ON s.project_id = p.id
             LEFT JOIN commands c ON s.id = c.session_id
-            LEFT JOIN commits co ON s.project_id = co.project_id 
-                AND co.timestamp >= s.start_time - 300 
+            LEFT JOIN projects p2 ON c.project_id = p2.id
+            LEFT JOIN commits co ON s.project_id = co.project_id
+                AND co.timestamp >= s.start_time - 300
                 AND co.timestamp <= COALESCE(s.end_time, s.start_time) + 600
             WHERE (
                 p.name LIKE ?
+                OR p2.name LIKE ?
                 OR c.command LIKE ?
                 OR co.message LIKE ?
                 OR co.cleaned_message LIKE ?
                 OR s.ai_summary LIKE ?
             )
         """
-        params = [query_val, query_val, query_val, query_val, query_val]
+        params = [query_val, query_val, query_val, query_val, query_val, query_val]
     else:
         sql = """
             SELECT DISTINCT s.id, s.start_time, s.end_time, s.duration_seconds, s.project_id, p.name, p.path, s.ai_summary
             FROM sessions s
             LEFT JOIN projects p ON s.project_id = p.id
+            LEFT JOIN commands c ON s.id = c.session_id
+            LEFT JOIN projects p2 ON c.project_id = p2.id
             WHERE 1=1
         """
-        
+
     if project_filter:
-        sql += " AND p.name LIKE ?"
+        # Match if the session's final project OR any per-command project
+        # matches the filter — fixes #339 where a session that switches
+        # projects mid-stream was filtered out when its commands ran in
+        # a different project than the final cd.
+        sql += " AND (p.name LIKE ? OR p2.name LIKE ?)"
         params.append(f"%{project_filter}%")
-        
+        params.append(f"%{project_filter}%")
+
     if since_ts:
         sql += " AND s.start_time >= ?"
         params.append(since_ts)
-        
+
     if until_ts:
         sql += " AND s.start_time <= ?"
         params.append(until_ts)
-        
+
     if tag_filters:
         for tag in tag_filters:
             sql += " AND s.tags LIKE ?"
             params.append(f"%{tag}%")
-            
+
     sql += " ORDER BY s.start_time DESC"
     if limit is not None:
         sql += " LIMIT ?"

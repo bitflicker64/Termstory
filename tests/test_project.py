@@ -48,34 +48,42 @@ def test_detect_projects(monkeypatch):
     cmd1 = Command(timestamp=1000, command="cd ~/projects/incubator-hugegraph")
     cmd2 = Command(timestamp=1010, command="git status")
     s1 = Session(id=1, start_time=1000, end_time=1010, duration_seconds=10, project_id=None, commands=[cmd1, cmd2])
-    
+
     # Session 2: working in project B
     cmd3 = Command(timestamp=2000, command="cd /Users/username/my-awesome-project")
     cmd4 = Command(timestamp=2020, command="python setup.py install")
     s2 = Session(id=2, start_time=2000, end_time=2020, duration_seconds=20, project_id=None, commands=[cmd3, cmd4])
-    
+
     # Session 3: no cd commands
     cmd5 = Command(timestamp=3000, command="echo 'no projects here'")
     s3 = Session(id=3, start_time=3000, end_time=3000, duration_seconds=0, project_id=None, commands=[cmd5])
-    
+
     projects = detect_projects([s1, s2, s3])
-    
+
     # We should have exactly 2 projects detected
     assert len(projects) == 2
-    
+
     # Verify Project A details
     proj_a = next(p for p in projects if "HugeGraph" in p.name)
     assert proj_a.path == "~/projects/incubator-hugegraph"
     assert proj_a.name == "Apache HugeGraph"
     assert s1.project_id == proj_a.id
-    assert cmd1.project_id == proj_a.id
+    # cmd1 is the cd itself — it ran in home (cwd before the cd takes effect),
+    # so its per-command project_id is None (see #337/#339).
+    assert cmd1.project_id is None
+    # cmd2 ran after the cd, so it correctly attributes to proj_a.
     assert cmd2.project_id == proj_a.id
-    
+
     # Verify Project B details
     proj_b = next(p for p in projects if "Awesome" in p.name)
     assert proj_b.path == "/Users/username/my-awesome-project"
     assert s2.project_id == proj_b.id
-    
+    # s2 starts with cwd still pointing at proj_a (the cwd persists across
+    # sessions to mirror terminal tab preservation). So cmd3, the cd command
+    # itself, attributes to proj_a; the cd only takes effect for cmd4.
+    assert cmd3.project_id == proj_a.id
+    assert cmd4.project_id == proj_b.id
+
     # Session 3 inherits Project B because the simulated cwd persists
     assert s3.project_id == proj_b.id
     assert cmd5.project_id == proj_b.id
@@ -434,3 +442,100 @@ def test_listdir_timeout_caching_custom_ttl(monkeypatch):
     with pytest.raises(TimeoutError) as exc_info2:
         _listdir_with_timeout("/some/custom/ttl/mount", timeout=0.1)
     assert "cached" not in str(exc_info2.value)
+
+
+def test_detect_projects_per_command_project_context(monkeypatch):
+    """#337: per-command project_id reflects the cwd at the time the
+    command was issued, not just the final cwd of the session.
+
+    Regression: previously every command in a session was attributed to the
+    session's final project, so a session that ``cd``-ed into project B
+    from project A had all its commands labelled as B.
+    """
+    import os
+    original_listdir = os.listdir
+
+    def mock_listdir(path):
+        if path in (
+            "/Users/username/Projects/acme-billing",
+            "/Users/username/Projects/mobile-companion",
+        ):
+            return [".git"]
+        return original_listdir(path)
+
+    monkeypatch.setattr(os, "listdir", mock_listdir)
+
+    s = Session(
+        id=1, start_time=1000, end_time=5000, duration_seconds=4000,
+        project_id=None,
+        commands=[
+            Command(timestamp=1000, command="cd ~/Projects/acme-billing"),
+            Command(timestamp=1100, command="pytest tests/test_invoice_totals.py -q"),
+            Command(timestamp=1200, command='git commit -m "Fix invoice rounding"'),
+            Command(timestamp=2000, command="cd ~/Projects/mobile-companion"),
+            Command(timestamp=2100, command="npm run test -- --watch=false"),
+            Command(timestamp=2200, command='git commit -m "Clarify offline retry state"'),
+        ],
+    )
+
+    projects = detect_projects([s])
+
+    # Both projects must be discovered
+    assert len(projects) == 2
+    billing = next(p for p in projects if "Acme Billing" in p.name or "Billing" in p.name or "acme" in p.path.lower())
+    mobile = next(p for p in projects if "Mobile Companion" in p.name or "mobile" in p.path.lower())
+
+    # Session's final project must be the mobile-companion (the final cwd)
+    assert s.project_id == mobile.id
+
+    # Per-command attribution rules (see #337):
+    # - cmd[0] is the cd itself, ran in home → None
+    # - cmd[1..2] ran in acme-billing (after the cd took effect)
+    # - cmd[3] is the cd to mobile, ran in acme-billing → acme-billing
+    # - cmd[4..5] ran in mobile-companion
+    assert s.commands[0].project_id is None
+    assert s.commands[1].project_id == billing.id
+    assert s.commands[2].project_id == billing.id
+    assert s.commands[3].project_id == billing.id
+    assert s.commands[4].project_id == mobile.id
+    assert s.commands[5].project_id == mobile.id
+
+    # Session.project_ids helper exposes the union of distinct command projects
+    assert s.project_ids == {billing.id, mobile.id}
+
+
+def test_detect_projects_per_command_null_handling(monkeypatch):
+    """#337: commands whose cwd is not inside any project root must keep
+    cmd.project_id == None (not inherit the session's final project)."""
+    import os
+    original_listdir = os.listdir
+
+    def mock_listdir(path):
+        if path == "/Users/username/Projects/real-project":
+            return [".git"]
+        return original_listdir(path)
+
+    monkeypatch.setattr(os, "listdir", mock_listdir)
+
+    s = Session(
+        id=1, start_time=1000, end_time=2000, duration_seconds=1000,
+        project_id=None,
+        commands=[
+            Command(timestamp=1000, command="echo 'before cd'"),
+            Command(timestamp=1100, command="cd ~/Projects/real-project"),
+            Command(timestamp=1200, command="git status"),
+        ],
+    )
+
+    projects = detect_projects([s])
+
+    assert len(projects) == 1
+    real_proj = projects[0]
+
+    # First command ran before any cd → no project attribution
+    assert s.commands[0].project_id is None
+    # Second command is the cd itself — runs in the pre-cd cwd (home)
+    # so it gets no project attribution
+    assert s.commands[1].project_id is None
+    # Third command runs inside real-project
+    assert s.commands[2].project_id == real_proj.id
