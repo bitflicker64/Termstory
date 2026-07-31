@@ -44,7 +44,7 @@ from textual.screen import ModalScreen
 from textual.binding import Binding
 from textual.markup import escape
 
-from termstory.models import Session, Project, format_duration
+from termstory.models import Session, Project, Command, format_duration
 from termstory.database import Database
 from termstory.project import disambiguate_project_names
 from termstory.formatter import _is_noise_command, clean_command_to_memory, generate_daily_activity_punch_card, get_operator_handle, get_github_avatar_ascii
@@ -519,6 +519,55 @@ def get_session_memory_str(session: Session) -> str:
     session._cached_memory_str = val
     return val
 
+
+def compute_ghost_typing_pacing(commands: List[Command]) -> List[Dict[str, float]]:
+    """Compute dynamic per-command typing pacing for the Ghost Typer playback.
+
+    The pacing list has one entry per command (same order as ``commands``). Each
+    entry contains:
+      - ``char_delay``: seconds to wait between individual character reveals
+      - ``post_delay``: seconds to wait AFTER finishing this command and BEFORE
+        starting the next one
+      - ``pre_delay``: seconds to wait BEFORE starting this command (typically 0)
+
+    Rules (issue #43):
+      - Fast bursts (gap to previous command < 2s) -> ``char_delay`` collapses to
+        near-zero so the command is "typed" almost instantly.
+      - Normal gaps (2s <= gap <= 60min) -> ``char_delay`` is a comfortable
+        typing pace (~0.03s/char).
+      - Big session gaps (gap > 60min) -> ``post_delay`` is scaled up so the
+        typing visibly pauses between sessions, while per-character speed stays
+        at the normal rate.
+
+    Commands with ``timestamp == 0`` (legacy / synthetic) are treated as part of
+    a single burst since no per-command gaps can be reliably inferred for them.
+    """
+    pacing: List[Dict[str, float]] = []
+    prev_ts: Optional[int] = None
+    for cmd in commands:
+        ts = getattr(cmd, "timestamp", 0) or 0
+        gap: Optional[float] = None
+        if prev_ts is not None and ts > 0 and prev_ts > 0:
+            gap = float(ts - prev_ts)
+
+        if gap is not None and gap < 2.0:
+            char_delay = 0.005
+            post_delay = 0.02
+        elif gap is not None and gap > 60 * 60:
+            char_delay = 0.03
+            post_delay = min(2.5, gap / 60.0)
+        else:
+            char_delay = 0.03
+            post_delay = 0.08
+
+        pacing.append({
+            "char_delay": char_delay,
+            "post_delay": post_delay,
+            "pre_delay": 0.0,
+        })
+        if ts > 0:
+            prev_ts = ts
+    return pacing
 
 
 # ==========================================
@@ -2380,6 +2429,199 @@ class GhostTyperScreen(_DeferredDismissMixin, ModalScreen[None]):
             logger.debug("TUI UI exception suppressed: %s", e)
 
 
+class ChroniclePlaybackCanvas(Static):
+    """In-place Ghost Typer playback for the Daily Chronicle (issue #43).
+
+    Mounts inside the ``DetailsCanvas`` and re-types the AI narrative followed
+    by the day's commands character-by-character with dynamic pacing: tight
+    bursts of commands (< 2s apart) appear nearly instantly, while long session
+    gaps (> 60min) cause a visible pause. On completion, ``on_complete`` is
+    invoked so the parent app can restore the normal Daily Chronicle view.
+    """
+
+    DEFAULT_CSS = """
+    ChroniclePlaybackCanvas {
+        background: #050a05;
+        color: #00ff66;
+        padding: 0 1;
+        height: auto;
+    }
+    """
+
+    def __init__(
+        self,
+        ai_narrative: str,
+        commands: List[Command],
+        on_complete: Optional[Any] = None,
+        *args,
+        **kwargs,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.ai_narrative_raw = strip_ansi(ai_narrative or "")
+        self.commands = commands
+        self.on_complete = on_complete
+        self.lines: List[str] = []
+        self.cmd_idx = 0
+        self.char_idx = 0
+        self.current_text = ""
+        self.typing_timer = None
+        self.pacing: List[Dict[str, float]] = []
+        self.state = "init"
+        self.narrative_lines: List[str] = []
+        self.narrative_typed: List[str] = []
+        self.narrative_line_idx = 0
+        self.narrative_char_idx = 0
+        self.completed = False
+        self._rendered_markup: str = ""
+
+    def render(self):
+        """Return the latest markup string for this widget."""
+        return self._rendered_markup or ""
+
+    def on_mount(self) -> None:
+        self.pacing = compute_ghost_typing_pacing(self.commands)
+        self.lines.append("[bold cyan]\u2620 GHOST TYPER PLAYBACK[/bold cyan]  [dim]\u2014 issue #43[/dim]\n")
+        self.lines.append("[dim]Re-typing your day\u2026[/dim]\n")
+        self._refresh_render()
+        self.set_timer(0.4, self._start_narrative)
+
+    def _start_narrative(self) -> None:
+        if self.completed:
+            return
+        self.state = "narrative"
+        text = self.ai_narrative_raw.strip()
+        self.narrative_lines = text.split("\n") if text else []
+        self.narrative_typed = []
+        self.narrative_line_idx = 0
+        self.narrative_char_idx = 0
+        if not self.narrative_lines:
+            self._start_command_phase()
+            return
+        self.typing_timer = self.set_interval(0.025, self._type_narrative_char)
+
+    def _type_narrative_char(self) -> None:
+        if self.completed:
+            if self.typing_timer:
+                self.typing_timer.stop()
+            return
+        if self.narrative_line_idx >= len(self.narrative_lines):
+            if self.typing_timer:
+                self.typing_timer.stop()
+            self._start_command_phase()
+            return
+        line = self.narrative_lines[self.narrative_line_idx]
+        if self.narrative_char_idx < len(line):
+            self.narrative_char_idx += 1
+            self._refresh_render()
+        else:
+            self.narrative_typed.append(line)
+            self.narrative_line_idx += 1
+            self.narrative_char_idx = 0
+            if self.narrative_line_idx >= len(self.narrative_lines):
+                if self.typing_timer:
+                    self.typing_timer.stop()
+                self._refresh_render()
+                self.set_timer(0.3, self._start_command_phase)
+            else:
+                self._refresh_render()
+
+    def _start_command_phase(self) -> None:
+        if self.completed:
+            return
+        if not self.commands:
+            self._finish()
+            return
+        self.state = "command"
+        self.cmd_idx = 0
+        self.char_idx = 0
+        self.current_text = ""
+        self._start_next_command()
+
+    def _start_next_command(self) -> None:
+        if self.completed:
+            return
+        if self.cmd_idx >= len(self.commands):
+            self._finish()
+            return
+        self.state = "command"
+        self.char_idx = 0
+        self.current_text = ""
+        pace = (
+            self.pacing[self.cmd_idx]
+            if self.cmd_idx < len(self.pacing)
+            else {"char_delay": 0.03, "post_delay": 0.1}
+        )
+        self.typing_timer = self.set_interval(max(0.001, pace["char_delay"]), self._type_command_char)
+
+    def _type_command_char(self) -> None:
+        if self.completed or self.cmd_idx >= len(self.commands):
+            if self.typing_timer:
+                self.typing_timer.stop()
+            return
+        cmd_text = self.commands[self.cmd_idx].command or ""
+        if self.char_idx < len(cmd_text):
+            self.char_idx += 1
+            self.current_text = cmd_text[: self.char_idx]
+            self._refresh_render()
+        else:
+            if self.typing_timer:
+                self.typing_timer.stop()
+            self.cmd_idx += 1
+            pace_idx = self.cmd_idx - 1
+            pace = (
+                self.pacing[pace_idx]
+                if 0 <= pace_idx < len(self.pacing)
+                else {"post_delay": 0.1}
+            )
+            self._refresh_render()
+            self.set_timer(max(0.0, pace["post_delay"]), self._start_next_command)
+
+    def _finish(self) -> None:
+        if self.completed:
+            return
+        self.completed = True
+        self.state = "done"
+        if self.typing_timer:
+            try:
+                self.typing_timer.stop()
+            except Exception as e:
+                logger.debug("ChroniclePlaybackCanvas stop suppressed: %s", e)
+        self._refresh_render()
+        if self.on_complete:
+            self.set_timer(1.5, self.on_complete)
+
+    def _refresh_render(self) -> None:
+        parts: List[str] = list(self.lines)
+        if self.state == "narrative" and self.narrative_line_idx < len(self.narrative_lines):
+            line = self.narrative_lines[self.narrative_line_idx]
+            partial = line[: self.narrative_char_idx]
+            tail = "\u258c" if self.narrative_char_idx < len(line) else ""
+            parts.append(escape(partial) + tail)
+        for line in self.narrative_typed:
+            parts.append(escape(line))
+        if self.state in ("command", "done"):
+            parts.append("")
+            for i in range(self.cmd_idx):
+                cmd_text = self.commands[i].command or ""
+                parts.append(
+                    f"[bold green]operator@termstory[/bold green]:[bold blue]~[/bold blue]$ {escape(cmd_text)}"
+                )
+            if self.state == "command" and self.cmd_idx < len(self.commands):
+                cmd_text = self.commands[self.cmd_idx].command or ""
+                cursor = "\u258c" if self.char_idx < len(cmd_text) else ""
+                parts.append(
+                    f"[bold green]operator@termstory[/bold green]:[bold blue]~[/bold blue]$ {escape(self.current_text)}{cursor}"
+                )
+        if self.state == "done":
+            parts.append("")
+            parts.append("[bold green]>> PLAYBACK COMPLETE. Restoring Chronicle\u2026[/bold green]")
+        self._rendered_markup = "\n".join(parts)
+        try:
+            self.update(self._rendered_markup)
+        except Exception as e:
+            logger.debug("ChroniclePlaybackCanvas render suppressed: %s", e)
+
+
 # ==========================================
 # 4. MAIN WORKSPACE APP
 # ==========================================
@@ -3792,28 +4034,67 @@ class TermStoryWorkspace(App):
         if not node or not node.data:
             self.notify("Select a session or date node to play back.", severity="warning")
             return
-            
+
         node_type = node.data.get("type")
-        commands = []
         if node_type == "session":
             session_id = node.data.get("session_id")
             session = next((s for s in self.sessions if s.id == session_id), None)
+            commands: List[str] = []
             if session:
                 commands = [cmd.command for cmd in session.commands]
-        elif node_type == "date":
-            date_str = node.data.get("date_str")
-            matched = [s for s in self.sessions if s.date_str == date_str]
-            for s in matched:
-                commands.extend(cmd.command for cmd in s.commands)
-        else:
-            self.notify("Select a session or date node to play back.", severity="warning")
-            return
-            
-        if not commands:
+            if commands:
+                self.push_screen(GhostTyperScreen(commands))
+                return
             self.notify("No commands found in selection.", severity="warning")
             return
-            
-        self.push_screen(GhostTyperScreen(commands))
+
+        if node_type == "date":
+            date_str = node.data.get("date_str")
+            matched = [s for s in self.sessions if s.date_str == date_str]
+            all_cmds: List[Command] = []
+            for s in matched:
+                all_cmds.extend(s.commands)
+            all_cmds.sort(key=lambda c: c.timestamp)
+            if not all_cmds:
+                self.notify("No commands found in selection.", severity="warning")
+                return
+
+            ai_narrative = ""
+            try:
+                cached = self.app.db.get_macro_summary(date_str)
+                if cached:
+                    ai_narrative = cached
+            except Exception as e:
+                logger.debug("TUI UI exception suppressed: %s", e)
+
+            try:
+                details = self.query_one("#details-canvas")
+            except Exception:
+                self.notify("Details canvas unavailable.", severity="error")
+                return
+
+            details.remove_children()
+
+            def _restore_chronicle() -> None:
+                try:
+                    self.refresh_details_canvas()
+                except Exception as e:
+                    logger.debug("TUI UI exception suppressed: %s", e)
+
+            canvas = ChroniclePlaybackCanvas(
+                ai_narrative,
+                all_cmds,
+                on_complete=_restore_chronicle,
+                id="chronicle-playback-canvas",
+            )
+            details.mount(canvas)
+            self.notify(
+                f"\u2620 Ghost Playback: {date_str} ({len(all_cmds)} commands)",
+                timeout=3.0,
+            )
+            return
+
+        self.notify("Select a session or date node to play back.", severity="warning")
 
     def action_show_onboarding(self) -> None:
         self.push_screen(OnboardingScreen(self.config), self.handle_onboarding_result)

@@ -17,6 +17,7 @@ from termstory.tui import (
     calculate_dashboard_stats,
     calculate_streak,
     clean_command_to_memory,
+    compute_ghost_typing_pacing,
     deduplicate_sessions,
     generate_heatmap,
     get_session_memory_str,
@@ -1669,3 +1670,165 @@ async def test_tui_matrix_defrag_no_extra_ui_panels(monkeypatch):
             # Final pause to drain any _finish_defrag cleanup messages before
             # the test app is torn down (avoids noisy stderr during teardown).
             await pilot.pause()
+
+
+# ---------------------------------------------------------------------------
+# Issue #43 — Ghost Typer Playback (pacing helper)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_ghost_typing_pacing_burst_collapses_char_delay():
+    """Tight command bursts (< 2s gap) collapse ``char_delay`` so commands
+    appear nearly instantly — see issue #43."""
+    base = 1_700_000_000
+    cmds = [
+        Command(timestamp=base, command="git add ."),
+        Command(timestamp=base + 1, command="git commit -m w"),
+        Command(timestamp=base + 2, command="git push"),
+    ]
+    pacing = compute_ghost_typing_pacing(cmds)
+    assert len(pacing) == 3
+    assert pacing[0]["char_delay"] >= 0.02  # first command uses default
+    assert pacing[1]["char_delay"] < 0.02   # 1s after first → burst
+    assert pacing[2]["char_delay"] < 0.02   # 1s after previous → burst
+    for entry in pacing:
+        assert "post_delay" in entry
+        assert "pre_delay" in entry
+
+
+def test_compute_ghost_typing_pacing_long_gap_triggers_pause():
+    """Big session gaps (> 60min) scale ``post_delay`` so the typing visibly
+    pauses between sessions."""
+    base = 1_700_000_000
+    cmds = [
+        Command(timestamp=base, command="echo morning"),
+        Command(timestamp=base + 90 * 60, command="echo afternoon"),
+        Command(timestamp=base + 5 * 60 * 60, command="echo evening"),
+    ]
+    pacing = compute_ghost_typing_pacing(cmds)
+    assert pacing[0]["char_delay"] >= 0.02
+    assert pacing[1]["post_delay"] > 0.5
+    assert pacing[2]["post_delay"] >= 0.5
+    assert pacing[2]["post_delay"] <= 2.5
+
+
+def test_compute_ghost_typing_pacing_normal_gap():
+    """Normal gaps (2s ≤ gap ≤ 60min) use the default typing pace."""
+    base = 1_700_000_000
+    cmds = [
+        Command(timestamp=base, command="ls"),
+        Command(timestamp=base + 30, command="cd /tmp"),
+        Command(timestamp=base + 120, command="pwd"),
+    ]
+    pacing = compute_ghost_typing_pacing(cmds)
+    for entry in pacing:
+        assert isinstance(entry["char_delay"], float)
+        assert isinstance(entry["post_delay"], float)
+        assert entry["char_delay"] >= 0.001
+        assert entry["post_delay"] >= 0.0
+    assert pacing[0]["char_delay"] >= 0.02
+
+
+def test_compute_ghost_typing_pacing_zero_timestamp_does_not_crash():
+    """Legacy / synthetic commands with ``timestamp == 0`` are treated as a
+    single burst — the function must still return a well-formed pacing list."""
+    cmds = [
+        Command(timestamp=0, command="ls"),
+        Command(timestamp=0, command="cd /tmp"),
+        Command(timestamp=0, command="pwd"),
+    ]
+    pacing = compute_ghost_typing_pacing(cmds)
+    assert len(pacing) == 3
+    for entry in pacing:
+        assert "char_delay" in entry
+        assert "post_delay" in entry
+
+
+def test_compute_ghost_typing_pacing_empty():
+    """Empty input returns an empty pacing list."""
+    assert compute_ghost_typing_pacing([]) == []
+
+
+@pytest.mark.asyncio
+async def test_chronicle_playback_clears_details_canvas_for_date_node(monkeypatch):
+    """Pressing ``p`` on a date node must mount ChroniclePlaybackCanvas inside
+    the DetailsCanvas (clearing its previous contents) — issue #43."""
+    from textual.css.query import NoMatches
+
+    from termstory.tui import ChroniclePlaybackCanvas
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = os.path.join(tmp_dir, "test.db")
+        db = Database(db_path)
+        db.init_db()
+
+        now = int(datetime.now().timestamp())
+        p = Project(
+            id=1, name="Ghost Project", path="~/ghost",
+            first_seen=now, last_seen=now, session_count=1, total_time=600,
+        )
+        # Three commands in a burst (gap < 2s) — should be "typed" instantly.
+        cmd1 = Command(timestamp=now, command="git add .", session_id=1, project_id=1)
+        cmd2 = Command(timestamp=now + 1, command="git commit -m w", session_id=1, project_id=1)
+        cmd3 = Command(timestamp=now + 2, command="git push", session_id=1, project_id=1)
+        # Then a big gap (90 minutes) to a fourth command — should pause.
+        cmd4 = Command(timestamp=now + 90 * 60, command="echo done", session_id=1, project_id=1)
+        s = Session(
+            id=1, start_time=now, end_time=now + 600, duration_seconds=600,
+            project_id=1, commands=[cmd1, cmd2, cmd3, cmd4],
+        )
+        db.save_data([p], [s], [cmd1, cmd2, cmd3, cmd4])
+
+        app = TermStoryWorkspace(
+            db,
+            days_limit=30,
+            config_override={
+                "has_seen_onboarding": True,
+                "ai_enabled": False,
+            },
+        )
+
+        today_str = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+        app.db.save_macro_summary(today_str, "date", "Today you shipped the ghost typer.")
+
+        async with app.run_test() as pilot:
+            tree = app.query_one("#history-navigator")
+            timeline_root = tree.root.children[0]
+            month_node = timeline_root.children[0]
+            month_node.expand()
+            await pilot.pause()
+            date_node = month_node.children[0]
+            date_node.expand()
+            await pilot.pause()
+            tree.select_node(date_node)
+            await pilot.pause()
+            assert tree.cursor_node is date_node
+
+            details = app.query_one("#details-canvas")
+            assert len(details.children) > 0
+
+            app.action_play_ghost_playback()
+            await pilot.pause()
+
+            mounted = None
+            try:
+                mounted = details.query_one("#chronicle-playback-canvas")
+            except NoMatches:
+                pytest.fail(
+                    "ChroniclePlaybackCanvas was not mounted into DetailsCanvas."
+                )
+            assert isinstance(mounted, ChroniclePlaybackCanvas)
+
+            assert len(details.children) == 1
+
+            assert len(mounted.pacing) == 4
+            assert mounted.pacing[1]["char_delay"] < 0.02
+            assert mounted.pacing[2]["char_delay"] < 0.02
+            assert mounted.pacing[3]["post_delay"] > 0.5
+
+            for _ in range(10):
+                await pilot.pause()
+                await asyncio.sleep(0.01)
+
+
+
