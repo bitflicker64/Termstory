@@ -219,7 +219,7 @@ def search_history(
     if since:
         try:
             since_ts = int(date_parser.parse(since).timestamp())
-        except (ValueError, OverflowError) as e:
+        except Exception:
             Console(stderr=True).print(f"[bold red]Error: Invalid date '{since}'. Expected YYYY-MM-DD.[/]")
             raise typer.Exit(code=1)
             
@@ -227,7 +227,7 @@ def search_history(
     if until:
         try:
             until_ts = int(date_parser.parse(until).timestamp())
-        except (ValueError, OverflowError) as e:
+        except Exception:
             Console(stderr=True).print(f"[bold red]Error: Invalid date '{until}'. Expected YYYY-MM-DD.[/]")
             raise typer.Exit(code=1)
             
