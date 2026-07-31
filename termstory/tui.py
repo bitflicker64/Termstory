@@ -51,7 +51,7 @@ from termstory.formatter import _is_noise_command, clean_command_to_memory, gene
 from termstory.date_utils import get_current_time
 from termstory.config import load_config, save_config
 from termstory.ai import generate_ai_summary, generate_timeframe_summary, generate_daily_chronicle, generate_wrapped_summary
-from termstory.insights import calculate_focus_score, calculate_time_of_day_distribution, assign_daily_rpg_class
+from termstory.insights import calculate_focus_score, calculate_time_of_day_distribution, assign_daily_rpg_class, get_vampire_metrics
 
 # Gap before rendering a debounced search update.
 _FRAME_GAP = 0.25
@@ -1243,6 +1243,9 @@ class DetailsCanvas(VerticalScroll):
         operator = get_operator_handle()
         fs = calculate_focus_score(sessions)
         tod = calculate_time_of_day_distribution(sessions)
+        vampire_metrics = get_vampire_metrics(sessions)
+        vampire_index = vampire_metrics.get("vampire_index", 0.0)
+        
         peak_velocity = "morning grinds"
         if tod.get("afternoon", 0) >= tod.get("morning", 0) and tod.get("afternoon", 0) >= tod.get("evening", 0):
             peak_velocity = "afternoon compilation grinds"
@@ -1273,7 +1276,7 @@ class DetailsCanvas(VerticalScroll):
         header_lines.append(f"[bold cyan]{avatar_lines[6]}[/]     [bold cyan]ACTIVE REPOS:[/]      [bold]{active_projects_count} Workspaces[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[7]}[/]     [bold cyan]FOCUS SCORE:[/]     [bold green]{fs:.1f}/10.0[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[8]}[/]     [bold cyan]PEAK VELOCITY:[/]    [dim]{peak_velocity}[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]PROJECTS:[/]        [dim]{active_projects_count}[/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]VAMPIRE INDEX:[/]    [dim]{vampire_index:g}% late night[/dim]")
         header_lines.append(f"[bold cyan]{avatar_lines[10]}[/]     [bold cyan]COMMITS:[/]         [dim]{total_commits}[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[11]}[/]     [bold cyan]SYSTEM ENGINE:[/]   [dim]Online & Synchronized[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[12]}[/]     [bold cyan]====================================================[/]")
@@ -1475,16 +1478,18 @@ class DetailsCanvas(VerticalScroll):
         provider = self.app.config.get("active_provider", "disabled")
         status_part = "Narrative Concluded" if (ai_enabled and provider != "disabled") else "Offline / Local Only"
         
-        # Fetch GitHub avatar ASCII lines (28x14)
+        # Fetch GitHub avatar ASCII lines (28x15)
         avatar_lines = get_github_avatar_ascii(
             operator, 
             width=28, 
-            height=14, 
+            height=15, 
             on_resolved=lambda: self.app.call_from_thread(self.app.refresh_details_canvas)
         )
         
         fs = calculate_focus_score(sessions)
         tod = calculate_time_of_day_distribution(sessions)
+        vampire_metrics = get_vampire_metrics(sessions)
+        vampire_index = vampire_metrics.get("vampire_index", 0.0)
         rpg_class = assign_daily_rpg_class(sessions)
         
         peak_velocity = "morning grinds"
@@ -1507,10 +1512,11 @@ class DetailsCanvas(VerticalScroll):
         header_lines.append(f"[bold cyan]{avatar_lines[7]}[/]     [bold cyan]FOCUS SCORE:[/]     [bold green]{fs:.1f}/10.0[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[8]}[/]     [bold cyan]PEAK VELOCITY:[/]    [dim]{peak_velocity}[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]DAILY CLASS:[/]      [dim]{rpg_class}[/dim]")
-        header_lines.append(f"[bold cyan]{avatar_lines[10]}[/]     [bold cyan]COMMITS:[/]          [dim]{total_commits}[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[11]}[/]     [bold cyan]ACTIVE DAYS:[/]     [dim]{active_days} Days[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[12]}[/]     [bold cyan]SYSTEM ENGINE:[/]   [dim]Online & Synchronized[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[13]}[/]     [bold cyan]====================================================[/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[10]}[/]     [bold cyan]VAMPIRE INDEX:[/]    [dim]{vampire_index:g}% late night[/dim]")
+        header_lines.append(f"[bold cyan]{avatar_lines[11]}[/]     [bold cyan]COMMITS:[/]          [dim]{total_commits}[/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[12]}[/]     [bold cyan]ACTIVE DAYS:[/]     [dim]{active_days} Days[/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[13]}[/]     [bold cyan]SYSTEM ENGINE:[/]   [dim]Online & Synchronized[/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[14]}[/]     [bold cyan]====================================================[/]")
         
         self.mount(Static("\n".join(header_lines) + "\n\n", markup=True))
         
@@ -1669,6 +1675,8 @@ class DetailsCanvas(VerticalScroll):
         fs = calculate_focus_score(sessions)
         tod = calculate_time_of_day_distribution(sessions)
         rpg_class = assign_daily_rpg_class(sessions)
+        vampire_metrics = get_vampire_metrics(sessions)
+        vampire_index = vampire_metrics.get("vampire_index", 0.0)
         
         peak_velocity = "morning grinds"
         if tod.get("afternoon", 0) >= tod.get("morning", 0) and tod.get("afternoon", 0) >= tod.get("evening", 0):
@@ -1706,10 +1714,10 @@ class DetailsCanvas(VerticalScroll):
         header_lines.append(f"[bold cyan]{avatar_lines[7]}[/]     [bold cyan]FOCUS SCORE:[/]     [bold green]{fs:.1f}/10.0[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[8]}[/]     [bold cyan]PEAK TIME:[/]       [dim]{peak_velocity}[/]")
         header_lines.append(f"[bold cyan]{avatar_lines[9]}[/]     [bold cyan]DAILY CLASS:[/]      [dim]{rpg_class}[/dim]")
-        header_lines.append(f"[bold cyan]{avatar_lines[10]}[/]     [bold cyan]COMMITS:[/]         [dim]{sum(len(s.commits) for s in sessions)}[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[11]}[/]     [bold cyan]SYSTEM ENGINE:[/]   [dim]Online & Synchronized[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[12]}[/]     [bold cyan]====================================================[/]")
-        header_lines.append(f"[bold cyan]{avatar_lines[13]}[/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[10]}[/]     [bold cyan]VAMPIRE INDEX:[/]    [dim]{vampire_index:g}% late night[/dim]")
+        header_lines.append(f"[bold cyan]{avatar_lines[11]}[/]     [bold cyan]COMMITS:[/]         [dim]{sum(len(s.commits) for s in sessions)}[/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[12]}[/]     [bold cyan]SYSTEM ENGINE:[/]   [dim]Online & Synchronized[/]")
+        header_lines.append(f"[bold cyan]{avatar_lines[13]}[/]     [bold cyan]====================================================[/]")
         
         self.mount(Static("\n".join(header_lines)))
         
