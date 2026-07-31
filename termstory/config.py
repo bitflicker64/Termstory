@@ -187,6 +187,7 @@ def load_config() -> dict:
     "~",
 ],
         "nfs_timeout_cache_ttl": 60,
+        "macos_install_log": "/private/var/log/install.log",
     }
     
     config = {}
