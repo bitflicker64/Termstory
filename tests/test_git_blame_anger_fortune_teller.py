@@ -4,7 +4,7 @@ from datetime import datetime
 from typer.testing import CliRunner
 import pytest
 
-from termstory.cli import app, get_ai_provider_settings
+from termstory.cli import app, get_ai_provider_settings, _is_recompile_command, _count_rapid_recompile_clusters
 from termstory.database import Database
 from termstory.models import Project, Session, Command
 from termstory.ai import translate_git_anger, predict_bugs_from_sessions
@@ -467,4 +467,233 @@ def test_rpg_class_vampire_index_cli_and_formatters(tmp_path, monkeypatch):
     assert result_vamp.exit_code == 0
     assert "The Vampire Coder Index" in result_vamp.stdout
     assert "Vampire Index : 0.0%" in result_vamp.stdout
+
+
+# ─── Issue #37: signal detection (kill -9 + rapid recompile) ──────────────────
+
+
+def test_is_recompile_command_positive():
+    """Issue #37: build/compile invocations are detected as recompile candidates."""
+    for cmd in [
+        "make", "make -j8", "cargo build --release", "go build ./...",
+        "tsc --noEmit", "ninja -C build", "webpack --mode production",
+        "g++ main.cpp", "swift build", "mvn compile", "dotnet build",
+    ]:
+        assert _is_recompile_command(cmd), f"expected {cmd!r} to be a recompile"
+
+
+def test_is_recompile_command_no_false_positives():
+    """Unrelated commands must not be flagged as recompile invocations."""
+    for cmd in [
+        "makeup", "cmake-format", "ls", "echo hello", "git commit",
+        "made-up-command", "tail -f log", "kubectl get pods",
+        "pytest tests/", "rm -rf build", "makedepend",  # makedepend contains 'make' but is a different tool
+    ]:
+        assert not _is_recompile_command(cmd), f"expected {cmd!r} NOT to be a recompile"
+
+
+def test_count_rapid_recompile_clusters_single_cluster():
+    """3 build invocations within 60s = 1 cluster."""
+    ts = [0, 10, 20]
+    cmds = ["make", "make", "make"]
+    assert _count_rapid_recompile_clusters(cmds, ts) == 1
+
+
+def test_count_rapid_recompile_clusters_no_cluster_when_below_threshold():
+    """Only 2 build invocations in the window = 0 clusters."""
+    ts = [0, 10]
+    cmds = ["make", "make"]
+    assert _count_rapid_recompile_clusters(cmds, ts) == 0
+
+
+def test_count_rapid_recompile_clusters_two_clusters():
+    """6 builds split into two 60s windows = 2 clusters."""
+    ts = [0, 10, 20, 100, 110, 120]
+    cmds = ["make"] * 6
+    assert _count_rapid_recompile_clusters(cmds, ts) == 2
+
+
+def test_count_rapid_recompile_clusters_mixed_builders():
+    """Mixed build tools (make + cargo + tsc) within 60s count as one cluster."""
+    ts = [0, 5, 15]
+    cmds = ["make", "cargo build", "tsc"]
+    assert _count_rapid_recompile_clusters(cmds, ts) == 1
+
+
+def test_count_rapid_recompile_clusters_inclusive_60s_boundary():
+    """Exactly 60s apart still counts as a cluster (<=); 61s does not."""
+    assert _count_rapid_recompile_clusters(["make"] * 3, [0, 30, 60]) == 1
+    assert _count_rapid_recompile_clusters(["make"] * 3, [0, 30, 61]) == 0
+
+
+def test_count_rapid_recompile_clusters_handles_mismatched_lengths():
+    """Defensive: mismatched command/timestamp lengths return 0 (no crash)."""
+    assert _count_rapid_recompile_clusters(["make", "make"], [0, 1, 2]) == 0
+    assert _count_rapid_recompile_clusters([], []) == 0
+
+
+def test_ai_translate_git_anger_includes_kill_signal_in_prompt(monkeypatch):
+    """The LLM prompt must include the kill -9 signal count when present."""
+    captured = []
+
+    def mock_urlopen(req, timeout=None):
+        # The Request object's data attribute holds the JSON body sent to the LLM.
+        body = req.data.decode("utf-8") if isinstance(req.data, bytes) else req.data
+        captured.append(body)
+        return _mock_response("💀 roasted")
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    commit_data = [
+        {
+            "hash": "deadbeef12",
+            "message": "feat: stop runaway process",
+            "preceding_errors": ["kill -9 12345", "kill -9 67890"],
+            "kill_count": 2,
+            "recompile_clusters": 0,
+        }
+    ]
+    translate_git_anger(
+        commit_data,
+        api_key="test-key",
+        api_base_url="https://api.openai.com/v1",
+        model_name="gpt-4o",
+        provider="openai",
+    )
+    assert len(captured) == 1
+    payload = captured[0]
+    # The kill signal summary should be in the rendered prompt body
+    assert "kill -9" in payload or "SIGKILL" in payload
+    assert "2x" in payload
+    assert "Aggression Signals" in payload
+
+
+def test_ai_translate_git_anger_includes_recompile_signal_in_prompt(monkeypatch):
+    """The LLM prompt must include the rapid-recompile cluster count when present."""
+    captured = []
+
+    def mock_urlopen(req, timeout=None):
+        body = req.data.decode("utf-8") if isinstance(req.data, bytes) else req.data
+        captured.append(body)
+        return _mock_response("recompile")
+
+    monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+    commit_data = [
+        {
+            "hash": "feedface12",
+            "message": "feat: build keeps breaking",
+            "preceding_errors": [],
+            "kill_count": 0,
+            "recompile_clusters": 2,
+        }
+    ]
+    translate_git_anger(
+        commit_data,
+        api_key="test-key",
+        api_base_url="https://api.openai.com/v1",
+        model_name="gpt-4o",
+        provider="openai",
+    )
+    assert len(captured) == 1
+    payload = captured[0]
+    assert "rapid-recompile" in payload
+    assert "2" in payload
+
+
+def _mock_response(content: str):
+    """Helper to build a MockResponse with the given LLM content."""
+    payload = json.dumps({"choices": [{"message": {"content": content}}]}).encode("utf-8")
+    return MockResponse(payload)
+
+
+def test_format_anger_heuristics_kill9_dominant():
+    """Issue #37: 2+ kill -9 commands in window → FURY / PROCESS WHACK-A-MOLE branch.
+
+    Note: the formatter's commit-message override (matches 'fix'/'bug'/'crash'/'issue')
+    always wins, so we use a non-fix commit message to keep the kill branch visible.
+    """
+    commit_data = [
+        {
+            "hash": "killed123",
+            "message": "feat: stop runaway process",
+            "preceding_errors": ["kill -9 111", "kill -9 222", "kill -9 333"],
+            "kill_count": 3,
+            "recompile_clusters": 0,
+        }
+    ]
+    out = format_anger_translation_heuristics(commit_data)
+    assert "FURY" in out
+    assert "PROCESS WHACK-A-MOLE" in out
+    assert "kill -9 x3" in out
+
+
+def test_format_anger_heuristics_recompile_only():
+    """Issue #37: rapid-recompile cluster with no kill → RECOMPILING IN A PANIC branch."""
+    commit_data = [
+        {
+            "hash": "recomp456",
+            "message": "feat: add widget",
+            "preceding_errors": [],
+            "kill_count": 0,
+            "recompile_clusters": 2,
+        }
+    ]
+    out = format_anger_translation_heuristics(commit_data)
+    assert "RECOMPILING IN A PANIC" in out
+    assert "recompile-clusters x2" in out
+
+
+def test_format_anger_heuristics_both_signals():
+    """Issue #37: 1+ kill AND 1+ recompile cluster → BUILD BROKE & PROCESSES DIED branch.
+
+    Note: the formatter's commit-message override (matches 'fix'/'bug'/'crash'/'issue')
+    always wins, so we use a non-fix commit message to keep the both-signals branch visible.
+    """
+    commit_data = [
+        {
+            "hash": "both789",
+            "message": "wip: chaos in build pipeline",
+            "preceding_errors": ["kill -9 1"],
+            "kill_count": 1,
+            "recompile_clusters": 1,
+        }
+    ]
+    out = format_anger_translation_heuristics(commit_data)
+    assert "BUILD BROKE" in out
+    assert "PROCESSES DIED" in out
+    assert "kill -9 x1" in out
+    assert "recompile-clusters x1" in out
+
+
+def test_format_anger_heuristics_falls_back_to_error_count():
+    """When no aggression signals fire, the existing error-count behavior is preserved.
+
+    Note: the formatter's commit-message override (matches 'fix'/'bug'/'crash'/'issue')
+    always wins, so we use a non-fix commit message to keep the error-count branch visible.
+    """
+    commit_data = [
+        {
+            "hash": "plain123",
+            "message": "chore: refactor utils",
+            "preceding_errors": ["pytest", "python run.py", "pytest", "python run.py"],
+            "kill_count": 0,
+            "recompile_clusters": 0,
+        }
+    ]
+    out = format_anger_translation_heuristics(commit_data)
+    # 4 fails with no kill / recompile should still hit the original RAGE & DESPAIR branch
+    assert "RAGE" in out or "FRUSTRATION" in out
+    # The aggression-signal badge should be empty in this case
+    assert "kill -9" not in out
+    assert "recompile-clusters" not in out
+
+
+def test_format_anger_heuristics_missing_signal_keys_default_to_zero():
+    """Backwards-compat: older callers passing only preceding_errors still work."""
+    commit_data = [
+        {"hash": "old1", "message": "feat: x", "preceding_errors": []},
+    ]
+    out = format_anger_translation_heuristics(commit_data)
+    assert "TRIUMPH" in out or "SMOOTH" in out
 
