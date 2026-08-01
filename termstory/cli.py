@@ -645,25 +645,87 @@ def predict_cmd(
     console.print(Text.from_ansi(output))
 
 
+# Build/compile invocations that count toward a "rapid recompile" signal.
+# Matched as whole-word tokens against the command line (case-insensitive).
+_RECOMPILE_PATTERNS = (
+    "make", "cmake", "ninja", "cargo build", "rustc", "go build",
+    "gcc", "g++", "clang", "clang++", "tsc", "ts-node", "webpack",
+    "vite build", "rollup", "esbuild", "swift build", "xcodebuild",
+    "mvn compile", "gradle build", "dotnet build", "msbuild", "ant",
+    "bazel build", "buck build", "scons", "meson",
+)
+
+
+def _is_recompile_command(command: str) -> bool:
+    """Return True if ``command`` looks like a build/compile invocation."""
+    lowered = command.lower()
+    for pat in _RECOMPILE_PATTERNS:
+        # Match as a whole-word token to avoid false positives (e.g. "makeup" or "cmake-format").
+        if pat in lowered and (
+            f" {pat} " in f" {lowered} " or lowered.startswith(pat + " ") or lowered == pat
+        ):
+            return True
+    return False
+
+
+def _count_rapid_recompile_clusters(commands: list, timestamps: list) -> int:
+    """Count how many "rapid recompile" clusters appear in the supplied commands.
+
+    A cluster is defined as ``>= 3`` build/compile invocations within any 60-second
+    sliding window. The function is order-independent; callers should pass timestamp
+    ascending order. Returns 0 when no cluster is found.
+    """
+    if len(commands) < 3 or len(commands) != len(timestamps):
+        return 0
+    # Filter to commands that look like a build/compile invocation.
+    hits = [(ts, cmd) for ts, cmd in zip(timestamps, commands) if _is_recompile_command(cmd)]
+    if len(hits) < 3:
+        return 0
+    clusters = 0
+    i = 0
+    while i < len(hits):
+        j = i
+        # Extend j to include all hits within 60s of hits[i].
+        while j + 1 < len(hits) and hits[j + 1][0] - hits[i][0] <= 60:
+            j += 1
+        if j - i + 1 >= 3:
+            clusters += 1
+            i = j + 1
+        else:
+            i += 1
+    return clusters
+
+
 @app.command("anger-translator")
 def anger_translator(
     project: Optional[str] = typer.Option(None, "--project", help="Filter matches by project name"),
     limit: int = typer.Option(5, "--limit", help="Maximum number of commits to analyze"),
+    lookback_hours: float = typer.Option(
+        3.0, "--lookback-hours",
+        help="How many hours of preceding terminal activity to consider per commit (issue #37 spec: 3)",
+    ),
 ):
     """
     Analyze recent git commits and their preceding terminal errors to translate them
     into the developer's real emotional states/roasts.
+
+    The lookback window defaults to 3 hours, matching issue #37's "preceding 3 hours of
+    frantic shell errors" framing. The query also flags ``kill -9`` commands and rapid
+    recompile clusters (>=3 build/compile invocations within 60s) so the LLM and the
+    heuristic fallback can roast on those specific signals.
     """
     db_path = get_db_path()
     db = Database(db_path)
     safe_init_db(db)
-    
+
     run_ingestion(db)
-    
+
+    lookback_seconds = int(lookback_hours * 3600)
+
     conn = db.get_connection()
     try:
         cursor = conn.cursor()
-        
+
         project_id = None
         if project:
             cursor.execute("SELECT id FROM projects WHERE name LIKE ?", (f"%{project}%",))
@@ -673,7 +735,7 @@ def anger_translator(
             else:
                 Console(stderr=True).print(f"[bold red]Error: Project '{project}' not found.[/]")
                 raise typer.Exit(code=1)
-                
+
         if project_id is not None:
             cursor.execute("""
                 SELECT hash, timestamp, message, cleaned_message, project_id
@@ -689,49 +751,73 @@ def anger_translator(
                 ORDER BY timestamp DESC
                 LIMIT ?
             """, (limit,))
-            
+
         commit_rows = cursor.fetchall()
-        
+
         commit_data = []
         for hash_val, ts, msg, clean_msg, p_id in commit_rows:
             cursor.execute("""
-                SELECT cmd.command, cmd.exit_code
+                SELECT cmd.command, cmd.timestamp, cmd.exit_code
                 FROM commands cmd
                 JOIN sessions s ON cmd.session_id = s.id
                 WHERE cmd.timestamp >= ? AND cmd.timestamp < ? AND cmd.exit_code != 0 AND s.project_id = ?
                 ORDER BY cmd.timestamp DESC
-            """, (ts - 1800, ts, p_id))
+            """, (ts - lookback_seconds, ts, p_id))
             err_rows = cursor.fetchall()
-            
+
             preceding_errors = [r[0] for r in err_rows]
-            
+
+            # Detect "furious kill -9 commands" called out in issue #37.
+            kill_count = sum(
+                1 for cmd in preceding_errors
+                if "kill -9" in cmd or "kill -SIGKILL" in cmd
+            )
+
+            # Detect "rapid recompiles": >=3 build/compile invocations in any 60s window
+            # within the lookback period. We fetch all commands (not just failing ones)
+            # here because build/compile commands typically exit 0.
+            cursor.execute("""
+                SELECT cmd.timestamp, cmd.command
+                FROM commands cmd
+                JOIN sessions s ON cmd.session_id = s.id
+                WHERE cmd.timestamp >= ? AND cmd.timestamp < ? AND s.project_id = ?
+                ORDER BY cmd.timestamp ASC
+            """, (ts - lookback_seconds, ts, p_id))
+            all_recent = cursor.fetchall()
+            recompile_clusters = _count_rapid_recompile_clusters(
+                [r[1] for r in all_recent],
+                [r[0] for r in all_recent],
+            )
+
             # Add sanitizer for privacy
             from termstory.sanitizer import sanitize_session_commands
             sanitized_errors, _ = sanitize_session_commands(preceding_errors)
-    
+
             commit_data.append({
                 "hash": hash_val,
                 "timestamp": ts,
                 "message": msg,
                 "cleaned_message": clean_msg,
-                "preceding_errors": sanitized_errors
+                "preceding_errors": sanitized_errors,
+                "kill_count": kill_count,
+                "recompile_clusters": recompile_clusters,
             })
-            
+
     finally:
         conn.close()
-        
+
     if not commit_data:
         console.print("No git commits found to analyze.")
         return
-        
+
     from termstory.config import load_config
     config = load_config()
     ai_enabled = config.get("ai_enabled", False)
     provider, api_key, api_base_url, model_name = get_ai_provider_settings(config)
-    
+
     if ai_enabled and provider != "disabled":
         from termstory.ai import translate_git_anger
-                
+
         console.print("[bold yellow]Translating developer's git blame and terminal frustration...[/]")
         translation = translate_git_anger(
             commit_data,
@@ -745,7 +831,7 @@ def anger_translator(
             formatted = format_anger_translation(translation)
             console.print(Text.from_ansi(formatted))
             return
-            
+
     from termstory.formatter import format_anger_translation_heuristics
     formatted = format_anger_translation_heuristics(commit_data)
     console.print(Text.from_ansi(formatted))

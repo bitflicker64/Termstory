@@ -1594,19 +1594,58 @@ def format_anger_translation(translation: str) -> str:
 
 
 def format_anger_translation_heuristics(commit_data: List[Dict]) -> str:
-    """Provide a witty heuristic translation of emotions from commit history and preceding shell errors."""
+    """Provide a witty heuristic translation of emotions from commit history and preceding shell errors.
+
+    Issue #37 calls out specific signals (furious ``kill -9`` commands, rapid recompile
+    loops) in addition to the generic "preceding terminal errors" count. This formatter
+    checks those signals first and chooses an accordingly specific roast; if none of
+    the aggression signals fire, it falls back to the original error-count-based branch.
+    """
     output_lines = [
         "😡 [bold red]Git-Blame Anger Translator (Heuristic Fallback Mode)[/bold red]",
         "[dim]────────────────────────────────────────────────────────────────────────────────[/]",
     ]
-    
+
     for item in commit_data:
         commit_hash = item.get("hash", "unknown")[:7]
         commit_msg = item.get("message", "")
         errors = item.get("preceding_errors", [])
-        
-        # Analyze emotion
-        if len(errors) > 3:
+
+        kill_count = item.get("kill_count", 0)
+        recompile_clusters = item.get("recompile_clusters", 0)
+
+        # ── Aggression-signal-specific branches (issue #37 spec) ────────────────
+        # Order matters: more specific / more dangerous signals win over the
+        # generic error-count fallback.
+        if kill_count >= 2:
+            emotion = "💀 FURY / PROCESS WHACK-A-MOLE"
+            emoji = "💀"
+            color = "red"
+            roast = (
+                f"You ran {kill_count} `kill -9` commands in the {len(errors)}-error window "
+                f"before this commit. Something was actively refusing to die. The commit "
+                f"is what finally killed it."
+            )
+        elif recompile_clusters >= 1 and kill_count == 0:
+            emotion = "🔥 RECOMPILING IN A PANIC"
+            emoji = "🔥"
+            color = "red"
+            roast = (
+                f"{recompile_clusters} rapid-recompile cluster(s) detected in the 3h lookback. "
+                f"The code wasn't compiling, the build wasn't passing, and you hit the build "
+                f"button with the optimism of someone who has not yet been hurt today."
+            )
+        elif kill_count >= 1 and recompile_clusters >= 1:
+            emotion = "🌋 BUILD BROKE & PROCESSES DIED"
+            emoji = "🌋"
+            color = "red"
+            roast = (
+                f"{recompile_clusters} recompile cluster(s) AND {kill_count} `kill -9` "
+                f"command(s) before this commit. The compiler rejected you, then the "
+                f"OS rejected the compiler. You committed anyway."
+            )
+        # ── Generic error-count fallback (unchanged behavior) ────────────────────
+        elif len(errors) > 3:
             emotion = "🤬 RAGE & DESPAIR"
             emoji = "🤬"
             color = "red"
@@ -1621,14 +1660,24 @@ def format_anger_translation_heuristics(commit_data: List[Dict]) -> str:
             emoji = "🏆"
             color = "green"
             roast = "Zero preceding terminal errors. Either you wrote perfect code, or you did all of the testing inside your IDE."
-            
+
         if any(x in commit_msg.lower() for x in ["fix", "bug", "crash", "issue"]):
             emotion = "🩹 EXHAUSTION / PATCHING SHIT"
             emoji = "🩹"
             color = "magenta"
             roast = "A bug fix was shipped, but we know it took some late-night soul searching and caffeine."
 
-        output_lines.append(f"[bold {color}]{emoji} {emotion}[/bold {color}] | Commit: [cyan]{commit_msg}[/] ([dim]{commit_hash}[/])")
+        # Surface a small signal badge so the user can see *why* the chosen roast was chosen.
+        signal_badge_parts = []
+        if kill_count:
+            signal_badge_parts.append(f"kill -9 x{kill_count}")
+        if recompile_clusters:
+            signal_badge_parts.append(f"recompile-clusters x{recompile_clusters}")
+        if errors:
+            signal_badge_parts.append(f"fails x{len(errors)}")
+        signal_badge = f"  [dim]\\[{', '.join(signal_badge_parts)}][/dim]" if signal_badge_parts else ""
+
+        output_lines.append(f"[bold {color}]{emoji} {emotion}[/bold {color}] | Commit: [cyan]{commit_msg}[/] ([dim]{commit_hash}[/]){signal_badge}")
         if errors:
             output_lines.append("  [dim]Preceding Failures:[/]")
             for err in errors[:3]:
@@ -1637,7 +1686,7 @@ def format_anger_translation_heuristics(commit_data: List[Dict]) -> str:
                 output_lines.append(f"    - ... and {len(errors) - 3} more errors")
         output_lines.append(f"  [italic]{roast}[/italic]")
         output_lines.append("")
-        
+
     output_lines.append("[dim]────────────────────────────────────────────────────────────────────────────────[/]")
     return render_to_string(Text.from_markup("\n".join(output_lines).strip()))
 
