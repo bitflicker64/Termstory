@@ -882,9 +882,23 @@ def translate_git_anger(
         commit_msg = item.get("message", "")
         errors = item.get("preceding_errors", [])
         error_lines = "\n".join(f"  - [FAIL] {err}" for err in errors) if errors else "  - (No preceding terminal errors detected)"
+
+        # Issue #37 calls out specific signals: furious kill -9 commands and rapid
+        # recompiles. Surface them in the prompt so the LLM can roast on them.
+        signal_lines = []
+        if item.get("kill_count", 0) > 0:
+            signal_lines.append(f"  - {item['kill_count']}x 'kill -9' / SIGKILL command(s) detected")
+        if item.get("recompile_clusters", 0) > 0:
+            signal_lines.append(
+                f"  - {item['recompile_clusters']} rapid-recompile cluster(s) "
+                f"(>=3 build/compile invocations within 60s)"
+            )
+        signal_block = ("Detected Aggression Signals:\n" + "\n".join(signal_lines)) if signal_lines else ""
+
         formatted_blocks.append(
             f"Commit: {commit_msg} ({commit_hash})\n"
             f"Preceding Errors:\n{error_lines}"
+            + (f"\n{signal_block}" if signal_block else "")
         )
     
     payload = "\n\n".join(formatted_blocks)
