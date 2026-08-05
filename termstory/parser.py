@@ -318,9 +318,13 @@ def parse_zsh_history(
                     "parse_zsh_history: project_paths callback raised; "
                     "continuing without project-path enrichment."
                 )
+        cfg = load_config()
         detective = TimestampDetective(
             search_root=os.path.expanduser("~"),
-            project_paths=resolved_paths or []
+            project_paths=resolved_paths or [],
+            macos_install_log=cfg.get(
+                "macos_install_log", "/private/var/log/install.log"
+            ),
         )
         enriched_legacy = detective.resolve_all(legacy_items)
     else:

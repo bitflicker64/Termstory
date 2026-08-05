@@ -142,6 +142,7 @@ def load_config() -> dict:
     config_path = get_config_path()
     defaults = {
         "ai_enabled": False,
+        "macos_install_log": "/private/var/log/install.log",
         "active_provider": "disabled",  # "groq", "openai", "nvidia", "ollama", "disabled"
         "request_timeout_seconds": 30,
         "nfs_timeout_cache_ttl": 10,

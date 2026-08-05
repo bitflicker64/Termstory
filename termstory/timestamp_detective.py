@@ -96,9 +96,15 @@ class TimestampDetective:
     MAX_GIT_LOG_CACHE: int = 50
     """Maximum number of git log entries to keep in the LRU cache."""
 
-    def __init__(self, search_root: str, project_paths: Optional[List[str]] = None):
+    def __init__(
+        self,
+        search_root: str,
+        project_paths: Optional[List[str]] = None,
+        macos_install_log: str = "/private/var/log/install.log",
+    ):
         self.search_root = os.path.expanduser(search_root)
         self.project_paths = [os.path.expanduser(p) for p in (project_paths or [])]
+        self.macos_install_log = macos_install_log
 
         # Cache: repo_path -> list of commit dicts  (avoid repeated git log calls)
         # Bounded LRU cache — evicts least-recently-used entries when full.
@@ -1101,7 +1107,7 @@ class TimestampDetective:
 
         Returns the Unix timestamp or None.
         """
-        log_path = "/private/var/log/install.log"
+        log_path = self.macos_install_log
         if not os.path.exists(log_path):
             return None
         try:
