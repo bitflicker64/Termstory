@@ -994,6 +994,41 @@ class TestDetectMacosSystemLog(unittest.TestCase):
                     "alice ttys000 Thu Jun 5 09:14 still logged in"
                 )
 
+    def test_detect_macos_syslog_uses_configured_path(self):
+        """The macos_install_log constructor parameter controls which log is scanned.
+
+        Regression coverage for #150 — users with non-standard macOS setups
+        (relocated log, Docker-based macOS, test harness) can now point
+        TimestampDetective at an alternate log file without monkey-patching
+        os.path.exists or builtins.open.
+        """
+        tmp = tempfile.mkdtemp()
+        try:
+            log_path = os.path.join(tmp, "custom_install.log")
+            dt = datetime.fromtimestamp(FOUR_YEARS_AGO, tz=timezone.utc)
+            stamp = dt.strftime("%Y-%m-%d %H:%M:%S")
+            with open(log_path, "w") as f:
+                f.write(f"{stamp}+00 host installd[1]: Installed: jq\n")
+
+            # Build a detective pointed at the custom log; default /private/var/log/install.log
+            # is guaranteed not to exist in CI, so the only way the lookup succeeds is
+            # if the constructor parameter is honored.
+            d = make_detective(macos_install_log=log_path)
+            ts = d.detect_macos_syslog("jq")
+            self.assertIsNotNone(ts)
+            self.assertEqual(ts, int(dt.timestamp()))
+            # Default value preserved for callers that don't pass the kwarg.
+            self.assertEqual(d.macos_install_log, log_path)
+        finally:
+            import shutil
+
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_detect_macos_syslog_default_path_when_unset(self):
+        """Constructor default for macos_install_log matches the previously hardcoded path."""
+        d = make_detective()
+        self.assertEqual(d.macos_install_log, "/private/var/log/install.log")
+
     def test_detect_macos_syslog_missing_file(self):
         """When install.log doesn't exist (e.g. on Linux), return None."""
         self.assertIsNone(self.d.detect_macos_syslog("jq"))

@@ -191,6 +191,7 @@ def load_config() -> dict:
     "~/Work",
     "~",
 ],
+        "macos_install_log": "/private/var/log/install.log",
     }
     
     config = {}
