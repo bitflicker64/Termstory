@@ -185,25 +185,35 @@ def archive_old_data(main_db_path: str, archive_db_path: str, days: int) -> Dict
                     VALUES (?, 'session_summary', ?, ?, ?)
                 """, (ai_summary, str(new_sess_id), new_proj_id, start_time))
 
-            # Fetch and insert commands
+            # Fetch and batch-insert commands (same new_sess_id for the whole session)
             cursor.execute("""
                 SELECT timestamp, command, exit_code, project_id, created_at, recovery_source, is_legacy
                 FROM main.commands WHERE session_id = ?
             """, (old_sess_id,))
             commands = cursor.fetchall()
-            for cmd_ts, cmd_str, exit_code, old_cmd_proj_id, cmd_ca, rec_src, is_leg in commands:
-                new_cmd_proj_id = project_id_map.get(old_cmd_proj_id)
-                cursor.execute("""
+            if commands:
+                cmd_rows = []
+                fts_rows = []
+                for cmd_ts, cmd_str, exit_code, old_cmd_proj_id, cmd_ca, rec_src, is_leg in commands:
+                    new_cmd_proj_id = project_id_map.get(old_cmd_proj_id)
+                    cmd_rows.append((
+                        cmd_ts, cmd_str, exit_code, new_sess_id,
+                        new_cmd_proj_id, cmd_ca, rec_src, is_leg,
+                    ))
+                    if has_archive_fts5:
+                        fts_rows.append((cmd_str, str(new_sess_id), new_cmd_proj_id, cmd_ts))
+
+                cursor.executemany("""
                     INSERT INTO archive.commands (timestamp, command, exit_code, session_id, project_id, created_at, recovery_source, is_legacy)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (cmd_ts, cmd_str, exit_code, new_sess_id, new_cmd_proj_id, cmd_ca, rec_src, is_leg))
-                stats["commands"] += 1
+                """, cmd_rows)
+                stats["commands"] += len(cmd_rows)
 
-                if has_archive_fts5:
-                    cursor.execute("""
+                if fts_rows:
+                    cursor.executemany("""
                         INSERT INTO archive.search_index (content, type, ref_id, project_id, timestamp)
                         VALUES (?, 'command', ?, ?, ?)
-                    """, (cmd_str, str(new_sess_id), new_cmd_proj_id, cmd_ts))
+                    """, fts_rows)
 
         # Archive Commits
         for c_hash in commit_hashes:

@@ -4,6 +4,7 @@ import threading
 import time
 import os
 import random
+from datetime import datetime
 from termstory.database import Database
 from termstory.models import Project, Session, Command
 def writer_worker(db_path, base_path, worker_id, num_sessions, commands_per_session, errors):
@@ -162,4 +163,62 @@ def test_massive_history_ingestion(tmp_path):
         assert sess_count == (num_writers * sessions_per_writer), "All sessions should be ingested"
         assert proj_count == (num_writers * sessions_per_writer), "All projects should be ingested"
     finally:
-        conn.close()
+        conn.close()
+
+def test_archive_batched_inserts_timing(tmp_path, monkeypatch):
+    """Archive a large history fast enough that a per-command INSERT regression is obvious."""
+    from termstory.archive import archive_old_data
+
+    monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2026-06-14 12:00:00")
+    db_path = str(tmp_path / "archive_stress.db")
+    archive_db_path = str(tmp_path / "archive_stress_out.db")
+
+    db = Database(db_path)
+    db.init_db()
+
+    # 50 sessions x 200 commands = 10,000 commands — enough to expose the old loop.
+    num_sessions = 50
+    commands_per_session = 200
+    base_time = int(datetime(2026, 1, 1, 12, 0, 0).timestamp())
+
+    projects = []
+    sessions = []
+    commands = []
+    for s in range(num_sessions):
+        session_id = s + 1
+        start = base_time + s * 3600
+        projects.append(Project(
+            id=session_id,
+            name=f"archive_proj_{s}",
+            path=os.path.join(str(tmp_path), f"archive_proj_{s}"),
+            first_seen=start,
+            last_seen=start + 400,
+            session_count=1,
+            total_time=400,
+        ))
+        sessions.append(Session(
+            id=session_id,
+            start_time=start,
+            end_time=start + 400,
+            duration_seconds=400,
+            project_id=session_id,
+            commands=[],
+        ))
+        for c in range(commands_per_session):
+            commands.append(Command(
+                timestamp=start + c,
+                command=f"echo archive-batch {s} {c}",
+                exit_code=0,
+                session_id=session_id,
+                project_id=session_id,
+            ))
+
+    db.save_data(projects, sessions, commands)
+
+    started = time.perf_counter()
+    stats = archive_old_data(db_path, archive_db_path, days=30)
+    elapsed = time.perf_counter() - started
+
+    assert stats["sessions"] == num_sessions
+    assert stats["commands"] == num_sessions * commands_per_session
+    assert elapsed < 30.0, f"archive of {stats['commands']} commands took {elapsed:.1f}s"
