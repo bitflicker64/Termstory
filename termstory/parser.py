@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any, Union, Callable
 from termstory.models import Command
+from termstory.date_utils import get_current_time
 from termstory.timestamp_detective import TimestampDetective
 
 logger = logging.getLogger(__name__)
@@ -245,7 +246,7 @@ def parse_zsh_history(
             "parse_zsh_history: failed to stat %r for mtime; using current time as anchor.",
             filepath,
         )
-        file_mtime = int(datetime.now().timestamp())
+        file_mtime = int(get_current_time().timestamp())
 
     n_legacy = len(legacy_items)
 
@@ -257,7 +258,7 @@ def parse_zsh_history(
     # or recent activity, we enforce a strict 30-day buffer from file_mtime.
     BUFFER_30_DAYS = 30 * 86400
 
-    now_temp = int(datetime.now().timestamp())
+    now_temp = int(get_current_time().timestamp())
     from termstory.config import load_config
     max_history_age_temp = load_config().get("max_history_age", 5)
     five_years_ago_temp = now_temp - (max_history_age_temp * 365 * 24 * 60 * 60)
@@ -445,7 +446,7 @@ def parse_zsh_history(
         ))
 
     # Standard filtering: drop impossibly old or future-dated commands
-    now = int(datetime.now().timestamp())
+    now = int(get_current_time().timestamp())
     from termstory.config import load_config
     max_history_age = load_config().get("max_history_age", 5)
     five_years_ago = now - (max_history_age * 365 * 24 * 60 * 60)
@@ -476,7 +477,7 @@ def parse_bash_history(
             "parse_bash_history: failed to stat %r for mtime; using current time as anchor.",
             filepath,
         )
-        mtime = int(datetime.now().timestamp())
+        mtime = int(get_current_time().timestamp())
 
     raw_lines = []
     with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
@@ -737,7 +738,7 @@ def _assign_missing_timestamps_fallback(
             ))
             
     # Standard filtering (older than max_history_age or future timestamps)
-    now = int(datetime.now().timestamp())
+    now = int(get_current_time().timestamp())
     from termstory.config import load_config
     max_history_age = load_config().get("max_history_age", 5)
     five_years_ago = now - (max_history_age * 365 * 24 * 60 * 60)
@@ -770,7 +771,7 @@ def parse_fish_history(
             "parse_fish_history: failed to stat %r for mtime; using current time as anchor.",
             filepath,
         )
-        mtime = int(datetime.now().timestamp())
+        mtime = int(get_current_time().timestamp())
         
     temp_commands = []
     with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
@@ -820,7 +821,7 @@ def parse_powershell_history(
             "parse_powershell_history: failed to stat %r for mtime; using current time as anchor.",
             filepath,
         )
-        mtime = int(datetime.now().timestamp())
+        mtime = int(get_current_time().timestamp())
         
     raw_lines = []
     with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:

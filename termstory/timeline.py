@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List
 
 from termstory.database import Database
+from termstory.date_utils import get_current_time
 from termstory.models import Session
 
 def _aggregate_sessions_by_day(sessions: List[Session]) -> Dict[str, int]:
@@ -54,7 +55,7 @@ def render_timeline(db: Database, days: int = 30) -> str:
     """
     if days <= 0:
         raise ValueError("days must be greater than 0")
-    now = datetime.now()
+    now = get_current_time()
     start_ts = int((now - timedelta(days=days)).timestamp())
     # Fetch sessions in range
     sessions = db.get_range_sessions(start_ts, int(now.timestamp()))

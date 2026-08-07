@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import List, Dict, Optional
 from termstory.models import Command, Session, Project
 from termstory.config import get_config_value, load_config
+from termstory.date_utils import get_current_time
 import time
 
 # Delay between retries when database initialization encounters a lock.
@@ -732,7 +733,7 @@ class Database:
             cursor.execute("""
                 INSERT OR REPLACE INTO macro_summaries (timeframe_id, type, summary, created_at)
                 VALUES ('last_ingestion', 'system', 'ingestion', ?)
-            """, (int(datetime.now().timestamp()),))
+            """, (int(get_current_time().timestamp()),))
 
             conn.commit()
         except Exception as e:
