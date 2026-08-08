@@ -2,16 +2,18 @@ import logging
 import os
 import sys
 
+from termstory.config import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 def modify_config_yaml(file_path, enable=True):
     if not os.path.exists(file_path):
         if enable:
-            dirname = os.path.dirname(file_path)
-            if dirname:
-                os.makedirs(dirname, exist_ok=True)
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write("plugins:\n  enabled:\n    - observability/nemo_relay\n")
+            atomic_write_text(
+                file_path,
+                "plugins:\n  enabled:\n    - observability/nemo_relay\n",
+                prefix="hermes_",
+            )
             return True
         return False
 
@@ -77,8 +79,7 @@ def modify_config_yaml(file_path, enable=True):
             indent_str = " " * list_indent
             lines.insert(enabled_idx + 1, f"{indent_str}- observability/nemo_relay\n")
 
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.writelines(lines)
+        atomic_write_text(file_path, "".join(lines), prefix="hermes_")
         return True
 
     else:
@@ -122,19 +123,18 @@ def modify_config_yaml(file_path, enable=True):
             if not has_other_plugins_keys:
                 lines.pop(plugins_idx)
 
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.writelines(lines)
+        atomic_write_text(file_path, "".join(lines), prefix="hermes_")
         return True
 
 
 def modify_env_file(file_path, enable=True):
     if not os.path.exists(file_path):
         if enable:
-            dirname = os.path.dirname(file_path)
-            if dirname:
-                os.makedirs(dirname, exist_ok=True)
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write("HERMES_NEMO_RELAY_ATOF_ENABLED=true\nHERMES_NEMO_RELAY_ATIF_ENABLED=true\n")
+            atomic_write_text(
+                file_path,
+                "HERMES_NEMO_RELAY_ATOF_ENABLED=true\nHERMES_NEMO_RELAY_ATIF_ENABLED=true\n",
+                prefix="hermes_",
+            )
             return True
         return False
 
@@ -192,8 +192,7 @@ def modify_env_file(file_path, enable=True):
         lines = new_lines
 
     if changed:
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.writelines(lines)
+        atomic_write_text(file_path, "".join(lines), prefix="hermes_")
     return changed
 
 
