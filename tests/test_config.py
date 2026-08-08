@@ -103,3 +103,43 @@ def test_env_var_overrides(tmp_path, monkeypatch):
     assert len(files) == 2
     assert os.path.realpath(str(hist_file_1)) in files
     assert os.path.realpath(str(hist_file_2)) in files
+
+
+def test_atomic_write_text_writes_through_symlinks(tmp_path):
+    """A config symlinked into a dotfiles repo must stay a symlink after a write."""
+    from termstory.config import atomic_write_text
+
+    target = tmp_path / "real.yaml"
+    target.write_text("old\n")
+    link = tmp_path / "link.yaml"
+    link.symlink_to(target)
+
+    atomic_write_text(str(link), "new\n")
+
+    assert link.is_symlink(), "atomic write replaced the symlink with a regular file"
+    assert target.read_text() == "new\n"
+
+
+def test_atomic_write_text_preserves_existing_mode(tmp_path):
+    """mkstemp() creates 0600; an existing file must not be narrowed on every write."""
+    from termstory.config import atomic_write_text
+
+    path = tmp_path / "config.yaml"
+    path.write_text("old\n")
+    os.chmod(path, 0o644)
+
+    atomic_write_text(str(path), "new\n")
+
+    assert oct(path.stat().st_mode & 0o777) == "0o644"
+    assert path.read_text() == "new\n"
+
+
+def test_atomic_write_text_new_file_is_private(tmp_path):
+    """A file created from scratch keeps mkstemp's restrictive default."""
+    from termstory.config import atomic_write_text
+
+    path = tmp_path / "nested" / ".env"
+    atomic_write_text(str(path), "SECRET=1\n")
+
+    assert path.read_text() == "SECRET=1\n"
+    assert oct(path.stat().st_mode & 0o777) == "0o600"

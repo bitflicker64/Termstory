@@ -285,6 +285,9 @@ def load_config() -> dict:
 
 def atomic_write_text(path: str, content: str, prefix: str = "tmp_") -> None:
     """Write text to *path* via tempfile + os.replace so readers never see a partial file."""
+    # Resolve symlinks first: os.replace() would swap the link itself for a regular
+    # file, silently detaching paths that are symlinked into a dotfiles repo.
+    path = os.path.realpath(path)
     dir_path = os.path.dirname(path) or "."
     os.makedirs(dir_path, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp", prefix=prefix)
@@ -293,6 +296,12 @@ def atomic_write_text(path: str, content: str, prefix: str = "tmp_") -> None:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
+        try:
+            # Carry over the existing mode; mkstemp() creates 0600, which would
+            # otherwise narrow the file's permissions on every write.
+            os.chmod(tmp_path, os.stat(path).st_mode & 0o7777)
+        except OSError:
+            pass  # new file — keep mkstemp's restrictive default
         os.replace(tmp_path, path)
     except Exception:
         try:
