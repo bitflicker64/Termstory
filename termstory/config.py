@@ -283,6 +283,34 @@ def load_config() -> dict:
     return config
 
 
+def atomic_write_text(path: str, content: str, prefix: str = "tmp_") -> None:
+    """Write text to *path* via tempfile + os.replace so readers never see a partial file."""
+    # Resolve symlinks first: os.replace() would swap the link itself for a regular
+    # file, silently detaching paths that are symlinked into a dotfiles repo.
+    path = os.path.realpath(path)
+    dir_path = os.path.dirname(path) or "."
+    os.makedirs(dir_path, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp", prefix=prefix)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            # Carry over the existing mode; mkstemp() creates 0600, which would
+            # otherwise narrow the file's permissions on every write.
+            os.chmod(tmp_path, os.stat(path).st_mode & 0o7777)
+        except OSError:
+            pass  # new file — keep mkstemp's restrictive default
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def save_config(config: dict) -> None:
     """Save configuration dictionary to disk atomically
 
@@ -290,22 +318,7 @@ def save_config(config: dict) -> None:
     renames it over the target path. This prevents concurrent readers
     from seeing a partially written config file.
     """
-    config_path = get_config_path()
-    dir_path = os.path.dirname(config_path)
     try:
-        os.makedirs(dir_path, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp", prefix="config_")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=4)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, config_path)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
-            raise
+        atomic_write_text(get_config_path(), json.dumps(config, indent=4), prefix="config_")
     except Exception:
         pass
