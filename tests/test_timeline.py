@@ -83,7 +83,7 @@ def test_render_timeline_invalid_days(tmp_path):
         render_timeline(db, days=-5)
 
 
-def test_render_timeline_scales_only_visible_days(tmp_path):
+def test_render_timeline_scales_only_visible_days(tmp_path, monkeypatch):
     """A heavy day just outside the window must not shrink the visible bars."""
     from termstory.timeline import render_timeline
 
@@ -91,7 +91,11 @@ def test_render_timeline_scales_only_visible_days(tmp_path):
     db = Database(str(db_file))
     db.init_db()
 
-    now = datetime.now()
+    # Freeze the clock. The pre-fix window started at ``now - days``, so the session
+    # planted at midday below only fell inside it when the suite happened to run
+    # before noon; pinning a morning time keeps the guard effective around the clock.
+    now = datetime.now().replace(hour=8, minute=30, second=0, microsecond=0)
+    monkeypatch.setattr("termstory.timeline.get_current_time", lambda: now)
     days = 3
     # One calendar day before the oldest rendered date (old code fetched this).
     outside = datetime.combine((now - timedelta(days=days)).date(), datetime.min.time()) + timedelta(hours=12)
