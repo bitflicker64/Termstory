@@ -119,16 +119,16 @@ def test_datetime_now_only_used_on_allowlisted_sites():
     """Semantic 'now' must go through get_current_time() so TERMSTORY_DATE_OVERRIDE sticks."""
     root = Path(__file__).resolve().parents[1] / "termstory"
     offenders = []
-    for path in sorted(root.glob("*.py")):
-        rel = f"termstory/{path.name}"
+    for path in sorted(root.rglob("*.py")):
+        rel = path.relative_to(root.parent).as_posix()
         if rel in _DATETIME_NOW_ALLOWLIST:
             continue
         text = path.read_text(encoding="utf-8")
         for i, line in enumerate(text.splitlines(), 1):
-            if re.search(r"datetime\.now\s*\(", line):
+            if re.search(r"\bdatetime\.(now|utcnow)\s*\(|\bdate\.today\s*\(", line):
                 offenders.append(f"{rel}:{i}: {line.strip()}")
     assert not offenders, (
-        "datetime.now() outside the allowlist — use get_current_time() for semantic now, "
+        "raw clock call outside the allowlist — use get_current_time() for semantic now, "
         "or add the file to _DATETIME_NOW_ALLOWLIST with a comment at the call site:\n"
         + "\n".join(offenders)
     )
