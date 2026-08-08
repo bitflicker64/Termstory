@@ -1,7 +1,17 @@
 import pytest
 import os
+import re
+from pathlib import Path
 from datetime import datetime
 from termstory.date_utils import get_current_time, get_today_range, get_week_range, get_month_range, format_date_range
+
+# Call sites that intentionally use wall-clock time instead of get_current_time().
+_DATETIME_NOW_ALLOWLIST = {
+    "termstory/date_utils.py",  # implementation of get_current_time()
+    "termstory/exporter.py",   # Windows UTC-offset fallback
+    "termstory/tui.py",         # error log write time
+    "termstory/backup.py",      # unique backup filenames
+}
 
 def test_get_current_time(monkeypatch):
     # Without override
@@ -104,3 +114,21 @@ def test_parse_date_range_helper_chains_underlying_error():
     with pytest.raises(ValueError) as exc:
         parse_date_range_helper("not-a-real-date-at-all-zzzzz")
     assert exc.value.__cause__ is not None, "ValueError must chain the underlying parse error"
+
+def test_datetime_now_only_used_on_allowlisted_sites():
+    """Semantic 'now' must go through get_current_time() so TERMSTORY_DATE_OVERRIDE sticks."""
+    root = Path(__file__).resolve().parents[1] / "termstory"
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        rel = path.relative_to(root.parent).as_posix()
+        if rel in _DATETIME_NOW_ALLOWLIST:
+            continue
+        text = path.read_text(encoding="utf-8")
+        for i, line in enumerate(text.splitlines(), 1):
+            if re.search(r"\bdatetime\.(now|utcnow)\s*\(|\bdate\.today\s*\(", line):
+                offenders.append(f"{rel}:{i}: {line.strip()}")
+    assert not offenders, (
+        "raw clock call outside the allowlist — use get_current_time() for semantic now, "
+        "or add the file to _DATETIME_NOW_ALLOWLIST with a comment at the call site:\n"
+        + "\n".join(offenders)
+    )

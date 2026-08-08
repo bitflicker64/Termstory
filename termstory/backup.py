@@ -27,6 +27,7 @@ def backup_db() -> str:
     if not os.path.isfile(db_path):
         raise FileNotFoundError(f"TermStory database not found at {db_path}")
     backup_dir = _get_backup_dir()
+    # Wall-clock intentionally: backup filenames must be unique on disk.
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_path = os.path.join(backup_dir, f"termstory_backup_{timestamp}.db")
 

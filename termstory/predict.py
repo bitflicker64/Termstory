@@ -18,6 +18,7 @@ from collections import Counter, defaultdict
 from typing import List, Dict, Optional, Tuple
 
 from termstory.database import Database
+from termstory.date_utils import get_current_time
 from termstory.formatter import _is_noise_command
 
 
@@ -310,7 +311,7 @@ class Predictor:
             raise ValueError("days must be greater than 0")
 
         if now is None:
-            now = datetime.now()
+            now = get_current_time()
         tz = now.tzinfo
 
         cutoff_time = None

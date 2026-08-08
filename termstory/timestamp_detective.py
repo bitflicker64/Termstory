@@ -76,6 +76,8 @@ from collections import OrderedDict
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
+from termstory.date_utils import get_current_time
+
 
 class TimestampDetective:
     """
@@ -110,7 +112,7 @@ class TimestampDetective:
         self._npm_global_root: Optional[str] = None  # e.g. /usr/local/lib/node_modules
 
         # Snapshot of "now" used for timestamp validity guards throughout the run
-        self.now = int(datetime.now().timestamp())
+        self.now = int(get_current_time().timestamp())
         self.five_years_ago = self.now - (5 * 365 * 24 * 60 * 60)
 
     # =========================================================================
@@ -1085,7 +1087,7 @@ class TimestampDetective:
             dt = datetime.strptime(date_str, "%a %b %d %H:%M")
         except ValueError:
             return None
-        now = datetime.now()
+        now = get_current_time()
         dt = dt.replace(year=now.year)
         if dt.timestamp() > now.timestamp():
             dt = dt.replace(year=now.year - 1)

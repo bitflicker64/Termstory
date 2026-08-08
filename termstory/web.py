@@ -8,6 +8,7 @@ from termstory.insights import analyze_all
 from termstory.formatter import _is_noise_command
 from termstory.sanitizer import redact_command
 from termstory.database import Database
+from termstory.date_utils import get_current_time
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,6 @@ AI_HIGHLIGHT_LIMIT = 15
 
 def get_web_data(db: Database, start_ts: Optional[int] = None, end_ts: Optional[int] = None) -> dict:
     """Gather stats, project list, timeline, and AI highlights from the database, filtering by date range if provided."""
-    import time
     from datetime import datetime, timedelta
     
     # 1. Base Stats
@@ -207,8 +207,8 @@ def get_web_data(db: Database, start_ts: Optional[int] = None, end_ts: Optional[
     highlights_data = ai_sessions[:AI_HIGHLIGHT_LIMIT]
 
     # 5. Calculate daily activity for the last 90 days for the heatmap
-    now_dt = datetime.now()
-    ninety_days_ago_ts = int(time.time() - 90 * 86400)
+    now_dt = get_current_time()
+    ninety_days_ago_ts = int(now_dt.timestamp() - 90 * 86400)
     
     daily_activity = {}
     for i in range(90):

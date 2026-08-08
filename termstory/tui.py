@@ -26,6 +26,7 @@ def _handle_exception(exc_type, exc, tb):
     log_path = os.path.expanduser("~/.termstory.error.log")
     try:
         with open(log_path, "a") as f:
+            # Wall-clock intentionally: error log timestamps should reflect real write time.
             f.write(f"\n--- {datetime.now()} ---\n")
             traceback.print_exception(exc_type, exc, tb, file=f)
     except Exception as log_exc:

@@ -19,6 +19,7 @@ def _get_timestamp(dt: datetime) -> int:
         try:
             dt = dt.astimezone()
         except OSError:
+            # Wall-clock intentionally: need the real local UTC offset on Windows.
             local_offset = datetime.now().astimezone().utcoffset()
             dt = dt.replace(tzinfo=timezone(local_offset))
     epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -30,6 +31,7 @@ def _safe_fromtimestamp(ts: float) -> datetime:
     try:
         local_dt = utc_dt.astimezone()
     except OSError:
+        # Wall-clock intentionally: need the real local UTC offset on Windows.
         local_offset = datetime.now().astimezone().utcoffset()
         local_dt = utc_dt.astimezone(timezone(local_offset))
     return local_dt.replace(tzinfo=None)
