@@ -56,15 +56,15 @@ def render_timeline(db: Database, days: int = 30) -> str:
     if days <= 0:
         raise ValueError("days must be greater than 0")
     now = get_current_time()
-    start_ts = int((now - timedelta(days=days)).timestamp())
-    # Fetch sessions in range
+    # Match the rendered window: oldest shown day through today, from start-of-day.
+    start_day = datetime.combine((now - timedelta(days=days - 1)).date(), datetime.min.time())
+    start_ts = int(start_day.timestamp())
     sessions = db.get_range_sessions(start_ts, int(now.timestamp()))
     daily = _aggregate_sessions_by_day(sessions)
-    # Ensure all dates are represented
     all_dates = [(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days - 1, -1, -1)]
     for d in all_dates:
         daily.setdefault(d, 0)
-    max_dur = max(daily.values()) if daily else 0
+    max_dur = max(daily[d] for d in all_dates)
     lines: List[str] = []
     header = f"{'Date':<12} | Activity"
     separator = "-" * (len(header) + 2)

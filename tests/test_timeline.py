@@ -81,3 +81,49 @@ def test_render_timeline_invalid_days(tmp_path):
         
     with pytest.raises(ValueError, match="days must be greater than 0"):
         render_timeline(db, days=-5)
+
+
+def test_render_timeline_scales_only_visible_days(tmp_path, monkeypatch):
+    """A heavy day just outside the window must not shrink the visible bars."""
+    from termstory.timeline import render_timeline
+
+    db_file = tmp_path / "test_timeline_window.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    # Freeze the clock. The pre-fix window started at ``now - days``, so the session
+    # planted at midday below only fell inside it when the suite happened to run
+    # before noon; pinning a morning time keeps the guard effective around the clock.
+    now = datetime.now().replace(hour=8, minute=30, second=0, microsecond=0)
+    monkeypatch.setattr("termstory.timeline.get_current_time", lambda: now)
+    days = 3
+    # One calendar day before the oldest rendered date (old code fetched this).
+    outside = datetime.combine((now - timedelta(days=days)).date(), datetime.min.time()) + timedelta(hours=12)
+    outside_ts = int(outside.timestamp())
+    today_ts = int(now.timestamp())
+
+    project = Project(
+        id=1, name="DemoProject", path="~/demo",
+        first_seen=outside_ts, last_seen=today_ts, session_count=2, total_time=1100,
+    )
+    session_outside = Session(
+        id=1, start_time=outside_ts, end_time=outside_ts + 1000,
+        duration_seconds=1000, project_id=1, commands=[],
+    )
+    session_today = Session(
+        id=2, start_time=today_ts, end_time=today_ts + 100,
+        duration_seconds=100, project_id=1, commands=[],
+    )
+    cmds = [
+        Command(timestamp=outside_ts, command="echo outside", session_id=1, project_id=1),
+        Command(timestamp=today_ts, command="echo today", session_id=2, project_id=1),
+    ]
+    db.save_data([project], [session_outside, session_today], cmds)
+
+    result = render_timeline(db, days=days)
+    today = now.strftime("%Y-%m-%d")
+    today_line = next(line for line in result.splitlines() if line.startswith(today))
+    # Today is the heaviest visible day, so its bar should be full width.
+    assert today_line.count("█") == 40
+    # The outside day must not appear in the rendered window.
+    assert outside.strftime("%Y-%m-%d") not in result
