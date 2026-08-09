@@ -80,9 +80,25 @@ def test_load_config_missing_file(tmp_path):
         assert config["max_query_log"] == 10000
 
 def test_save_config_error_handling(tmp_path):
-    # If open fails, save_config should not raise an exception
+    # Write failures must surface so callers can report them.
     with patch("termstory.config.get_config_path", return_value="/invalid/path/that/does/not/exist/config.json"):
-        save_config({"test": "data"})  # Should silently pass
+        with pytest.raises(OSError):
+            save_config({"test": "data"})
+
+
+def test_save_config_readonly_dir_raises(tmp_path, monkeypatch):
+    """A read-only config directory must not look like a successful save."""
+    config_dir = tmp_path / "termstory"
+    config_dir.mkdir()
+    config_file = config_dir / "config.json"
+    monkeypatch.setattr("termstory.config.get_config_path", lambda: str(config_file))
+    os.chmod(config_dir, 0o555)
+    try:
+        with pytest.raises(OSError):
+            save_config({"ai_enabled": True})
+        assert not config_file.exists()
+    finally:
+        os.chmod(config_dir, 0o755)
 
 def test_env_var_overrides(tmp_path, monkeypatch):
     from termstory.config import get_db_path, get_history_files

@@ -475,6 +475,27 @@ def test_config_set_boolean_validation(tmp_path, monkeypatch):
         assert "Invalid boolean value" in output
 
 
+def test_config_set_reports_save_failure(tmp_path, monkeypatch):
+    """Issue #402: config set must not pretend success when the write fails."""
+    config_dir = tmp_path / "termstory"
+    config_dir.mkdir()
+    config_file = config_dir / "config.json"
+    monkeypatch.setattr("termstory.config.get_config_path", lambda: str(config_file))
+    # Seed a readable config, then lock the directory so the next save fails.
+    from termstory.config import save_config
+    save_config({"ai_enabled": False})
+    os.chmod(config_dir, 0o555)
+    try:
+        runner = CliRunner(mix_stderr=True)
+        result = runner.invoke(app, ["config", "set", "ai_enabled", "true"])
+        assert result.exit_code != 0
+        output = result.output or ""
+        assert "Failed to save config" in output
+        assert "Set config key" not in output
+    finally:
+        os.chmod(config_dir, 0o755)
+
+
 def test_config_set_api_key_preserves_leading_zeros(tmp_path, monkeypatch):
     """Issue #342: API keys must remain raw strings, no numeric conversion."""
     config_file = tmp_path / "config.json"
