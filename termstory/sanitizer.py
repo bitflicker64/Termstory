@@ -89,8 +89,10 @@ PASSWORD_FLAG_PATTERN = re.compile(
     r'(--password=|\b--password\s+|\b--pass=|\b--pass\s+|--token=|--token\s+|--api-key=|--api-key\s+)(?!\[REDACTED)([^\s\'"]+|\'[^\']*\'|"[^"]*")',
     re.IGNORECASE
 )
+# Only the attached form (-pSECRET) carries a password on the CLI.
+# `mysql -p dbname` (space after -p) means "prompt interactively"; dbname is not a secret.
 MYSQL_PASSWORD_PATTERN = re.compile(
-    r'((?<!-)-p\s*)(?!\[REDACTED)([^\s\'"]+|\'[^\']*\'|"[^"]*")',
+    r'((?<!-)-p)(?!\[REDACTED)([^\s\'"]+|\'[^\']*\'|"[^"]*")',
     re.IGNORECASE
 )
 
