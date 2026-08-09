@@ -48,6 +48,14 @@ def test_mysql_p_space_preserves_database_name():
     assert redact_command("mysql -u root -pSECRET") == "mysql -u root -p[REDACTED]"
     assert redact_command("mysqldump -uroot -p'pass word' db") == "mysqldump -uroot -p[REDACTED] db"
 
+
+def test_mysql_p_does_not_match_port_or_hostname():
+    """`-P` is the port flag; `-p` inside a hostname must not look like a password flag."""
+    assert redact_command("mysql -P3306 dbname") == "mysql -P3306 dbname"
+    # Host redaction may still rewrite the hostname; the password pattern must not.
+    assert "db-p[REDACTED]" not in redact_command("mysql --host=db-proxy dbname")
+    assert "db-p[REDACTED]" not in redact_command("mysqldump --host=db-proxy db")
+
 def test_redact_ips_and_fqdns():
     # IPs
     assert redact_command("ssh admin@192.168.1.105") == "ssh admin@[REDACTED_IP]"
