@@ -38,7 +38,7 @@ def test_redact_ips_and_fqdns():
     # IPs
     assert redact_command("ssh admin@192.168.1.105") == "ssh admin@[REDACTED_IP]"
     
-    # FQDNs
+    # FQDNs in a network context still redact
     assert redact_command("curl https://api.internal.domain.local/v1/users") == "curl https://[REDACTED_HOST]/v1/users"
     assert redact_command("ping dev-server.local") == "ping [REDACTED_HOST]"
     
@@ -46,6 +46,18 @@ def test_redact_ips_and_fqdns():
     assert redact_command("python3 main.py") == "python3 main.py"
     assert redact_command("cat config.json") == "cat config.json"
     assert redact_command("vim README.md") == "vim README.md"
+
+
+def test_fqdn_preserves_versions_tags_and_module_paths():
+    """Dotted non-host tokens must survive redaction (issue #400)."""
+    assert redact_command("pip install requests==2.31.0") == "pip install requests==2.31.0"
+    assert redact_command("git checkout release-1.2.3") == "git checkout release-1.2.3"
+    assert redact_command("docker run nginx:1.25.4-alpine") == "docker run nginx:1.25.4-alpine"
+    assert (
+        redact_command("python manage.py migrate --settings=app.settings.prod")
+        == "python manage.py migrate --settings=app.settings.prod"
+    )
+    assert redact_command("cd ~/Projects/my.app.dir") == "cd ~/Projects/my.app.dir"
 
 def test_redact_secrets_patterns():
     # AWS Key

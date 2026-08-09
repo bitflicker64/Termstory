@@ -237,16 +237,29 @@ def redact_command(cmd: str) -> str:
     cmd = IP_ADDRESS_PATTERN.sub('[REDACTED_IP]', cmd)
     cmd = IPV6_ADDRESS_PATTERN.sub('[REDACTED_IP]', cmd)
     
-    # 6. FQDNs (excluding files)
+    # 6. FQDNs (excluding files, versions, and non-network dotted tokens)
     def fqdn_replacer(match):
         full_match = match.group(1)
         parts = full_match.split('.')
         ext = parts[-1].lower()
         if ext in FILE_EXTENSIONS:
-            # Keep as-is, looks like a source/config file
             return full_match
-        return '[REDACTED_HOST]'
-        
+        # Version pins / numeric tags (2.31.0, 1.25.4-alpine) aren't hostnames.
+        if not ext.isalpha() or len(ext) < 2:
+            return full_match
+        # Only redact in a network context — otherwise branch names, module
+        # paths, and dirs like my.app.dir get blanked for no privacy gain.
+        prefix = cmd[: match.start(1)]
+        if prefix.endswith("@") or prefix.endswith("://"):
+            return "[REDACTED_HOST]"
+        if re.search(
+            r"(?:^|[\s;|&])(?:ssh|curl|scp|ping|wget)(?:\s+-\S+)*\s+$",
+            prefix,
+            re.IGNORECASE,
+        ):
+            return "[REDACTED_HOST]"
+        return full_match
+
     cmd = FQDN_PATTERN.sub(fqdn_replacer, cmd)
     
     # 7. URL Hosts
