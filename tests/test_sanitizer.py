@@ -58,6 +58,7 @@ def test_fqdn_preserves_versions_tags_and_module_paths():
         == "python manage.py migrate --settings=app.settings.prod"
     )
     assert redact_command("cd ~/Projects/my.app.dir") == "cd ~/Projects/my.app.dir"
+    assert redact_command("python -c 'import foo.app'") == "python -c 'import foo.app'"
 
 
 def test_fqdn_redacts_hosts_without_command_allowlist():
@@ -77,6 +78,14 @@ def test_fqdn_redacts_hosts_without_command_allowlist():
     assert redact_command("mysql -h db.internal.corp") == "mysql -h [REDACTED_HOST]"
     assert redact_command("ssh admin@dev.internal.corp") == "ssh admin@[REDACTED_HOST]"
     assert redact_command("ping dev-server.local") == "ping [REDACTED_HOST]"
+    # Strong @ / :// context wins over FILE_EXTENSIONS.
+    assert redact_command("curl https://service.py") == "curl https://[REDACTED_HOST]"
+    assert redact_command("ssh admin@service.py") == "ssh admin@[REDACTED_HOST]"
+    # Destination shape redacts even when the TLD isn't in HOST_TLDS.
+    assert (
+        redact_command("scp report.txt build.example.museum:/tmp")
+        == "scp report.txt [REDACTED_HOST]:/tmp"
+    )
 
 def test_redact_secrets_patterns():
     # AWS Key
