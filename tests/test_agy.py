@@ -3,7 +3,7 @@ test_agy.py — Tests for the TermStory → agy AI Pair Programmer Bridge
 
 Covers:
   - Context gathering (recent commands, commits, project detection)
-  - Privacy redaction (blacklisted commands are dropped, secrets are redacted)
+  - Privacy redaction (blacklisted sessions are dropped, secrets are redacted)
   - Graceful failure when ``agy`` is not on PATH
   - Subprocess invocation (correct args, temp file cleanup, exit code propagation)
   - ``--no-context`` legacy mode
@@ -120,7 +120,7 @@ class TestGatherRecentCommands:
         assert "git status" in commands[2]
 
     def test_skips_blacklisted_commands(self, populated_db):
-        """Commands matching BLACKLIST_PATTERNS must be dropped."""
+        """A lone blacklisted command (no session_id) must be dropped."""
         conn = populated_db.get_connection()
         cursor = conn.cursor()
         cursor.execute(
@@ -133,6 +133,78 @@ class TestGatherRecentCommands:
         commands = _gather_recent_commands(populated_db, limit=10)
         assert not any("aws configure" in c for c in commands)
         assert len(commands) == 3
+
+    def test_drops_entire_blacklisted_session(self, populated_db):
+        """Sibling commands in a blacklisted session must not reach the bridge."""
+        conn = populated_db.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO sessions (start_time, end_time, duration_seconds, project_id) "
+            "VALUES (?, ?, ?, ?)",
+            (1700000200, 1700000300, 100, 1),
+        )
+        sid = cursor.lastrowid
+        cursor.executemany(
+            "INSERT INTO commands (command, timestamp, session_id, project_id) "
+            "VALUES (?, ?, ?, ?)",
+            [
+                ("vault login -method=oidc", 1700000210, sid, 1),
+                ("export DATABASE_URL=postgres://prod", 1700000220, sid, 1),
+                ("psql -h prod-db", 1700000230, sid, 1),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        commands = _gather_recent_commands(populated_db, limit=10)
+        joined = "\n".join(commands)
+        assert "vault" not in joined.lower()
+        assert "DATABASE_URL" not in joined
+        assert "psql" not in joined
+        # Original safe session is still available.
+        assert len(commands) == 3
+
+    def test_overfetches_to_meet_requested_limit(self, tmp_path, monkeypatch):
+        """Blacklisted rows must not quietly shrink the returned command count."""
+        db_path = str(tmp_path / "test_agy_overfetch.db")
+        monkeypatch.setattr("termstory.agy.get_db_path", lambda: db_path)
+        db = Database(db_path)
+        db.init_db()
+
+        conn = db.get_connection()
+        cursor = conn.cursor()
+        # Interleave blacklisted sessions with safe one-command sessions.
+        ts = 1700001000
+        for i in range(5):
+            cursor.execute(
+                "INSERT INTO sessions (start_time, end_time, duration_seconds) "
+                "VALUES (?, ?, ?)",
+                (ts, ts + 10, 10),
+            )
+            bad_sid = cursor.lastrowid
+            cursor.execute(
+                "INSERT INTO commands (command, timestamp, session_id) VALUES (?, ?, ?)",
+                ("aws configure", ts + 1, bad_sid),
+            )
+            ts += 20
+            cursor.execute(
+                "INSERT INTO sessions (start_time, end_time, duration_seconds) "
+                "VALUES (?, ?, ?)",
+                (ts, ts + 10, 10),
+            )
+            good_sid = cursor.lastrowid
+            cursor.execute(
+                "INSERT INTO commands (command, timestamp, session_id) VALUES (?, ?, ?)",
+                (f"echo safe-{i}", ts + 1, good_sid),
+            )
+            ts += 20
+        conn.commit()
+        conn.close()
+
+        commands = _gather_recent_commands(db, limit=5)
+        assert len(commands) == 5
+        assert all("safe-" in c for c in commands)
+        assert not any("aws configure" in c for c in commands)
 
     def test_redacts_secrets_in_commands(self, populated_db):
         """Secrets in commands must be redacted before returning.

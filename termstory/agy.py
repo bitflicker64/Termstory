@@ -14,7 +14,7 @@ Design
   :func:`termstory.sanitizer.redact_command` before it leaves the local
   machine.  Sessions containing blacklisted commands (vault logins,
   ``aws configure``, etc.) are dropped entirely via
-  :func:`termstory.sanitizer.should_blacklist_command`.
+  :func:`termstory.sanitizer.sanitize_session_commands`.
 * **Graceful degradation** — if ``agy`` is not on ``PATH``, the command
   prints a friendly installation hint and exits ``1``.  If the TermStory
   database is empty or missing, the bridge still launches ``agy`` but
@@ -32,13 +32,13 @@ import os
 import shutil
 import subprocess
 import tempfile
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from rich.console import Console
 
 from termstory.config import get_db_path
 from termstory.database import Database
-from termstory.sanitizer import redact_command, should_blacklist_command
+from termstory.sanitizer import redact_command, sanitize_session_commands
 
 console = Console()
 
@@ -66,29 +66,64 @@ EXIT_INTERRUPTED = 130
 def _gather_recent_commands(db: Database, limit: int) -> List[str]:
     """Return up to *limit* most recent commands, sanitized for AI export.
 
-    Commands are redacted with :func:`redact_command`.  Any command that
-    triggers :func:`should_blacklist_command` is skipped entirely so
-    that credential-bearing commands never reach the AI session.
+    Commands are redacted with :func:`redact_command`.  Sessions that contain
+    any blacklisted command are dropped entirely via
+    :func:`sanitize_session_commands`, so surrounding context cannot leak
+    what a secret was for.  We over-fetch before filtering so the caller
+    still gets up to *limit* safe commands when blacklisted rows are removed.
     """
+    # Over-fetch so dropped sessions don't leave the result short of *limit*.
+    fetch_limit = min(max(limit * 3, limit + 32), MAX_CONTEXT_COMMANDS * 2)
+
     conn = db.get_connection()
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT command FROM commands ORDER BY timestamp DESC LIMIT ?",
-            (limit,),
+            "SELECT command, session_id FROM commands "
+            "ORDER BY timestamp DESC LIMIT ?",
+            (fetch_limit,),
         )
         rows = cursor.fetchall()
+
+        session_ids = {sid for _, sid in rows if sid is not None}
+        blacklisted_sessions = set()
+        if session_ids:
+            # Gate on the full session, not just the recent slice — a
+            # sensitive command earlier in the session must still drop siblings.
+            placeholders = ",".join("?" for _ in session_ids)
+            cursor.execute(
+                f"SELECT session_id, command FROM commands "
+                f"WHERE session_id IN ({placeholders})",
+                tuple(session_ids),
+            )
+            by_session: Dict[int, List[str]] = {}
+            for sid, cmd in cursor.fetchall():
+                if not cmd:
+                    continue
+                by_session.setdefault(sid, []).append(cmd)
+            for sid, cmds in by_session.items():
+                _, is_blacklisted = sanitize_session_commands(cmds)
+                if is_blacklisted:
+                    blacklisted_sessions.add(sid)
+
+        safe_commands: List[str] = []
+        for raw_cmd, session_id in rows:
+            if not raw_cmd:
+                continue
+            if session_id is None:
+                sanitized, is_blacklisted = sanitize_session_commands([raw_cmd])
+                if is_blacklisted:
+                    continue
+                safe_commands.append(sanitized[0])
+            else:
+                if session_id in blacklisted_sessions:
+                    continue
+                safe_commands.append(redact_command(raw_cmd))
+            if len(safe_commands) >= limit:
+                break
+        return safe_commands
     finally:
         conn.close()
-
-    safe_commands: List[str] = []
-    for (raw_cmd,) in rows:
-        if not raw_cmd:
-            continue
-        if should_blacklist_command(raw_cmd):
-            continue
-        safe_commands.append(redact_command(raw_cmd))
-    return safe_commands
 
 
 def _gather_recent_commits(db: Database, limit: int) -> List[str]:
