@@ -107,7 +107,7 @@ IPV6_ADDRESS_PATTERN = re.compile(
 FILE_EXTENSIONS = {
     'py', 'json', 'db', 'sh', 'xml', 'yml', 'yaml', 'md', 'txt', 'c', 'cpp',
     'h', 'go', 'java', 'js', 'ts', 'html', 'css', 'sqlite', 'sqlite3', 'rs',
-    'toml', 'lock', 'sql', 'cfg', 'ini', 'git', 'egg-info', 'class', 'jar',
+    'toml', 'lock', 'sql', 'cfg', 'conf', 'ini', 'git', 'egg-info', 'class', 'jar',
     'png', 'jpg', 'jpeg', 'gif', 'svg', 'zip', 'tar', 'gz', 'log', 'out'
 }
 
@@ -262,14 +262,17 @@ def redact_command(cmd: str) -> str:
         # Version pins / numeric tags (2.31.0, 1.25.4-alpine) aren't hostnames.
         if not ext.isalpha() or len(ext) < 2:
             return full_match
+        # Files before -h / host: shapes — -h is often "human readable"
+        # (du/df/ls/sort/tar), and token:/path matches Docker volume mounts.
+        if ext in FILE_EXTENSIONS:
+            return full_match
         # Destination/arg shapes: -h host, --host=host, host:/path, host:port.
         # Redact regardless of TLD (covers build.example.museum:/tmp).
         if re.search(r'(?:^|[\s])(-h|--host)(\s+|=)$', prefix):
             return "[REDACTED_HOST]"
-        if re.match(r':(\d+|/)', suffix):
+        # Only when the token starts the arg — else ./nginx.conf:/etc/... matches.
+        if re.match(r':(\d+|/)', suffix) and re.search(r'(?:^|[\s=])$', prefix):
             return "[REDACTED_HOST]"
-        if ext in FILE_EXTENSIONS:
-            return full_match
         # Bare tokens: only redact when the last label looks like a real TLD.
         if ext in HOST_TLDS:
             return "[REDACTED_HOST]"

@@ -86,6 +86,18 @@ def test_fqdn_redacts_hosts_without_command_allowlist():
         redact_command("scp report.txt build.example.museum:/tmp")
         == "scp report.txt [REDACTED_HOST]:/tmp"
     )
+    # -h is often "human readable"; file args must not look like hosts.
+    assert redact_command("du -h report.txt") == "du -h report.txt"
+    assert redact_command("tar -h archive.tar.gz") == "tar -h archive.tar.gz"
+    # Docker volume mounts are paths, not scp destinations.
+    assert (
+        redact_command("docker run -v ./nginx.conf:/etc/nginx/nginx.conf")
+        == "docker run -v ./nginx.conf:/etc/nginx/nginx.conf"
+    )
+    assert (
+        redact_command("docker run -v /opt/site.conf:/etc/site.conf")
+        == "docker run -v /opt/site.conf:/etc/site.conf"
+    )
 
 def test_redact_secrets_patterns():
     # AWS Key
