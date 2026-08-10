@@ -34,6 +34,28 @@ def test_redact_password_flags():
     assert redact_command("curl -H 'Authorization: Bearer secret-token' http://api") == "curl -H 'Authorization: Bearer [REDACTED_TOKEN]' http://[REDACTED_HOST]"
     assert redact_command("cli --token secret-token-value") == "cli --token [REDACTED]"
 
+
+def test_mysql_p_space_preserves_database_name():
+    """`-p` with a following space prompts interactively; the next token is the DB name."""
+    assert redact_command("mysql -u root -p mydatabase") == "mysql -u root -p mydatabase"
+    assert (
+        redact_command("mysqldump -u root -p production_db > dump.sql")
+        == "mysqldump -u root -p production_db > dump.sql"
+    )
+    # Bare -p (interactive prompt, no secret on the CLI) must stay untouched.
+    assert redact_command("mysql -u root -p") == "mysql -u root -p"
+    # Attached form still redacts.
+    assert redact_command("mysql -u root -pSECRET") == "mysql -u root -p[REDACTED]"
+    assert redact_command("mysqldump -uroot -p'pass word' db") == "mysqldump -uroot -p[REDACTED] db"
+
+
+def test_mysql_p_does_not_match_port_or_hostname():
+    """`-P` is the port flag; `-p` inside a hostname must not look like a password flag."""
+    assert redact_command("mysql -P3306 dbname") == "mysql -P3306 dbname"
+    # Host redaction may still rewrite the hostname; the password pattern must not.
+    assert "db-p[REDACTED]" not in redact_command("mysql --host=db-proxy dbname")
+    assert "db-p[REDACTED]" not in redact_command("mysqldump --host=db-proxy db")
+
 def test_redact_ips_and_fqdns():
     # IPs
     assert redact_command("ssh admin@192.168.1.105") == "ssh admin@[REDACTED_IP]"

@@ -89,9 +89,11 @@ PASSWORD_FLAG_PATTERN = re.compile(
     r'(--password=|\b--password\s+|\b--pass=|\b--pass\s+|--token=|--token\s+|--api-key=|--api-key\s+)(?!\[REDACTED)([^\s\'"]+|\'[^\']*\'|"[^"]*")',
     re.IGNORECASE
 )
+# Only lowercase attached -pSECRET is a password. Case-sensitive so -P3306 (port)
+# is left alone; (?<!\S) so hostnames like db-proxy are not treated as -p flags.
+# `mysql -p dbname` (space after -p) means "prompt interactively"; dbname is not a secret.
 MYSQL_PASSWORD_PATTERN = re.compile(
-    r'((?<!-)-p\s*)(?!\[REDACTED)([^\s\'"]+|\'[^\']*\'|"[^"]*")',
-    re.IGNORECASE
+    r'((?<!\S)-p)(?!\[REDACTED)([^\s\'"]+|\'[^\']*\'|"[^"]*")',
 )
 
 IP_ADDRESS_PATTERN = re.compile(r'(?<![\d\.])(?:\d{1,3}\.){3}\d{1,3}(?![\d\.])')
