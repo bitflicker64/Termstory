@@ -86,6 +86,7 @@ def test_save_config_error_handling(tmp_path):
             save_config({"test": "data"})
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="chmod is a no-op for root")
 def test_save_config_readonly_dir_raises(tmp_path, monkeypatch):
     """A read-only config directory must not look like a successful save."""
     config_dir = tmp_path / "termstory"

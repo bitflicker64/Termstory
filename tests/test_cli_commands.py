@@ -1,7 +1,10 @@
 import os
 import time
 from datetime import datetime, timedelta
+
+import pytest
 from typer.testing import CliRunner
+
 from termstory.cli import app
 from termstory.database import Database
 from termstory.models import Project, Session, Command
@@ -475,6 +478,7 @@ def test_config_set_boolean_validation(tmp_path, monkeypatch):
         assert "Invalid boolean value" in output
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="chmod is a no-op for root")
 def test_config_set_reports_save_failure(tmp_path, monkeypatch):
     """Issue #402: config set must not pretend success when the write fails."""
     config_dir = tmp_path / "termstory"
@@ -486,7 +490,7 @@ def test_config_set_reports_save_failure(tmp_path, monkeypatch):
     save_config({"ai_enabled": False})
     os.chmod(config_dir, 0o555)
     try:
-        runner = CliRunner(mix_stderr=True)
+        runner = CliRunner()
         result = runner.invoke(app, ["config", "set", "ai_enabled", "true"])
         assert result.exit_code != 0
         output = result.output or ""
