@@ -60,7 +60,7 @@ def test_redact_ips_and_fqdns():
     # IPs
     assert redact_command("ssh admin@192.168.1.105") == "ssh admin@[REDACTED_IP]"
     
-    # FQDNs
+    # FQDNs with host-shaped TLDs still redact
     assert redact_command("curl https://api.internal.domain.local/v1/users") == "curl https://[REDACTED_HOST]/v1/users"
     assert redact_command("ping dev-server.local") == "ping [REDACTED_HOST]"
     
@@ -68,6 +68,58 @@ def test_redact_ips_and_fqdns():
     assert redact_command("python3 main.py") == "python3 main.py"
     assert redact_command("cat config.json") == "cat config.json"
     assert redact_command("vim README.md") == "vim README.md"
+
+
+def test_fqdn_preserves_versions_tags_and_module_paths():
+    """Dotted non-host tokens must survive redaction (issue #400)."""
+    assert redact_command("pip install requests==2.31.0") == "pip install requests==2.31.0"
+    assert redact_command("git checkout release-1.2.3") == "git checkout release-1.2.3"
+    assert redact_command("docker run nginx:1.25.4-alpine") == "docker run nginx:1.25.4-alpine"
+    assert (
+        redact_command("python manage.py migrate --settings=app.settings.prod")
+        == "python manage.py migrate --settings=app.settings.prod"
+    )
+    assert redact_command("cd ~/Projects/my.app.dir") == "cd ~/Projects/my.app.dir"
+    assert redact_command("python -c 'import foo.app'") == "python -c 'import foo.app'"
+
+
+def test_fqdn_redacts_hosts_without_command_allowlist():
+    """Hostnames must redact even when they aren't the first arg after a net cmd."""
+    assert (
+        redact_command("scp report.txt build.internal.corp:/tmp")
+        == "scp report.txt [REDACTED_HOST]:/tmp"
+    )
+    assert (
+        redact_command("psql -h prod-db.internal.corp -U admin")
+        == "psql -h [REDACTED_HOST] -U admin"
+    )
+    assert (
+        redact_command("rsync -a ./ backup.internal.corp:/data")
+        == "rsync -a ./ [REDACTED_HOST]:/data"
+    )
+    assert redact_command("mysql -h db.internal.corp") == "mysql -h [REDACTED_HOST]"
+    assert redact_command("ssh admin@dev.internal.corp") == "ssh admin@[REDACTED_HOST]"
+    assert redact_command("ping dev-server.local") == "ping [REDACTED_HOST]"
+    # Strong @ / :// context wins over FILE_EXTENSIONS.
+    assert redact_command("curl https://service.py") == "curl https://[REDACTED_HOST]"
+    assert redact_command("ssh admin@service.py") == "ssh admin@[REDACTED_HOST]"
+    # Destination shape redacts even when the TLD isn't in HOST_TLDS.
+    assert (
+        redact_command("scp report.txt build.example.museum:/tmp")
+        == "scp report.txt [REDACTED_HOST]:/tmp"
+    )
+    # -h is often "human readable"; file args must not look like hosts.
+    assert redact_command("du -h report.txt") == "du -h report.txt"
+    assert redact_command("tar -h archive.tar.gz") == "tar -h archive.tar.gz"
+    # Docker volume mounts are paths, not scp destinations.
+    assert (
+        redact_command("docker run -v ./nginx.conf:/etc/nginx/nginx.conf")
+        == "docker run -v ./nginx.conf:/etc/nginx/nginx.conf"
+    )
+    assert (
+        redact_command("docker run -v /opt/site.conf:/etc/site.conf")
+        == "docker run -v /opt/site.conf:/etc/site.conf"
+    )
 
 def test_redact_secrets_patterns():
     # AWS Key

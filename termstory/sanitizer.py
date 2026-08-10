@@ -109,8 +109,19 @@ IPV6_ADDRESS_PATTERN = re.compile(
 FILE_EXTENSIONS = {
     'py', 'json', 'db', 'sh', 'xml', 'yml', 'yaml', 'md', 'txt', 'c', 'cpp',
     'h', 'go', 'java', 'js', 'ts', 'html', 'css', 'sqlite', 'sqlite3', 'rs',
-    'toml', 'lock', 'sql', 'cfg', 'ini', 'git', 'egg-info', 'class', 'jar',
+    'toml', 'lock', 'sql', 'cfg', 'conf', 'ini', 'git', 'egg-info', 'class', 'jar',
     'png', 'jpg', 'jpeg', 'gif', 'svg', 'zip', 'tar', 'gz', 'log', 'out'
+}
+
+# Host-shaped final labels. Used so we can redact real hostnames without a
+# command allowlist (which misses destination-arg forms like scp/rsync/psql -h).
+HOST_TLDS = {
+    'com', 'net', 'org', 'io', 'edu', 'gov', 'info', 'biz', 'co',
+    # Omit 'app' — too often a Python/module path segment (foo.app).
+    'dev', 'cloud', 'tech', 'me', 'ai', 'cc', 'xyz',
+    'us', 'uk', 'de', 'fr', 'jp', 'au', 'ca', 'in', 'br', 'cn', 'ru',
+    'local', 'internal', 'lan', 'corp', 'home', 'intranet', 'private',
+    'localdomain',
 }
 
 # Match standard FQDNs (e.g. host.domain.com)
@@ -239,41 +250,53 @@ def redact_command(cmd: str) -> str:
     cmd = IP_ADDRESS_PATTERN.sub('[REDACTED_IP]', cmd)
     cmd = IPV6_ADDRESS_PATTERN.sub('[REDACTED_IP]', cmd)
     
-    # 6. FQDNs (excluding files)
+    # 6. FQDNs (excluding files, versions, and non-host dotted tokens)
     def fqdn_replacer(match):
         full_match = match.group(1)
         parts = full_match.split('.')
         ext = parts[-1].lower()
-        if ext in FILE_EXTENSIONS:
-            # Keep as-is, looks like a source/config file
+        prefix = cmd[: match.start(1)]
+        suffix = cmd[match.end(1):]
+        # user@host and scheme://host are always host-shaped — check before
+        # FILE_EXTENSIONS so https://service.py / admin@service.py redact.
+        if prefix.endswith("@") or prefix.endswith("://"):
+            return "[REDACTED_HOST]"
+        # Version pins / numeric tags (2.31.0, 1.25.4-alpine) aren't hostnames.
+        if not ext.isalpha() or len(ext) < 2:
             return full_match
-        return '[REDACTED_HOST]'
-        
+        # Files before -h / host: shapes — -h is often "human readable"
+        # (du/df/ls/sort/tar), and token:/path matches Docker volume mounts.
+        if ext in FILE_EXTENSIONS:
+            return full_match
+        # Destination/arg shapes: -h host, --host=host, host:/path, host:port.
+        # Redact regardless of TLD (covers build.example.museum:/tmp).
+        if re.search(r'(?:^|[\s])(-h|--host)(\s+|=)$', prefix):
+            return "[REDACTED_HOST]"
+        # Only when the token starts the arg — else ./nginx.conf:/etc/... matches.
+        if re.match(r':(\d+|/)', suffix) and re.search(r'(?:^|[\s=])$', prefix):
+            return "[REDACTED_HOST]"
+        # Bare tokens: only redact when the last label looks like a real TLD.
+        if ext in HOST_TLDS:
+            return "[REDACTED_HOST]"
+        return full_match
+
     cmd = FQDN_PATTERN.sub(fqdn_replacer, cmd)
     
-    # 7. URL Hosts
+    # 7. URL Hosts — scheme context is always host-shaped
     def url_replacer(match):
         proto = match.group(1)
         host = match.group(2)
         if host == '[REDACTED_IP]' or host == '[REDACTED_HOST]':
             return f"{proto}://{host}"
-        parts = host.split('.')
-        ext = parts[-1].lower()
-        if len(parts) > 1 and ext in FILE_EXTENSIONS:
-            return f"{proto}://{host}"
         return f"{proto}://[REDACTED_HOST]"
         
     cmd = URL_HOST_PATTERN.sub(url_replacer, cmd)
 
-    # 8. SSH User@Host
+    # 8. SSH User@Host — @ context is always host-shaped
     def ssh_replacer(match):
         user = match.group(1)
         host = match.group(2)
         if host == '[REDACTED_IP]' or host == '[REDACTED_HOST]':
-            return f"{user}@{host}"
-        parts = host.split('.')
-        ext = parts[-1].lower()
-        if len(parts) > 1 and ext in FILE_EXTENSIONS:
             return f"{user}@{host}"
         return f"{user}@[REDACTED_HOST]"
         
