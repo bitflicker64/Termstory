@@ -215,14 +215,6 @@ def load_config() -> dict:
             )
             config = {}
 
-        except OSError as e:
-            logger.warning(
-                "Could not read config file '%s': %s",
-                config_path,
-            e,
-            )
-            config = {}
-
     if not isinstance(config, dict):
         config = {}
             
@@ -278,7 +270,11 @@ def load_config() -> dict:
     defaults_merged = merge_defaults(config, defaults)
     
     if migrated or defaults_merged:
-        save_config(config)
+        try:
+            save_config(config)
+        except OSError:
+            # Still return the in-memory config; just don't hide a failed persist.
+            logger.exception("Failed to persist config after migration/defaults merge")
         
     return config
 
@@ -317,8 +313,8 @@ def save_config(config: dict) -> None:
     Writes to a temporary file in the same directory, then atomically
     renames it over the target path. This prevents concurrent readers
     from seeing a partially written config file.
+
+    Raises OSError (and other I/O errors from the atomic write) so callers
+    can surface a failure instead of assuming the write succeeded.
     """
-    try:
-        atomic_write_text(get_config_path(), json.dumps(config, indent=4), prefix="config_")
-    except Exception:
-        pass
+    atomic_write_text(get_config_path(), json.dumps(config, indent=4), prefix="config_")

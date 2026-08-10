@@ -1,7 +1,10 @@
 import os
 import time
 from datetime import datetime, timedelta
+
+import pytest
 from typer.testing import CliRunner
+
 from termstory.cli import app
 from termstory.database import Database
 from termstory.models import Project, Session, Command
@@ -473,6 +476,28 @@ def test_config_set_boolean_validation(tmp_path, monkeypatch):
         assert result.exit_code != 0, f"Expected non-zero for {val}, got {result.exit_code}: {result.stdout}"
         output = result.output or result.stdout
         assert "Invalid boolean value" in output
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="chmod is a no-op for root")
+def test_config_set_reports_save_failure(tmp_path, monkeypatch):
+    """Issue #402: config set must not pretend success when the write fails."""
+    config_dir = tmp_path / "termstory"
+    config_dir.mkdir()
+    config_file = config_dir / "config.json"
+    monkeypatch.setattr("termstory.config.get_config_path", lambda: str(config_file))
+    # Seed a readable config, then lock the directory so the next save fails.
+    from termstory.config import save_config
+    save_config({"ai_enabled": False})
+    os.chmod(config_dir, 0o555)
+    try:
+        runner = CliRunner()
+        result = runner.invoke(app, ["config", "set", "ai_enabled", "true"])
+        assert result.exit_code != 0
+        output = result.output or ""
+        assert "Failed to save config" in output
+        assert "Set config key" not in output
+    finally:
+        os.chmod(config_dir, 0o755)
 
 
 def test_config_set_api_key_preserves_leading_zeros(tmp_path, monkeypatch):

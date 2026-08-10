@@ -1123,7 +1123,10 @@ def show_ui(
                 console.print("Continuing with legacy history fallback...")
         elif response in ("n", "no"):
             _cfg["has_seen_timestamp_prompt"] = True
-            save_config(_cfg)
+            try:
+                save_config(_cfg)
+            except OSError as e:
+                console.print(f"[bold red]Failed to save config:[/] {e}")
             console.print("Continuing with legacy history fallback...")
         else:
             console.print("Invalid response. Continuing with legacy history fallback...")
@@ -1552,8 +1555,15 @@ def config_set(key: str, value: str):
         converted_value = value
 
     set_config_value(config, key, converted_value)
-    save_config(config)
-    
+    try:
+        save_config(config)
+    except OSError as e:
+        Console(stderr=True).print(
+            f"[bold red]Failed to save config:[/] {e}\n"
+            "Check that the config directory is writable and has free disk space."
+        )
+        raise typer.Exit(code=1)
+
     set_val = get_config_value(config, key)
     from rich.markup import escape
     console.print(f"[green]Set config key '{escape(key)}' to '{escape(str(set_val))}'[/]")
