@@ -38,7 +38,7 @@ def test_redact_ips_and_fqdns():
     # IPs
     assert redact_command("ssh admin@192.168.1.105") == "ssh admin@[REDACTED_IP]"
     
-    # FQDNs in a network context still redact
+    # FQDNs with host-shaped TLDs still redact
     assert redact_command("curl https://api.internal.domain.local/v1/users") == "curl https://[REDACTED_HOST]/v1/users"
     assert redact_command("ping dev-server.local") == "ping [REDACTED_HOST]"
     
@@ -58,6 +58,25 @@ def test_fqdn_preserves_versions_tags_and_module_paths():
         == "python manage.py migrate --settings=app.settings.prod"
     )
     assert redact_command("cd ~/Projects/my.app.dir") == "cd ~/Projects/my.app.dir"
+
+
+def test_fqdn_redacts_hosts_without_command_allowlist():
+    """Hostnames must redact even when they aren't the first arg after a net cmd."""
+    assert (
+        redact_command("scp report.txt build.internal.corp:/tmp")
+        == "scp report.txt [REDACTED_HOST]:/tmp"
+    )
+    assert (
+        redact_command("psql -h prod-db.internal.corp -U admin")
+        == "psql -h [REDACTED_HOST] -U admin"
+    )
+    assert (
+        redact_command("rsync -a ./ backup.internal.corp:/data")
+        == "rsync -a ./ [REDACTED_HOST]:/data"
+    )
+    assert redact_command("mysql -h db.internal.corp") == "mysql -h [REDACTED_HOST]"
+    assert redact_command("ssh admin@dev.internal.corp") == "ssh admin@[REDACTED_HOST]"
+    assert redact_command("ping dev-server.local") == "ping [REDACTED_HOST]"
 
 def test_redact_secrets_patterns():
     # AWS Key

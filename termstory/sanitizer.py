@@ -111,6 +111,16 @@ FILE_EXTENSIONS = {
     'png', 'jpg', 'jpeg', 'gif', 'svg', 'zip', 'tar', 'gz', 'log', 'out'
 }
 
+# Host-shaped final labels. Used so we can redact real hostnames without a
+# command allowlist (which misses destination-arg forms like scp/rsync/psql -h).
+HOST_TLDS = {
+    'com', 'net', 'org', 'io', 'edu', 'gov', 'info', 'biz', 'co',
+    'app', 'dev', 'cloud', 'tech', 'me', 'ai', 'cc', 'xyz',
+    'us', 'uk', 'de', 'fr', 'jp', 'au', 'ca', 'in', 'br', 'cn', 'ru',
+    'local', 'internal', 'lan', 'corp', 'home', 'intranet', 'private',
+    'localdomain',
+}
+
 # Match standard FQDNs (e.g. host.domain.com)
 FQDN_PATTERN = re.compile(r'\b([a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+)\b')
 
@@ -237,7 +247,7 @@ def redact_command(cmd: str) -> str:
     cmd = IP_ADDRESS_PATTERN.sub('[REDACTED_IP]', cmd)
     cmd = IPV6_ADDRESS_PATTERN.sub('[REDACTED_IP]', cmd)
     
-    # 6. FQDNs (excluding files, versions, and non-network dotted tokens)
+    # 6. FQDNs (excluding files, versions, and non-host dotted tokens)
     def fqdn_replacer(match):
         full_match = match.group(1)
         parts = full_match.split('.')
@@ -247,16 +257,13 @@ def redact_command(cmd: str) -> str:
         # Version pins / numeric tags (2.31.0, 1.25.4-alpine) aren't hostnames.
         if not ext.isalpha() or len(ext) < 2:
             return full_match
-        # Only redact in a network context — otherwise branch names, module
-        # paths, and dirs like my.app.dir get blanked for no privacy gain.
         prefix = cmd[: match.start(1)]
+        # user@host and scheme://host are always host-shaped.
         if prefix.endswith("@") or prefix.endswith("://"):
             return "[REDACTED_HOST]"
-        if re.search(
-            r"(?:^|[\s;|&])(?:ssh|curl|scp|ping|wget)(?:\s+-\S+)*\s+$",
-            prefix,
-            re.IGNORECASE,
-        ):
+        # Otherwise only redact when the last label looks like a real TLD.
+        # Keeps module paths (app.settings.prod) and dirs (my.app.dir) intact.
+        if ext in HOST_TLDS:
             return "[REDACTED_HOST]"
         return full_match
 
