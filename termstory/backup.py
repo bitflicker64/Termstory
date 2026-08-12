@@ -20,6 +20,11 @@ def _get_backup_dir() -> str:
 def backup_db() -> str:
     """Create a timestamped backup of the TermStory database.
 
+    Backup filenames use a microsecond-precision timestamp
+    (``termstory_backup_YYYYMMDD_HHMMSS_mmmmmm.db``) so back-to-back backups
+    never collide. The fixed-width timestamp keeps filenames lexicographically
+    sortable, which backup rotation relies on to find the oldest backups.
+
     Returns:
         The absolute path to the created backup file.
     """
@@ -28,7 +33,9 @@ def backup_db() -> str:
         raise FileNotFoundError(f"TermStory database not found at {db_path}")
     backup_dir = _get_backup_dir()
     # Wall-clock intentionally: backup filenames must be unique on disk.
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Microsecond precision (%f) keeps consecutive backups distinct while the
+    # fixed-width suffix preserves lexicographic = chronological ordering.
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     backup_path = os.path.join(backup_dir, f"termstory_backup_{timestamp}.db")
 
     # Safely backup the SQLite database using backup API
