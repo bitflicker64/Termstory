@@ -146,3 +146,40 @@ def test_generate_notebook_multiline_commit(temp_db):
     markdown = generate_notebook([s], temp_db)
     assert "feat: add first feature" in markdown
     assert "Here is a detailed explanation" not in markdown
+
+
+AWS_SAMPLE_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+
+def test_generate_notebook_redacts_secret_command(temp_db):
+    cmd = Command(id=501, timestamp=1000,
+                  command=f"export AWS_SECRET_ACCESS_KEY={AWS_SAMPLE_SECRET}",
+                  exit_code=0, session_id=1, project_id=1)
+    s = Session(id=1, start_time=1000, end_time=2000, duration_seconds=1000,
+                project_id=1, commands=[cmd])
+    markdown = generate_notebook([s], temp_db, all_commands=True)
+    assert AWS_SAMPLE_SECRET not in markdown
+    assert "export AWS_SECRET_ACCESS_KEY=[REDACTED]" in markdown
+
+
+def test_generate_notebook_blacklisted_session_redacted(temp_db):
+    cmd = Command(id=502, timestamp=1000, command="vault read secret/data",
+                  exit_code=0, session_id=1, project_id=1)
+    s = Session(id=1, start_time=1000, end_time=2000, duration_seconds=1000,
+                project_id=1, commands=[cmd])
+    markdown = generate_notebook([s], temp_db, all_commands=True)
+    assert "vault read secret" not in markdown
+    assert "Security/Authentication Operations" in markdown
+
+
+def test_generate_notebook_redacts_commit_message(temp_db):
+    s = Session(
+        id=1, start_time=1000, end_time=2000, duration_seconds=1000, project_id=1,
+        commands=[Command(id=503, timestamp=1000, command="git commit", exit_code=0,
+                          session_id=1, project_id=1)],
+        commits=[{"hash": "abc123def456", "timestamp": 1500,
+                  "message": "feat: login password: hunter2",
+                  "cleaned_message": "login password: hunter2"}],
+    )
+    markdown = generate_notebook([s], temp_db)
+    assert "hunter2" not in markdown
