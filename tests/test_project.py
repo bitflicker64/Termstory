@@ -307,6 +307,128 @@ def test_find_project_root_network_mounts_and_timeout(tmp_path, monkeypatch):
     assert t1 - t0 < 3.0  # Timeout prevents 4 calls from taking 4.0s (mock listdir sleeps 1.0s per call, 4 calls = 4.0s)
 
 
+def test_find_project_root_cache_invalidated_after_ttl_marker_creation(tmp_path, monkeypatch):
+    """#417: creating a project marker must eventually invalidate the cached result."""
+    import time
+    import termstory.project as project_module
+    from termstory.project import find_project_root, _PROJECT_ROOT_CACHE
+
+    monkeypatch.setattr("os.path.expanduser", lambda path: str(tmp_path) if path == "~" else path)
+    monkeypatch.setattr(project_module, "_PROJECT_ROOT_CACHE_TTL", 0.1)
+    _PROJECT_ROOT_CACHE.clear()
+
+    # Repo root lives 3 levels under home so the no-marker fallback (2 levels)
+    # differs from the marker-detected root.
+    repo_root = tmp_path / "code" / "work" / "my-repo"
+    nested = repo_root / "src" / "lib"
+    nested.mkdir(parents=True)
+
+    # 1. No marker yet -> fallback root (2 levels under home)
+    assert find_project_root(str(nested)) == str(tmp_path / "code" / "work")
+
+    # 2. Create the marker
+    (repo_root / ".git").mkdir()
+
+    # 3. Within the TTL the stale result is still served (caching benefit)
+    assert find_project_root(str(nested)) == str(tmp_path / "code" / "work")
+
+    # 4. After the TTL expires the newly created project root is detected
+    time.sleep(0.2)
+    assert find_project_root(str(nested)) == str(repo_root)
+
+
+def test_find_project_root_cache_invalidated_after_ttl_marker_removal(tmp_path, monkeypatch):
+    """#417: removing a project marker must eventually invalidate the cached result."""
+    import shutil
+    import time
+    import termstory.project as project_module
+    from termstory.project import find_project_root, _PROJECT_ROOT_CACHE
+
+    monkeypatch.setattr("os.path.expanduser", lambda path: str(tmp_path) if path == "~" else path)
+    monkeypatch.setattr(project_module, "_PROJECT_ROOT_CACHE_TTL", 0.1)
+    _PROJECT_ROOT_CACHE.clear()
+
+    repo_root = tmp_path / "code" / "work" / "my-repo"
+    nested = repo_root / "src"
+    nested.mkdir(parents=True)
+    (repo_root / ".git").mkdir()
+
+    # 1. Marker present -> project root detected
+    assert find_project_root(str(nested)) == str(repo_root)
+
+    # 2. Remove the marker
+    shutil.rmtree(str(repo_root / ".git"))
+
+    # 3. Within the TTL the stale root is still returned (caching benefit)
+    assert find_project_root(str(nested)) == str(repo_root)
+
+    # 4. After the TTL expires the stale project root is no longer returned
+    time.sleep(0.2)
+    assert find_project_root(str(nested)) == str(tmp_path / "code" / "work")
+
+
+def test_find_project_root_cache_serves_cached_result_within_ttl(tmp_path, monkeypatch):
+    """#417: within the TTL the cached result is reused without re-walking the filesystem."""
+    import termstory.project as project_module
+    from termstory.project import find_project_root, _PROJECT_ROOT_CACHE
+
+    monkeypatch.setattr("os.path.expanduser", lambda path: str(tmp_path) if path == "~" else path)
+    monkeypatch.setattr(project_module, "_PROJECT_ROOT_CACHE_TTL", 60)
+    _PROJECT_ROOT_CACHE.clear()
+
+    calls = {"n": 0}
+    real_impl = project_module._find_project_root_impl
+
+    def counting_impl(path):
+        calls["n"] += 1
+        return real_impl(path)
+
+    monkeypatch.setattr(project_module, "_find_project_root_impl", counting_impl)
+
+    proj_dir = tmp_path / "Projects" / "cached-repo"
+    nested = proj_dir / "sub"
+    nested.mkdir(parents=True)
+    (proj_dir / ".git").mkdir()
+
+    assert find_project_root(str(nested)) == str(proj_dir)
+    assert calls["n"] == 1
+
+    # Subsequent calls within the TTL hit the cache and do NOT re-walk the tree
+    assert find_project_root(str(nested)) == str(proj_dir)
+    assert find_project_root(str(nested)) == str(proj_dir)
+    assert calls["n"] == 1
+
+
+def test_get_project_root_cache_ttl_reads_config(tmp_path, monkeypatch):
+    """#417: project_root_cache_ttl config is respected by _get_project_root_cache_ttl."""
+    import json
+    from termstory.project import _get_project_root_cache_ttl
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_file = config_dir / "config.json"
+    config_file.write_text(json.dumps({"project_root_cache_ttl": 5}))
+
+    monkeypatch.setattr("termstory.config.get_app_dir", lambda dir_type: str(config_dir))
+    assert _get_project_root_cache_ttl() == 5.0
+
+
+def test_get_project_root_cache_ttl_default_and_clamp(monkeypatch):
+    """#417: default TTL is 60s; values below 1s are clamped; config errors fall back."""
+    from unittest.mock import patch
+    from termstory.project import _get_project_root_cache_ttl
+
+    with patch("termstory.config.load_config", return_value={}):
+        assert _get_project_root_cache_ttl() == 60.0
+
+    with patch("termstory.config.load_config", return_value={"project_root_cache_ttl": 0}):
+        assert _get_project_root_cache_ttl() == 1.0  # clamped minimum
+
+    with patch("termstory.config.load_config", side_effect=RuntimeError("boom")):
+        assert _get_project_root_cache_ttl() == 60.0  # fallback on config error
+
+
+
 def test_neighbor_propagation_next_project_only():
     """Pass 3: 'Other' session with next_project in proximity but no prev_project gets assigned to next_project."""
     # Session 1: no cd, no project

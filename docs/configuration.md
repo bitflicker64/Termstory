@@ -42,5 +42,6 @@ Key configuration parameters:
 - `request_timeout_seconds` (int): HTTP request timeout (in seconds) for LLM API calls. Defaults to `30`.
 - `max_query_log` (int): Maximum number of captured database query profiler entries before older entries are trimmed. Defaults to `10000`.
 - `providers.<name>.<param>`: Provider-specific endpoints, API keys, and model names.
+- `project_root_cache_ttl` (int, seconds): How long resolved project-root results are cached before being re-checked against the filesystem. A shorter value detects newly created/removed project markers (`.git`, `package.json`, ...) sooner but at the cost of more frequent filesystem walks. Defaults to `60`.
 
 ---
