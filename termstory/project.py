@@ -162,7 +162,7 @@ _PROJECT_ROOT_CACHE_TTL: float = _get_project_root_cache_ttl()
 
 def _find_project_root_cached(path: str) -> str:
     """TTL-bounded cached wrapper around _find_project_root_impl (Issue #417)."""
-    now = time.time()
+    now = time.monotonic()
     with _project_root_cache_lock:
         cached = _PROJECT_ROOT_CACHE.get(path)
         if cached is not None and now - cached[0] < _PROJECT_ROOT_CACHE_TTL:
@@ -177,7 +177,7 @@ def _find_project_root_cached(path: str) -> str:
         if path not in _PROJECT_ROOT_CACHE and len(_PROJECT_ROOT_CACHE) >= _PROJECT_ROOT_CACHE_MAXSIZE:
             # Evict least-recently-used entry (oldest insertion order)
             _PROJECT_ROOT_CACHE.pop(next(iter(_PROJECT_ROOT_CACHE)))
-        _PROJECT_ROOT_CACHE[path] = (time.time(), result)
+        _PROJECT_ROOT_CACHE[path] = (time.monotonic(), result)
     return result
 
 def find_project_root(path: str) -> str:

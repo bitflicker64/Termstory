@@ -309,13 +309,16 @@ def test_find_project_root_network_mounts_and_timeout(tmp_path, monkeypatch):
 
 def test_find_project_root_cache_invalidated_after_ttl_marker_creation(tmp_path, monkeypatch):
     """#417: creating a project marker must eventually invalidate the cached result."""
-    import time
     import termstory.project as project_module
     from termstory.project import find_project_root, _PROJECT_ROOT_CACHE
 
     monkeypatch.setattr("os.path.expanduser", lambda path: str(tmp_path) if path == "~" else path)
-    monkeypatch.setattr(project_module, "_PROJECT_ROOT_CACHE_TTL", 0.1)
+    monkeypatch.setattr(project_module, "_PROJECT_ROOT_CACHE_TTL", 60.0)
     _PROJECT_ROOT_CACHE.clear()
+
+    # Deterministic monotonic clock so TTL expiry does not depend on real elapsed time.
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(project_module.time, "monotonic", lambda: clock["now"])
 
     # Repo root lives 3 levels under home so the no-marker fallback (2 levels)
     # differs from the marker-detected root.
@@ -332,21 +335,24 @@ def test_find_project_root_cache_invalidated_after_ttl_marker_creation(tmp_path,
     # 3. Within the TTL the stale result is still served (caching benefit)
     assert find_project_root(str(nested)) == str(tmp_path / "code" / "work")
 
-    # 4. After the TTL expires the newly created project root is detected
-    time.sleep(0.2)
+    # 4. Advance past the TTL so the newly created project root is detected
+    clock["now"] += 61.0
     assert find_project_root(str(nested)) == str(repo_root)
 
 
 def test_find_project_root_cache_invalidated_after_ttl_marker_removal(tmp_path, monkeypatch):
     """#417: removing a project marker must eventually invalidate the cached result."""
     import shutil
-    import time
     import termstory.project as project_module
     from termstory.project import find_project_root, _PROJECT_ROOT_CACHE
 
     monkeypatch.setattr("os.path.expanduser", lambda path: str(tmp_path) if path == "~" else path)
-    monkeypatch.setattr(project_module, "_PROJECT_ROOT_CACHE_TTL", 0.1)
+    monkeypatch.setattr(project_module, "_PROJECT_ROOT_CACHE_TTL", 60.0)
     _PROJECT_ROOT_CACHE.clear()
+
+    # Deterministic monotonic clock so TTL expiry does not depend on real elapsed time.
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(project_module.time, "monotonic", lambda: clock["now"])
 
     repo_root = tmp_path / "code" / "work" / "my-repo"
     nested = repo_root / "src"
@@ -362,8 +368,8 @@ def test_find_project_root_cache_invalidated_after_ttl_marker_removal(tmp_path, 
     # 3. Within the TTL the stale root is still returned (caching benefit)
     assert find_project_root(str(nested)) == str(repo_root)
 
-    # 4. After the TTL expires the stale project root is no longer returned
-    time.sleep(0.2)
+    # 4. Advance past the TTL so the stale project root is no longer returned
+    clock["now"] += 61.0
     assert find_project_root(str(nested)) == str(tmp_path / "code" / "work")
 
 
