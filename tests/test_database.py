@@ -401,3 +401,175 @@ def test_database_still_works_end_to_end_with_custom_timeout(tmp_path, monkeypat
 
     assert "projects" in tables
     assert db.db_timeout == 45.0
+
+
+def _seed_projects_and_sessions(db, now_ts, n_projects, sessions_per_project=1, path_prefix=""):
+    """Helper: insert n_projects projects (each with sessions_per_project sessions)
+    directly via SQL and return the list of project ids.
+
+    Used to set up deterministic data for get_projects_by_ids tests.
+    """
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    project_ids = []
+    for i in range(n_projects):
+        cursor.execute(
+            "INSERT INTO projects (name, path, first_seen, last_seen, project_context) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (f"Proj {i}", f"~/proj-{path_prefix}-{i}", now_ts, now_ts + i * 10, f"ctx-{i}"),
+        )
+        pid = cursor.lastrowid
+        project_ids.append(pid)
+        for j in range(sessions_per_project):
+            cursor.execute(
+                "INSERT INTO sessions (start_time, end_time, duration_seconds, project_id) "
+                "VALUES (?, ?, ?, ?)",
+                (now_ts + i * 1000 + j, now_ts + i * 1000 + j + 50, 50 + j, pid),
+            )
+    conn.commit()
+    conn.close()
+    return project_ids
+
+
+def test_get_projects_by_ids_correctness(tmp_path):
+    """get_projects_by_ids returns correct aggregates and metadata for:
+    multiple projects with sessions, a project with zero sessions, multiple
+    sessions for one project, and preserves the original project metadata."""
+    db_file = tmp_path / "test_proj_by_ids.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    now_ts = int(time.time())
+
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO projects (name, path, first_seen, last_seen, project_context) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("Proj A", "~/proj-a", now_ts, now_ts + 10, "ctx-a"),
+    )
+    cursor.execute(
+        "INSERT INTO projects (name, path, first_seen, last_seen, project_context) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("Proj B", "~/proj-b", now_ts, now_ts + 20, None),
+    )
+    cursor.execute(
+        "INSERT INTO projects (name, path, first_seen, last_seen, project_context) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("Proj C", "~/proj-c", now_ts, now_ts + 30, "ctx-c"),
+    )
+
+    cursor.execute("SELECT id, path FROM projects ORDER BY id")
+    path_to_id = {row[1]: row[0] for row in cursor.fetchall()}
+    a_id = path_to_id["~/proj-a"]
+    b_id = path_to_id["~/proj-b"]
+    c_id = path_to_id["~/proj-c"]
+
+    # Two sessions for Proj A (durations 100 and 200 -> count=2, total=300)
+    cursor.execute(
+        "INSERT INTO sessions (start_time, end_time, duration_seconds, project_id) "
+        "VALUES (?, ?, ?, ?)",
+        (now_ts, now_ts + 100, 100, a_id),
+    )
+    cursor.execute(
+        "INSERT INTO sessions (start_time, end_time, duration_seconds, project_id) "
+        "VALUES (?, ?, ?, ?)",
+        (now_ts + 200, now_ts + 400, 200, a_id),
+    )
+    # One session for Proj B (duration 300 -> count=1, total=300)
+    cursor.execute(
+        "INSERT INTO sessions (start_time, end_time, duration_seconds, project_id) "
+        "VALUES (?, ?, ?, ?)",
+        (now_ts, now_ts + 300, 300, b_id),
+    )
+    # Proj C: intentionally no sessions (zero-session project)
+    conn.commit()
+    conn.close()
+
+    # Pass ids in non-sorted order to verify ORDER BY p.id stabilizes output
+    projects = db.get_projects_by_ids([c_id, a_id, b_id])
+
+    assert len(projects) == 3
+    by_id = {p.id: p for p in projects}
+
+    # session_count correctness
+    assert by_id[a_id].session_count == 2
+    assert by_id[b_id].session_count == 1
+    assert by_id[c_id].session_count == 0
+
+    # total_time correctness
+    assert by_id[a_id].total_time == 300
+    assert by_id[b_id].total_time == 300
+    assert by_id[c_id].total_time == 0
+
+    # zero-session project must still be returned with zeroed aggregates
+    assert c_id in by_id
+
+    # existing project metadata remains unchanged
+    assert by_id[a_id].name == "Proj A"
+    assert by_id[a_id].path == "~/proj-a"
+    assert by_id[a_id].first_seen == now_ts
+    assert by_id[a_id].last_seen == now_ts + 10
+    assert by_id[a_id].project_context == "ctx-a"
+    assert by_id[b_id].name == "Proj B"
+    assert by_id[b_id].project_context is None
+    assert by_id[c_id].name == "Proj C"
+    assert by_id[c_id].project_context == "ctx-c"
+
+    # ORDER BY p.id is deterministic regardless of input order
+    assert [p.id for p in projects] == sorted([a_id, b_id, c_id])
+
+
+def test_get_projects_by_ids_empty(tmp_path):
+    """Empty project_ids must return [] and execute no SQL."""
+    db_file = tmp_path / "test_proj_empty.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    db.query_logs.clear()
+    assert db.get_projects_by_ids([]) == []
+    # No connection/queries should run for an empty id list.
+    assert len(db.query_logs) == 0
+
+
+def test_get_projects_by_ids_query_count_is_constant(tmp_path):
+    """Regression/perf test for issue #423: the number of SQL queries must NOT
+    grow with the number of project ids (must not be 1 + N)."""
+    db_file = tmp_path / "test_proj_perf.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    now_ts = int(time.time())
+
+    # Small workload: 3 projects, one session each.
+    small_ids = _seed_projects_and_sessions(db, now_ts, 3, sessions_per_project=1, path_prefix="a")
+
+    db.query_logs.clear()
+    projects_small = db.get_projects_by_ids(small_ids)
+    small_query_count = len(db.query_logs)
+
+    assert len(projects_small) == 3
+    # A single bulk query, not 1 + N.
+    assert small_query_count == 1
+
+    # Larger workload: 12 projects with 3 sessions each, plus a zero-session
+    # project to ensure the LEFT JOIN adds no extra queries and still returns
+    # the project with zeroed aggregates.
+    large_ids = _seed_projects_and_sessions(db, now_ts, 12, sessions_per_project=3, path_prefix="b")
+    zero_ids = _seed_projects_and_sessions(db, now_ts, 1, sessions_per_project=0, path_prefix="c")
+    all_ids = small_ids + large_ids + zero_ids
+
+    db.query_logs.clear()
+    projects_large = db.get_projects_by_ids(all_ids)
+    large_query_count = len(db.query_logs)
+
+    assert len(projects_large) == len(all_ids)
+    # The zero-session project must still be returned with zeroed aggregates.
+    zero_proj = next(p for p in projects_large if p.id == zero_ids[0])
+    assert zero_proj.session_count == 0
+    assert zero_proj.total_time == 0
+
+    # Query count must remain bounded (O(1)) as N grows, proving the N+1
+    # pattern is gone. Under the old implementation this would be 1 + N.
+    assert large_query_count == 1
+    assert large_query_count == small_query_count
