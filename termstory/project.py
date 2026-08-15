@@ -4,7 +4,6 @@ from typing import List, Optional, Dict
 from termstory.models import Session, Project
 
 import shlex
-import functools
 import time
 
 def extract_cd_path(cmd_str: str) -> Optional[str]:
@@ -140,9 +139,46 @@ def _listdir_with_timeout(path: str, timeout: float = 0.5) -> List[str]:
         raise exception_container[0]
     return result
 
-@functools.lru_cache(maxsize=1024)
+# TTL-bounded cache for find_project_root() results (Issue #417).
+# Results are cached per input path for a bounded TTL so the performance
+# advantage of caching is preserved while filesystem changes (marker
+# creation/removal) are eventually reflected after the TTL expires.
+_PROJECT_ROOT_CACHE_MAXSIZE = 1024
+_PROJECT_ROOT_CACHE = {}  # path -> (cached_at_timestamp, project_root)
+_project_root_cache_lock = threading.Lock()
+
+
+def _get_project_root_cache_ttl() -> float:
+    """Return the TTL (seconds) for cached project-root lookups."""
+    from termstory.config import load_config
+    try:
+        return max(float(load_config().get("project_root_cache_ttl", 60)), 1.0)
+    except Exception:
+        return 60.0
+
+
+_PROJECT_ROOT_CACHE_TTL: float = _get_project_root_cache_ttl()
+
+
 def _find_project_root_cached(path: str) -> str:
-    return _find_project_root_impl(path)
+    """TTL-bounded cached wrapper around _find_project_root_impl (Issue #417)."""
+    now = time.monotonic()
+    with _project_root_cache_lock:
+        cached = _PROJECT_ROOT_CACHE.get(path)
+        if cached is not None and now - cached[0] < _PROJECT_ROOT_CACHE_TTL:
+            # Refresh LRU position (move to most-recently-used end)
+            _PROJECT_ROOT_CACHE.pop(path, None)
+            _PROJECT_ROOT_CACHE[path] = cached
+            return cached[1]
+
+    result = _find_project_root_impl(path)
+
+    with _project_root_cache_lock:
+        if path not in _PROJECT_ROOT_CACHE and len(_PROJECT_ROOT_CACHE) >= _PROJECT_ROOT_CACHE_MAXSIZE:
+            # Evict least-recently-used entry (oldest insertion order)
+            _PROJECT_ROOT_CACHE.pop(next(iter(_PROJECT_ROOT_CACHE)))
+        _PROJECT_ROOT_CACHE[path] = (time.monotonic(), result)
+    return result
 
 def find_project_root(path: str) -> str:
     """Find the root project directory for a given path by looking for repository/project markers, 

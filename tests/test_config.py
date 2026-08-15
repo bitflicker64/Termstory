@@ -79,6 +79,13 @@ def test_load_config_missing_file(tmp_path):
         assert config["max_history_age"] == 5
         assert config["max_query_log"] == 10000
 
+def test_load_config_includes_project_root_cache_ttl_default(tmp_path):
+    # #417: project_root_cache_ttl must ship with a sensible default.
+    config_file = tmp_path / "config.json"
+    with patch("termstory.config.get_config_path", return_value=str(config_file)):
+        config = load_config()
+    assert config["project_root_cache_ttl"] == 60
+
 def test_save_config_error_handling(tmp_path):
     # Write failures must surface so callers can report them.
     with patch("termstory.config.get_config_path", return_value="/invalid/path/that/does/not/exist/config.json"):

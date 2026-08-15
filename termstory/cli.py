@@ -1505,6 +1505,7 @@ def config_set(key: str, value: str):
         "reminder_poll_interval": 300,
         "clustering_threshold": 0.6,
         "nfs_timeout_cache_ttl": 60,
+        "project_root_cache_ttl": 60,
     }
 
     default_val = KNOWN_DEFAULTS.get(effective_key)
