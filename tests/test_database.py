@@ -532,44 +532,93 @@ def test_get_projects_by_ids_empty(tmp_path):
     assert len(db.query_logs) == 0
 
 
+def _bulk_project_query_count(logs):
+    """Count the relevant data-fetch SQL issued by get_projects_by_ids(): the
+    single bulk aggregate (projects LEFT JOIN sessions).
+
+    This excludes incidental connection-setup SQL such as the
+    ``PRAGMA foreign_keys = ON`` that get_connection() issues. That PRAGMA is
+    routed through the query-logging cursor only on some Python/sqlite versions
+    (e.g. the 3.9/3.10 CI jobs) and not others, so counting *all* logged
+    statements would be version-dependent. Counting only the relevant SELECT is
+    robust across versions and still proves the N+1 pattern is gone.
+    """
+    return [
+        entry["sql"]
+        for entry in logs
+        if "FROM projects" in entry["sql"] and "LEFT JOIN sessions" in entry["sql"]
+    ]
+
+
 def test_get_projects_by_ids_query_count_is_constant(tmp_path):
-    """Regression/perf test for issue #423: the number of SQL queries must NOT
-    grow with the number of project ids (must not be 1 + N)."""
+    """Regression/perf test for issue #423.
+
+    get_projects_by_ids() must issue a bounded, constant number of relevant
+    SQL queries regardless of how many project ids it is given (NOT 1 + N).
+    The old implementation issued one SELECT ... FROM projects plus a
+    per-project SELECT ... FROM sessions WHERE project_id = ? for every id, so
+    the count grew linearly with N. Compare a small (N=3) and a large (N=16)
+    workload: both must return the right projects and issue the same, bounded
+    number of relevant queries.
+    """
     db_file = tmp_path / "test_proj_perf.db"
     db = Database(str(db_file))
     db.init_db()
-
     now_ts = int(time.time())
 
-    # Small workload: 3 projects, one session each.
+    # Small workload: 3 projects, one session each (duration 50).
     small_ids = _seed_projects_and_sessions(db, now_ts, 3, sessions_per_project=1, path_prefix="a")
-
     db.query_logs.clear()
     projects_small = db.get_projects_by_ids(small_ids)
-    small_query_count = len(db.query_logs)
+    small_logs = list(db.query_logs)
+    small_relevant = _bulk_project_query_count(small_logs)
 
     assert len(projects_small) == 3
-    # A single bulk query, not 1 + N.
-    assert small_query_count == 1
+    assert all(p.session_count == 1 for p in projects_small)
+    assert all(p.total_time == 50 for p in projects_small)
 
-    # Larger workload: 12 projects with 3 sessions each, plus a zero-session
-    # project to ensure the LEFT JOIN adds no extra queries and still returns
-    # the project with zeroed aggregates.
+    # Larger workload: 12 projects with 3 sessions each (50/51/52 => 153s),
+    # plus a zero-session project, to exercise the LEFT JOIN and zero-session
+    # preservation without adding queries.
     large_ids = _seed_projects_and_sessions(db, now_ts, 12, sessions_per_project=3, path_prefix="b")
     zero_ids = _seed_projects_and_sessions(db, now_ts, 1, sessions_per_project=0, path_prefix="c")
     all_ids = small_ids + large_ids + zero_ids
-
     db.query_logs.clear()
     projects_large = db.get_projects_by_ids(all_ids)
-    large_query_count = len(db.query_logs)
+    large_logs = list(db.query_logs)
+    large_relevant = _bulk_project_query_count(large_logs)
 
     assert len(projects_large) == len(all_ids)
-    # The zero-session project must still be returned with zeroed aggregates.
+    # Multiple sessions for one project: 50 + 51 + 52 = 153s.
+    large_proj_ids = set(large_ids)
+    large_projs = [p for p in projects_large if p.id in large_proj_ids]
+    assert all(p.session_count == 3 for p in large_projs)
+    assert all(p.total_time == 153 for p in large_projs)
+    # Zero-session project still returned with zeroed aggregates (LEFT JOIN).
     zero_proj = next(p for p in projects_large if p.id == zero_ids[0])
     assert zero_proj.session_count == 0
     assert zero_proj.total_time == 0
 
-    # Query count must remain bounded (O(1)) as N grows, proving the N+1
-    # pattern is gone. Under the old implementation this would be 1 + N.
-    assert large_query_count == 1
-    assert large_query_count == small_query_count
+    # --- Core O(1) regression assertions -----------------------------------
+    # Exactly ONE bulk aggregate query for N ids, independent of N. The old
+    # N+1 implementation has no LEFT JOIN, so this filter matches 0 there --
+    # this alone rejects a regression to the old behavior.
+    assert len(small_relevant) == 1
+    assert len(large_relevant) == 1
+    assert len(small_relevant) == len(large_relevant)  # constant regardless of N
+
+    # The per-project session aggregate that characterized the old N+1 pattern
+    # (SELECT ... FROM sessions WHERE project_id = ?) must be absent entirely.
+    n_plus_1 = [
+        e["sql"] for e in large_logs
+        if "FROM sessions" in e["sql"] and "WHERE project_id = ?" in e["sql"]
+    ]
+    assert n_plus_1 == []  # would hold N entries under the old impl
+
+    # Total statements issued must be bounded and NOT grow with N. A constant
+    # connection-setup PRAGMA may be logged on some Python/sqlite versions, so
+    # compare the two workloads and demand a bound well below 1 + N.
+    assert len(large_logs) == len(small_logs)  # O(1): constant across input sizes
+    assert len(large_logs) < len(all_ids)  # bounded: not 1 + N
+    assert len(large_logs) <= 2  # 1 SELECT + optional version-dependent PRAGMA
+
