@@ -1,5 +1,6 @@
 import logging
 import os
+import sqlite3
 import pytest
 from termstory.backup import backup_db, restore_db
 from termstory.database import Database
@@ -77,14 +78,17 @@ def test_backup_rotation(tmp_path, monkeypatch):
 
     monkeypatch.setattr("termstory.backup.datetime", MockDatetime)
 
-    for _ in range(12):
-        backup_db()
+    created = [backup_db() for _ in range(12)]
 
     from termstory.backup import _get_backup_dir
     backup_dir = _get_backup_dir()
     import glob
     remaining = glob.glob(os.path.join(backup_dir, "termstory_backup_*.db"))
     assert len(remaining) == 10
+
+    # The two oldest backups must have been deleted first.
+    for oldest in sorted(created)[:2]:
+        assert not os.path.exists(oldest)
 
 
 def test_backup_survives_rotation_failure(tmp_path, monkeypatch, caplog):
@@ -128,3 +132,33 @@ def test_backup_survives_rotation_failure(tmp_path, monkeypatch, caplog):
         "Failed to rotate old backups" in record.message
         for record in caplog.records
     )
+
+
+def test_backup_consecutive_calls_unique(tmp_path, monkeypatch):
+    # Regression for #416: two immediate backup_db() calls must produce distinct
+    # files. The test intentionally avoids sleep()/timing so a second-level
+    # timestamp would collide and fail here.
+    db_file = tmp_path / "test_consecutive.db"
+    db_path = str(db_file)
+    monkeypatch.setenv("DB_PATH", db_path)
+    monkeypatch.setattr("termstory.config.get_db_path", lambda: db_path)
+    monkeypatch.setattr("termstory.backup.get_db_path", lambda: db_path)
+
+    db = Database(db_path)
+    db.init_db()
+
+    backup_one = backup_db()
+    backup_two = backup_db()
+
+    assert backup_one != backup_two, "consecutive backups must not collide"
+    assert os.path.isfile(backup_one), "first backup file was not created"
+    assert os.path.isfile(backup_two), "second backup file was not created"
+
+    # Both backups must contain valid SQLite data.
+    for backup_path in (backup_one, backup_two):
+        conn = sqlite3.connect(backup_path)
+        try:
+            integrity = conn.execute("PRAGMA integrity_check").fetchone()
+            assert integrity[0] == "ok"
+        finally:
+            conn.close()
