@@ -1,31 +1,54 @@
+import getpass
 import logging
 import os
+import re
 import sqlite3
 import subprocess
 import time
 from typing import Dict, Any, List
 
+from termstory.sanitizer import redact_command
+
 logger = logging.getLogger(__name__)
 
+# IDE/editor environment variable prefixes. Their *presence* drives IDE
+# detection, but their values are never persisted: they routinely hold socket
+# paths (e.g. VSCODE_IPC_HOOK_CLI, NVIM_LISTEN_ADDRESS), askpass helpers,
+# session identifiers, or license/locally-identifying data.
+IDE_PREFIXES = ("VSCODE_", "IDEA_", "JETBRAINS_", "XCODE_", "NVIM_", "CURSOR_")
+
+# General editor detection signals. TERM_PROGRAM is a program name (safe to
+# persist verbatim); EDITOR/VISUAL normally name an editor binary, so only
+# the trailing command name is retained (no home/username path component).
+GENERAL_EDITOR_SIGNALS = ("EDITOR", "VISUAL")
+
 def capture_ide_state() -> Dict[str, Any]:
-    """Capture active IDE state from environment variables"""
-    ide_vars = {}
+    """Capture active IDE state from environment variables.
+
+    IDE detection relies on the *presence* of IDE-prefixed environment
+    variables and on a small set of safe signals (TERM_PROGRAM, EDITOR,
+    VISUAL). Raw values of IDE-prefixed variables are deliberately not
+    persisted because they frequently contain sockets, tokens, session
+    identifiers or other locally-identifying data.
+    """
+    ide_vars: Dict[str, Any] = {}
     ide_name = "Unknown"
-    
-    # Look at TERM_PROGRAM
+
+    # TERM_PROGRAM is a terminal/IDE program name (never a path), so its value
+    # is safe to expose and directly identifies VS Code / Cursor.
     term_prog = os.environ.get("TERM_PROGRAM")
     if term_prog:
-        ide_vars["TERM_PROGRAM"] = term_prog
+        ide_vars["TERM_PROGRAM"] = redact_command(term_prog)
         if "vscode" in term_prog.lower():
             ide_name = "VS Code"
         elif "cursor" in term_prog.lower():
             ide_name = "Cursor"
-            
-    # Scan environment for IDE/editor related variables
-    for k, v in os.environ.items():
+
+    # Scan environment variable *names* for IDE prefixes. Detection is based
+    # on presence only; values are intentionally not stored.
+    for k in os.environ:
         k_upper = k.upper()
-        if any(term in k_upper for term in ["VSCODE_", "IDEA_", "JETBRAINS_", "XCODE_", "NVIM_", "CURSOR_"]):
-            ide_vars[k] = v
+        if any(term in k_upper for term in IDE_PREFIXES):
             if "VSCODE_" in k_upper and ide_name == "Unknown":
                 ide_name = "VS Code"
             elif "CURSOR_" in k_upper and ide_name == "Unknown":
@@ -36,24 +59,86 @@ def capture_ide_state() -> Dict[str, Any]:
                 ide_name = "Xcode"
             elif "NVIM_" in k_upper and ide_name == "Unknown":
                 ide_name = "Neovim"
-                
-    # Check general editors
-    for var in ["EDITOR", "VISUAL"]:
+
+    # General editors. EDITOR/VISUAL may point at a binary path; only the
+    # trailing command name is retained so no locally-identifying path
+    # component (home directory, username) is persisted.
+    for var in GENERAL_EDITOR_SIGNALS:
         val = os.environ.get(var)
         if val:
-            ide_vars[var] = val
             if ide_name == "Unknown":
-                if "nvim" in val.lower():
+                low = val.lower()
+                if "nvim" in low:
                     ide_name = "Neovim"
-                elif "vim" in val.lower():
+                elif "vim" in low:
                     ide_name = "Vim"
-                elif "code" in val.lower():
+                elif "code" in low:
                     ide_name = "VS Code"
-                    
+            cmd = val.strip()
+            cmd_name = cmd.split(" ", 1)[0] if cmd else val
+            cmd_name = cmd_name.replace("\\", "/").rsplit("/", 1)[-1]
+            ide_vars[var] = redact_command(cmd_name)
+
     return {
         "ide_name": ide_name,
         "env_vars": ide_vars
     }
+
+def _home_dirs() -> List[str]:
+    """Candidate home directory strings for the current user."""
+    homes: List[str] = []
+    for key in ("HOME", "USERPROFILE"):
+        val = os.environ.get(key)
+        if val and val not in homes:
+            homes.append(val)
+    try:
+        expanded = os.path.expanduser("~")
+        if expanded and expanded not in homes:
+            homes.append(expanded)
+    except Exception:
+        pass
+    return homes
+
+
+def _user_names() -> List[str]:
+    """Candidate username strings for the current user."""
+    names: List[str] = []
+    for key in ("USERNAME", "USER"):
+        val = os.environ.get(key)
+        if val and val not in names:
+            names.append(val)
+    try:
+        uname = getpass.getuser()
+        if uname and uname not in names:
+            names.append(uname)
+    except Exception:
+        pass
+    return names
+
+
+def _scrub_git_path(line: str) -> str:
+    """Scrub locally-identifying path components from a raw git-status line.
+
+    Replaces the user's home directory and any username appearing as a path
+    component with redaction placeholders, then runs the value through the
+    standard command redaction pipeline as a final defensive pass.
+    """
+    scrubbed = line
+    for home in _home_dirs():
+        if home:
+            scrubbed = scrubbed.replace(home, "<REDACTED_HOME>")
+    for name in _user_names():
+        # Only match whole path segments (word-boundary delimited) and skip
+        # trivial single-character names so ordinary file names are not
+        # needlessly corrupted.
+        if name and len(name) >= 2:
+            scrubbed = re.sub(
+                r"(?<![A-Za-z0-9_]){}(?![A-Za-z0-9_])".format(re.escape(name)),
+                "<REDACTED_USER>",
+                scrubbed,
+            )
+    return redact_command(scrubbed)
+
 
 def capture_git_status(cwd: str) -> Dict[str, Any]:
     """Capture Git status (branch, uncommitted files) for the given directory"""
@@ -109,7 +194,7 @@ def capture_git_status(cwd: str) -> Dict[str, Any]:
             uncommitted = []
             for line in status_res.stdout.splitlines():
                 if line.strip():
-                    uncommitted.append(line.strip())
+                    uncommitted.append(_scrub_git_path(line.strip()))
             result["uncommitted_files"] = uncommitted
             
     except (subprocess.TimeoutExpired, OSError):
