@@ -262,6 +262,108 @@ def test_run_sleep_daemon_cleanup_on_initialization_failure(tmp_path, monkeypatc
     assert not pid_file.exists()
 
 
+def test_start_sleep_daemon_spawns_when_no_daemon_running(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+    import subprocess
+    import termstory.reminder as reminder
+
+    monkeypatch.setattr(reminder, "get_app_dir", lambda name: str(tmp_path))
+    pid_file = tmp_path / "sleep_daemon.pid"
+
+    calls = []
+    def fake_popen(*args, **kwargs):
+        calls.append(args)
+        return MagicMock()
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    reminder.start_sleep_daemon("dummy.db")
+
+    assert len(calls) == 1
+    # The PID file is created with our PID as a placeholder for the daemon.
+    assert pid_file.read_text().strip() == str(os.getpid())
+
+
+def test_start_sleep_daemon_defers_to_running_daemon(tmp_path, monkeypatch):
+    import subprocess
+    import termstory.reminder as reminder
+
+    monkeypatch.setattr(reminder, "get_app_dir", lambda name: str(tmp_path))
+    pid_file = tmp_path / "sleep_daemon.pid"
+    # Our own process is a live PID, standing in for a running daemon. Patch
+    # os.kill so the liveness probe always reports the process alive (also
+    # keeps this deterministic on platforms where os.kill(pid, 0) misbehaves).
+    pid_file.write_text(str(os.getpid()))
+    monkeypatch.setattr(reminder.os, "kill", lambda pid, sig: None)
+
+    calls = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: calls.append(args))
+
+    reminder.start_sleep_daemon("dummy.db")
+
+    assert calls == []
+    # The running daemon's PID file is left untouched.
+    assert pid_file.read_text().strip() == str(os.getpid())
+
+
+def test_start_sleep_daemon_reclaims_stale_pid_file(tmp_path, monkeypatch):
+    import subprocess
+    import termstory.reminder as reminder
+
+    monkeypatch.setattr(reminder, "get_app_dir", lambda name: str(tmp_path))
+    pid_file = tmp_path / "sleep_daemon.pid"
+    # A stale PID file left behind by a daemon that died without cleaning up.
+    pid_file.write_text("999999999")
+
+    def dead_process(pid, sig):
+        raise ProcessLookupError(pid, "no such process")
+    monkeypatch.setattr(reminder.os, "kill", dead_process)
+
+    calls = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: calls.append(args))
+
+    reminder.start_sleep_daemon("dummy.db")
+
+    assert len(calls) == 1
+    # The stale PID file was reclaimed and now holds our live PID.
+    assert pid_file.read_text().strip() == str(os.getpid())
+
+
+def test_start_sleep_daemon_concurrent_invocations_spawn_once(tmp_path, monkeypatch):
+    import threading
+    from unittest.mock import MagicMock
+    import subprocess
+    import termstory.reminder as reminder
+
+    monkeypatch.setattr(reminder, "get_app_dir", lambda name: str(tmp_path))
+    # Loser invocations probe the winner's PID via os.kill(pid, 0). Patch it to
+    # always report "alive" so they defer; this also keeps the test deterministic
+    # on platforms where the real os.kill misbehaves when called from threads.
+    monkeypatch.setattr(reminder.os, "kill", lambda pid, sig: None)
+
+    calls = []
+    lock = threading.Lock()
+    def fake_popen(*args, **kwargs):
+        time.sleep(0.05)  # Widen the race window after the winner claims the PID file.
+        with lock:
+            calls.append(args)
+        return MagicMock()
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    barrier = threading.Barrier(8)
+    def worker():
+        barrier.wait()
+        reminder.start_sleep_daemon("dummy.db")
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Exactly one invocation wins the atomic claim and spawns the daemon.
+    assert len(calls) == 1
+
+
 def test_add_reminder_explicit_days_prefix_suffix_stripping(tmp_path, monkeypatch):
     reminders_file = tmp_path / "reminders.json"
     monkeypatch.setattr("termstory.reminder.get_reminders_file_path", lambda: str(reminders_file))

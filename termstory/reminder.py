@@ -402,20 +402,62 @@ def consolidate_sleep_contexts(db, force: bool = False) -> int:
 
 
 def start_sleep_daemon(db_path: str):
-    """Spawns the sleep daemon in the background if it's not already running."""
+    """Spawns the sleep daemon in the background if it's not already running.
+
+    Daemon ownership is claimed atomically: the PID file is created with
+    ``O_CREAT | O_EXCL`` so that, of any number of concurrent invocations,
+    exactly one wins the race and goes on to spawn the daemon. Every other
+    invocation finds the file already exists and defers to the running (or
+    just-started) daemon, which later overwrites the placeholder PID with its
+    own. A stale PID file (a daemon that died without cleaning up) is reclaimed
+    so the daemon can be restarted.
+    """
     import sys
     import subprocess
-    
+
     pid_file = os.path.join(get_app_dir("data"), "sleep_daemon.pid")
-    if os.path.exists(pid_file):
+    os.makedirs(os.path.dirname(pid_file), exist_ok=True)
+
+    for attempt in range(2):
         try:
-            with open(pid_file, "r") as f:
-                pid = int(f.read().strip())
-            os.kill(pid, 0)
-            return # Already running
-        except (ValueError, OSError):
-            pass
-            
+            fd = os.open(pid_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+        except FileExistsError:
+            # Another invocation already owns the daemon. If its PID is alive it
+            # is (or is about to become) the running daemon — defer to it.
+            try:
+                with open(pid_file, "r") as f:
+                    pid = int(f.read().strip())
+                os.kill(pid, 0)
+                return  # Already running
+            except (ValueError, OSError):
+                if attempt == 0:
+                    # Stale PID file (a daemon died without cleaning up).
+                    # Reclaim ownership on the next attempt.
+                    try:
+                        os.remove(pid_file)
+                    except OSError:
+                        logger.exception("Failed to remove stale sleep daemon PID file %s", pid_file)
+                    continue
+            # Someone else just claimed ownership; defer to them.
+            return
+        else:
+            # We own the daemon. Record our PID as a placeholder so concurrent
+            # invocations can recognise the claim as held by a live owner.
+            try:
+                os.write(fd, str(os.getpid()).encode("ascii"))
+            except OSError:
+                logger.exception("Failed to write sleep daemon PID file %s", pid_file)
+                try:
+                    os.remove(pid_file)
+                except OSError:
+                    pass
+                return
+            finally:
+                os.close(fd)
+            break
+    else:
+        return
+
     # Inherit and configure the python path
     env = os.environ.copy()
     package_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -432,8 +474,14 @@ def start_sleep_daemon(db_path: str):
             start_new_session=True,
             env=env
         )
-    except OSError as exc:
+    except OSError:
         logger.exception("Failed to start sleep daemon")
+        # We claimed ownership but failed to spawn; release the claim so a
+        # later invocation can start the daemon.
+        try:
+            os.remove(pid_file)
+        except OSError:
+            logger.exception("Failed to remove sleep daemon PID file %s", pid_file)
 
 
 def run_sleep_daemon(db_path: str):
