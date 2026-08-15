@@ -255,3 +255,100 @@ def test_export_csv_null_end_time(temp_db, capsys):
     assert len(rows) == 4
     assert rows[0]["session_end_time"] == ""
 
+
+AWS_SAMPLE_SECRET = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+
+
+def _build_single_session_db(db_path, commands, commits=None):
+    """Create an in-memory-on-disk DB with an optional single-session export."""
+    db = Database(str(db_path))
+    db.init_db()
+    p = Project(id=1, name="Proj", path="~/proj", first_seen=1000, last_seen=3000,
+                session_count=1, total_time=100)
+    s = Session(id=1, start_time=1000, end_time=3000, duration_seconds=2000,
+                project_id=1, commands=commands)
+    db.save_data([p], [s], commands)
+    if commits:
+        db.save_commits(1, commits)
+    return db
+
+
+def test_export_json_redacts_command_secret(tmp_path):
+    db = _build_single_session_db(
+        tmp_path / "secret_json.db",
+        [Command(id=1, timestamp=1000,
+                 command=f"export AWS_SECRET_ACCESS_KEY={AWS_SAMPLE_SECRET}",
+                 exit_code=0, session_id=1, project_id=1)],
+    )
+    data = serialize_sessions_to_dict(fetch_export_data(db), db)
+    raw = json.dumps(data)
+    assert AWS_SAMPLE_SECRET not in raw
+    assert "export AWS_SECRET_ACCESS_KEY=[REDACTED]" in raw
+
+
+def test_export_json_redacts_commit_messages(tmp_path):
+    db = _build_single_session_db(
+        tmp_path / "secret_commits_json.db",
+        [Command(id=1, timestamp=1000, command="git commit", exit_code=0,
+                 session_id=1, project_id=1)],
+        commits=[{
+            "hash": "abc123def456",
+            "timestamp": 1500,
+            "message": "fix: add login password: hunter2",
+            "cleaned_message": "add login password: s3cr3t-value",
+        }],
+    )
+    data = serialize_sessions_to_dict(fetch_export_data(db), db)
+    raw = json.dumps(data)
+    assert "hunter2" not in raw
+    assert "s3cr3t-value" not in raw
+    assert "[REDACTED]" in raw
+
+
+def test_export_csv_redacts_command_and_commit(tmp_path):
+    out_file = tmp_path / "secret.csv"
+    db = _build_single_session_db(
+        tmp_path / "secret_csv.db",
+        [Command(id=1, timestamp=1000,
+                 command=f"export AWS_SECRET_ACCESS_KEY={AWS_SAMPLE_SECRET}",
+                 exit_code=0, session_id=1, project_id=1)],
+        commits=[{
+            "hash": "abc123def456",
+            "timestamp": 1500,
+            "message": "fix: add login password: hunter2",
+            "cleaned_message": "add login password: s3cr3t-value",
+        }],
+    )
+    export_csv(fetch_export_data(db), db, output_file=str(out_file))
+    content = out_file.read_text(encoding="utf-8")
+    assert AWS_SAMPLE_SECRET not in content
+    assert "hunter2" not in content
+    assert "s3cr3t-value" not in content
+    assert "[REDACTED]" in content
+
+
+def test_export_json_blacklisted_session_redacted(tmp_path):
+    db = _build_single_session_db(
+        tmp_path / "bl_json.db",
+        [Command(id=1, timestamp=1000, command="vault read secret/data",
+                 exit_code=0, session_id=1, project_id=1)],
+    )
+    data = serialize_sessions_to_dict(fetch_export_data(db), db)
+    raw = json.dumps(data)
+    assert "vault read secret" not in raw
+    assert "Security/Authentication Operations" in raw
+
+
+def test_export_csv_blacklisted_session_redacted(tmp_path):
+    out_file = tmp_path / "bl.csv"
+    db = _build_single_session_db(
+        tmp_path / "bl_csv.db",
+        [Command(id=1, timestamp=1000,
+                 command="aws configure set aws_secret_access_key ABC",
+                 exit_code=0, session_id=1, project_id=1)],
+    )
+    export_csv(fetch_export_data(db), db, output_file=str(out_file))
+    content = out_file.read_text(encoding="utf-8")
+    assert "aws configure" not in content
+    assert "Security/Authentication Operations" in content
+

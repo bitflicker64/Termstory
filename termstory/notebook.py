@@ -5,6 +5,13 @@ from typing import List, Dict, Any, Optional
 from termstory.database import Database
 from termstory.models import Session, Command, Project, format_duration
 from termstory.formatter import _is_noise_command
+from termstory.sanitizer import redact_command, sanitize_session_commands
+
+# Placeholder rendered in place of commands when a session is fully blacklisted
+# (e.g. ``vault`` / ``aws configure`` / ``gh auth`` operations). Reuses the
+# semantics documented in CONTRIBUTING.md so raw security/auth command text can
+# never reach the generated notebook.
+_BLACKLISTED_SESSION_MARKER = "[REDACTED: Security/Authentication Operations]"
 
 def generate_notebook(
     sessions: List[Session],
@@ -114,6 +121,7 @@ def generate_notebook(
                     for commit in s.commits:
                         short_hash = commit.get("hash", "")[:7]
                         msg = commit.get("cleaned_message") or commit.get("message") or ""
+                        msg = redact_command(msg)
                         msg = msg.split("\n")[0].strip()
                         lines.append(f"    - `{short_hash}`: {msg}")
 
@@ -125,8 +133,14 @@ def generate_notebook(
                 if commands:
                     lines.append("  - **Commands**:")
                     lines.append("    ```bash")
-                    for cmd in commands:
-                        lines.append(f"    {cmd.command}")
+                    _, is_blacklisted = sanitize_session_commands(
+                        [cmd.command for cmd in s.commands]
+                    )
+                    if is_blacklisted:
+                        lines.append(f"    {_BLACKLISTED_SESSION_MARKER}")
+                    else:
+                        for cmd in commands:
+                            lines.append(f"    {redact_command(cmd.command)}")
                     lines.append("    ```")
 
         # Add empty line separator between days
