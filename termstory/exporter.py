@@ -298,6 +298,29 @@ def _escape_md_table_cell(value: Any) -> str:
     text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
     return text
 
+def _escape_md_text(value: Any) -> str:
+    """Escape a value for inline Markdown rendering (headings / prose).
+
+    Collapses every line break to a single space so a value can never spawn
+    additional Markdown blocks, then backslash-escapes the Markdown
+    punctuation that could otherwise alter document structure — headings
+    (``#``), emphasis (``*``/``_``), links (``[]()``), inline code
+    (backticks), tables (``|``) and HTML (``<``/``>``). Ordinary readable
+    text is preserved verbatim. ``None`` renders as an empty string.
+    """
+    if value is None:
+        return ""
+    text = str(value)
+    # Normalize all line endings, then collapse them so the value stays on a
+    # single line and cannot spawn additional Markdown blocks.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = " ".join(text.splitlines())
+    # Escape backslashes first so the escaping below cannot be undone.
+    text = text.replace("\\", "\\\\")
+    for ch in "`*_[]()#|<>":
+        text = text.replace(ch, "\\" + ch)
+    return text
+
 def _md_code_fence(content: Any, lang: str = "text") -> str:
     """Render arbitrary content inside a fenced Markdown code block.
 
@@ -324,7 +347,7 @@ def _md_code_fence(content: Any, lang: str = "text") -> str:
 def _render_session_markdown(sdict: Dict[str, Any]) -> List[str]:
     """Render a single serialized session dict as Markdown lines."""
     session_id = _escape_md_table_cell(sdict.get("session_id", ""))
-    project_name = sdict.get("project_name") or "Other"
+    project_name = _escape_md_text(sdict.get("project_name") or "Other")
     lines: List[str] = [f"## Session #{session_id} — {project_name}", ""]
 
     start_iso = sdict.get("start_time_iso") or "—"
@@ -345,12 +368,14 @@ def _render_session_markdown(sdict: Dict[str, Any]) -> List[str]:
     lines.append(f"| Legacy session | {'Yes' if is_legacy else 'No'} |")
     lines.append("")
 
-    # AI Summary (already sanitized). Rendered as prose; only emitted when present.
+    # AI Summary (already sanitized). Rendered as escaped prose; only emitted
+    # when present. It is not escaped as a table cell — it is prose, so the
+    # Markdown structure chars are escaped instead.
     ai_summary = sdict.get("ai_summary")
     if ai_summary:
         lines.append("### AI Summary")
         lines.append("")
-        lines.append(_escape_md_table_cell(ai_summary))
+        lines.append(_escape_md_text(ai_summary))
         lines.append("")
 
     # Commands — always fenced so multiline / Markdown-special content is safe.

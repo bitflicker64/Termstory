@@ -533,6 +533,54 @@ def test_export_markdown_escaping(tmp_path):
     assert "| --- | --- |" in content
 
 
+def test_export_markdown_project_name_newline_escaped(tmp_path):
+    out_file = tmp_path / "proj_newline.md"
+    db = Database(str(tmp_path / "proj_newline_md.db"))
+    db.init_db()
+    # A project name containing a newline and Markdown heading syntax must not
+    # escape the session heading or introduce a new block.
+    p = Project(id=1, name="Normal Project\n# Injected Heading", path="~/proj",
+                first_seen=1000, last_seen=3000, session_count=1, total_time=100)
+    cmd = Command(id=1, timestamp=1000, command="git status", exit_code=0,
+                  session_id=1, project_id=1)
+    s = Session(id=1, start_time=1000, end_time=3000, duration_seconds=2000,
+                project_id=1, commands=[cmd])
+    db.save_data([p], [s], [cmd])
+    export_markdown(fetch_export_data(db), db, output_file=str(out_file))
+    content = out_file.read_text(encoding="utf-8")
+
+    # The newline is collapsed onto a single heading line and the injected '#'
+    # is escaped, so it stays part of the "## Session #1" heading.
+    assert "Normal Project \\# Injected Heading" in content
+    assert "## Session #1 — Normal Project \\# Injected Heading" in content
+    # The injected text cannot create a standalone heading/block.
+    assert all(not ln.startswith("# Injected Heading") for ln in content.splitlines())
+
+
+def test_export_markdown_ai_summary_heading_like_escaped(tmp_path):
+    out_file = tmp_path / "summary_heading.md"
+    db = _build_single_session_db(
+        tmp_path / "summary_heading_md.db",
+        [Command(id=1, timestamp=1000, command="git status", exit_code=0,
+                 session_id=1, project_id=1)],
+    )
+    # A heading-like AI summary must not introduce headings into the document.
+    db.save_session_ai_summary(
+        1,
+        "Normal summary\n# Injected Heading\n## Another Heading",
+    )
+    export_markdown(fetch_export_data(db), db, output_file=str(out_file))
+    content = out_file.read_text(encoding="utf-8")
+
+    assert "### AI Summary" in content
+    # The summary stays escaped prose on a single line: readable text is
+    # preserved but the '#' markers are neutralized.
+    assert "Normal summary \\# Injected Heading \\#\\# Another Heading" in content
+    # No line starts with an injected heading.
+    assert all(not ln.startswith("# Injected Heading") for ln in content.splitlines())
+    assert all(not ln.startswith("## Another Heading") for ln in content.splitlines())
+
+
 def test_cli_export_markdown(tmp_path, monkeypatch):
     db_file = tmp_path / "test_cli_md_export.db"
     monkeypatch.setattr("termstory.cli.get_db_path", lambda: str(db_file))
