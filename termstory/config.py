@@ -184,6 +184,7 @@ def load_config() -> dict:
         "reminder_poll_interval": 300,
         "clustering_threshold": 0.6,
         "default_branch_names": ["main"],
+        "command_blacklist_patterns": [],
         "project_roots": [
     "~/Projects",
     "~/src",

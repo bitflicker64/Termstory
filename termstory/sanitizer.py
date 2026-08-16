@@ -2,12 +2,19 @@ import logging
 import re
 import os
 import math
+import json
+import fnmatch
 from typing import List, Tuple, Optional
 
 logger = logging.getLogger(__name__)
 
 _cached_ignore_rules: tuple = tuple()
 _cached_ignore_mtime: float = -1.0
+
+# User-defined command blacklist patterns (from config.json), cached by the
+# config file's mtime so config.json is not re-read/compiled on every command.
+_cached_user_blacklist: tuple = tuple()
+_cached_user_blacklist_mtime: float = -1.0
 
 def load_custom_ignore_rules() -> tuple:
     global _cached_ignore_rules
@@ -56,6 +63,75 @@ def load_custom_ignore_rules() -> tuple:
     _cached_ignore_rules = tuple(local_patterns)
     _cached_ignore_mtime = current_max_mtime
     return _cached_ignore_rules
+
+#: Prefix marking a user blacklist entry as a raw regular expression.
+USER_BLACKLIST_RE_PREFIX = "re:"
+
+
+def _compile_user_blacklist_pattern(entry: str) -> Optional[re.Pattern]:
+    """Compile one user blacklist pattern to a case-insensitive regex.
+
+    Plain strings are treated as ``fnmatch`` glob patterns; strings prefixed
+    with ``re:`` are compiled as regular expressions directly. Returns ``None``
+    (and the pattern is skipped) when an expression is malformed.
+    """
+    try:
+        if entry.startswith(USER_BLACKLIST_RE_PREFIX):
+            return re.compile(entry[len(USER_BLACKLIST_RE_PREFIX):], re.IGNORECASE)
+        return re.compile(fnmatch.translate(entry), re.IGNORECASE)
+    except (re.error, TypeError, ValueError):
+        return None
+
+
+def load_user_blacklist_patterns() -> tuple:
+    """Load user-defined command blacklist patterns from ``config.json``.
+
+    Reads the ``command_blacklist_patterns`` list from the config file and
+    returns a tuple of compiled, case-insensitive regexes. These EXTEND (never
+    replace) the built-in ``BLACKLIST_PATTERNS``. The result is cached by the
+    config file's mtime so the file is not re-read or re-compiled on every
+    command; invalid patterns are skipped without crashing Termstory.
+    """
+    global _cached_user_blacklist
+    global _cached_user_blacklist_mtime
+
+    from termstory.config import get_config_path
+
+    config_path = get_config_path()
+    try:
+        mtime = os.path.getmtime(config_path)
+    except OSError:
+        # Config file missing/unreadable -> no user patterns. Clear a stale cache.
+        if _cached_user_blacklist_mtime != -1.0:
+            _cached_user_blacklist = tuple()
+            _cached_user_blacklist_mtime = -1.0
+        return _cached_user_blacklist
+
+    if _cached_user_blacklist_mtime == mtime:
+        return _cached_user_blacklist
+
+    patterns = []
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except Exception:
+        config = {}
+
+    raw = config.get("command_blacklist_patterns") if isinstance(config, dict) else None
+    if not isinstance(raw, list):
+        raw = []
+
+    for entry in raw:
+        if not isinstance(entry, str) or not entry.strip():
+            continue
+        compiled = _compile_user_blacklist_pattern(entry.strip())
+        if compiled is not None:
+            patterns.append(compiled)
+
+    _cached_user_blacklist = tuple(patterns)
+    _cached_user_blacklist_mtime = mtime
+    return _cached_user_blacklist
+
 # Blacklist patterns - if a command matches any of these, the entire session is dropped from AI
 BLACKLIST_PATTERNS = [
     re.compile(r'\bvault\b', re.IGNORECASE),
@@ -200,8 +276,15 @@ def redact_high_entropy(cmd: str) -> str:
     return re.sub(r'\b[a-zA-Z0-9_+/=-]{16,}\b', replacer, cmd)
 
 def should_blacklist_command(cmd: str) -> bool:
-    """Check if the command is blacklisted from AI processing"""
-    return any(pattern.search(cmd) for pattern in BLACKLIST_PATTERNS)
+    """Check if the command is blacklisted from AI processing.
+
+    A command is blacklisted if it matches the built-in ``BLACKLIST_PATTERNS``
+    OR any user-configured ``command_blacklist_patterns``. User patterns are
+    always additive — they can never weaken the built-in blacklist.
+    """
+    if any(pattern.search(cmd) for pattern in BLACKLIST_PATTERNS):
+        return True
+    return any(pattern.search(cmd) for pattern in load_user_blacklist_patterns())
 
 def redact_command(cmd: str) -> str:
     """Sanitize and redact secrets from a command string"""
