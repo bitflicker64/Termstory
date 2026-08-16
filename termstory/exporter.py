@@ -281,3 +281,139 @@ def export_csv(
             write_rows(f)
     else:
         write_rows(sys.stdout)
+
+def _escape_md_table_cell(value: Any) -> str:
+    """Escape a value so it is safe to embed inside a Markdown table cell.
+
+    Pipe characters (``|``) and newlines would otherwise break the table
+    structure; backslashes are escaped first so the pipe escaping is not
+    undone. ``None`` renders as an empty string.
+    """
+    if value is None:
+        return ""
+    text = str(value)
+    text = text.replace("\\", "\\\\")
+    text = text.replace("|", "\\|")
+    # Newlines are not legal inside a table cell — collapse to spaces.
+    text = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    return text
+
+def _md_code_fence(content: Any, lang: str = "text") -> str:
+    """Render arbitrary content inside a fenced Markdown code block.
+
+    The fence length is derived from the longest run of backticks found in
+    the content (minimum 3), so command text that itself contains backticks
+    can never prematurely close the block. Content is emitted verbatim — it
+    is *not* Markdown-rendered — which preserves commands, empty lines and
+    Markdown-special characters exactly as sanitized.
+    """
+    text = "" if content is None else str(content)
+    max_run = 0
+    run = 0
+    for ch in text:
+        if ch == "`":
+            run += 1
+            if run > max_run:
+                max_run = run
+        else:
+            run = 0
+    fence_len = max(3, max_run + 1)
+    fence = "`" * fence_len
+    return f"{fence}{lang}\n{text}\n{fence}"
+
+def _render_session_markdown(sdict: Dict[str, Any]) -> List[str]:
+    """Render a single serialized session dict as Markdown lines."""
+    session_id = _escape_md_table_cell(sdict.get("session_id", ""))
+    project_name = sdict.get("project_name") or "Other"
+    lines: List[str] = [f"## Session #{session_id} — {project_name}", ""]
+
+    start_iso = sdict.get("start_time_iso") or "—"
+    end_iso = sdict.get("end_time_iso") or "—"  # None/empty => "in progress"
+    duration_readable = sdict.get("duration_readable") or "—"
+    project_path = sdict.get("project_path")
+    is_legacy = sdict.get("is_legacy", False)
+
+    duration_display = duration_readable
+
+    # Session / project metadata as an escaped table.
+    lines.append("| Field | Value |")
+    lines.append("| --- | --- |")
+    lines.append(f"| Start | {_escape_md_table_cell(start_iso)} |")
+    lines.append(f"| End | {_escape_md_table_cell(end_iso)} |")
+    lines.append(f"| Duration | {_escape_md_table_cell(duration_display)} |")
+    lines.append(f"| Project path | {_escape_md_table_cell(project_path if project_path is not None else '—')} |")
+    lines.append(f"| Legacy session | {'Yes' if is_legacy else 'No'} |")
+    lines.append("")
+
+    # AI Summary (already sanitized). Rendered as prose; only emitted when present.
+    ai_summary = sdict.get("ai_summary")
+    if ai_summary:
+        lines.append("### AI Summary")
+        lines.append("")
+        lines.append(_escape_md_table_cell(ai_summary))
+        lines.append("")
+
+    # Commands — always fenced so multiline / Markdown-special content is safe.
+    commands = sdict.get("commands") or []
+    lines.append("### Commands")
+    lines.append("")
+    if commands:
+        cmd_texts = [c.get("command") or "" for c in commands]
+        lines.append(_md_code_fence("\n".join(cmd_texts)))
+        lines.append("")
+    else:
+        lines.append("_(no commands recorded)_")
+        lines.append("")
+
+    # Commits — rendered as an escaped table.
+    commits = sdict.get("commits") or []
+    lines.append("### Commits")
+    lines.append("")
+    if commits:
+        lines.append("| Hash | Message |")
+        lines.append("| --- | --- |")
+        for c in commits:
+            short_hash = (c.get("hash") or "")[:7]
+            msg = c.get("cleaned_message") or c.get("message") or ""
+            lines.append(
+                f"| {_escape_md_table_cell(short_hash)} | {_escape_md_table_cell(msg)} |"
+            )
+        lines.append("")
+    else:
+        lines.append("_(no commits)_")
+        lines.append("")
+
+    return lines
+
+def export_markdown(
+    sessions: List[Session],
+    db: Database,
+    output_file: Optional[str] = None
+) -> None:
+    """Export the list of sessions as a Markdown document.
+
+    Reuses :func:`serialize_sessions_to_dict`, which routes all command and
+    commit text through the shared sanitizer so secrets are redacted and
+    fully-blacklisted (security/auth) sessions render as the redaction marker
+    — exactly as in the JSON and CSV exports. Only the *rendering* differs.
+    """
+    data = serialize_sessions_to_dict(sessions, db)
+
+    lines: List[str] = ["# Termstory Export", ""]
+
+    if not data:
+        lines.append("_No sessions to export._")
+        lines.append("")
+    else:
+        for sdict in data:
+            lines.extend(_render_session_markdown(sdict))
+
+    output = "\n".join(lines)
+    if not output.endswith("\n"):
+        output += "\n"
+
+    if output_file and output_file != "-":
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(output)
+    else:
+        sys.stdout.write(output)
