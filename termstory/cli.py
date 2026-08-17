@@ -1257,7 +1257,8 @@ def export_cmd(
     format: str = typer.Option("json", "--format", "-f", help="Export format: 'json', 'csv', or 'markdown'"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Output file path (prints to stdout if omitted)"),
     project: Optional[str] = typer.Option(None, "--project", "-p", help="Filter by project name or path"),
-    since: Optional[str] = typer.Option(None, "--since", "-s", help="Filter by since duration (e.g. '7' for 7 days, or YYYY-MM-DD)")
+    since: Optional[str] = typer.Option(None, "--since", "-s", help="Filter by since duration (e.g. '7' for 7 days, or YYYY-MM-DD)"),
+    until: Optional[str] = typer.Option(None, "--until", help="Filter by until date (inclusive; e.g. '7d', '1w', 'yesterday', or YYYY-MM-DD)")
 ):
     """Export history sessions and commands as JSON, CSV, or Markdown"""
     db_path = get_db_path()
@@ -1269,7 +1270,7 @@ def export_cmd(
     from termstory.exporter import fetch_export_data, export_json, export_csv, export_markdown
     
     try:
-        sessions = fetch_export_data(db, project_filter=project, since_str=since)
+        sessions = fetch_export_data(db, project_filter=project, since_str=since, until_str=until)
     except ValueError as e:
         Console(stderr=True).print(f"[bold red]Error:[/] {e}")
         raise typer.Exit(code=1)

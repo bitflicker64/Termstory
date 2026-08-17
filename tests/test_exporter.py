@@ -9,7 +9,7 @@ import pytest
 from termstory.cli import app
 from termstory.database import Database
 from termstory.models import Project, Session, Command
-from termstory.exporter import parse_since, fetch_export_data, serialize_sessions_to_dict, export_json, export_csv, export_markdown
+from termstory.exporter import parse_since, parse_until, fetch_export_data, serialize_sessions_to_dict, export_json, export_csv, export_markdown
 
 @pytest.fixture
 def temp_db(tmp_path):
@@ -618,4 +618,248 @@ def test_cli_export_markdown(tmp_path, monkeypatch):
 
     result_invalid = runner.invoke(app, ["export", "--format", "xml"])
     assert result_invalid.exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# Issue #434: --since / --until date filters for `termstory export`
+# ---------------------------------------------------------------------------
+
+def _build_session_db(db_path, sessions_and_projects):
+    """Create a DB with the given (start_ts, project_name_or_None) sessions.
+
+    Returns a fresh :class:`Database` populated with one project per unique name
+    and one (command-less) session per entry.
+    """
+    db = Database(str(db_path))
+    db.init_db()
+    projects = {}
+    session_rows = []
+    commands = []
+    for start_ts, proj_name in sessions_and_projects:
+        pid = None
+        if proj_name is not None:
+            if proj_name not in projects:
+                proj_id = len(projects) + 1
+                projects[proj_name] = Project(
+                    id=proj_id, name=proj_name, path=f"~/src/{proj_name.lower()}",
+                    first_seen=start_ts, last_seen=start_ts, session_count=1, total_time=0,
+                )
+                pid = proj_id
+            else:
+                pid = projects[proj_name].id
+        session_rows.append(
+            Session(id=len(session_rows) + 1, start_time=int(start_ts), end_time=int(start_ts),
+                    duration_seconds=0, project_id=pid, commands=[])
+        )
+    db.save_data(list(projects.values()), session_rows, commands)
+    return db
+
+
+def test_parse_since_relative_expressions(monkeypatch):
+    monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2026-06-10 12:00:00")
+    # 7d -> start of the day 7 days before Jun 10 (Jun 3)
+    assert parse_since("7d") == int(datetime(2026, 6, 3, 0, 0).timestamp())
+    # 1w -> start of the day 1 week before Jun 10 (Jun 3)
+    assert parse_since("1w") == int(datetime(2026, 6, 3, 0, 0).timestamp())
+    # yesterday -> start of Jun 9
+    assert parse_since("yesterday") == int(datetime(2026, 6, 9, 0, 0).timestamp())
+
+
+def test_parse_until_relative_expressions(monkeypatch):
+    monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2026-06-10 12:00:00")
+    # 7d -> end of the day 7 days before Jun 10 (Jun 3)
+    assert parse_until("7d") == int(datetime(2026, 6, 3, 23, 59, 59).timestamp())
+    # 1w -> end of the day 1 week before Jun 10 (Jun 3)
+    assert parse_until("1w") == int(datetime(2026, 6, 3, 23, 59, 59).timestamp())
+    # yesterday -> end of Jun 9
+    assert parse_until("yesterday") == int(datetime(2026, 6, 9, 23, 59, 59).timestamp())
+
+
+def test_parse_until_iso_includes_whole_day():
+    # A date-only --until includes the entire specified day.
+    assert parse_until("2026-06-10") == int(datetime(2026, 6, 10, 23, 59, 59).timestamp())
+
+
+def test_parse_until_invalid():
+    with pytest.raises(ValueError):
+        parse_until("not-a-real-date")
+    with pytest.raises(ValueError):
+        parse_until("zzz")
+
+
+
+def test_fetch_export_data_until_boundary(tmp_path):
+    db = _build_session_db(tmp_path / "until.db", [
+        (datetime(2026, 5, 31, 12, 0).timestamp(), None),   # before since  -> excluded
+        (datetime(2026, 6, 1, 0, 0).timestamp(), None),    # exact since    -> included
+        (datetime(2026, 6, 5, 12, 0).timestamp(), None),    # inside range   -> included
+        (datetime(2026, 6, 10, 23, 59).timestamp(), None),  # exact until    -> included
+        (datetime(2026, 6, 11, 0, 0).timestamp(), None),   # after until    -> excluded
+    ])
+    sessions = fetch_export_data(db, since_str="2026-06-01", until_str="2026-06-10")
+    start_ids = sorted(s.start_time for s in sessions)
+    assert start_ids == [
+        int(datetime(2026, 6, 1, 0, 0).timestamp()),
+        int(datetime(2026, 6, 5, 12, 0).timestamp()),
+        int(datetime(2026, 6, 10, 23, 59).timestamp()),
+    ]
+
+
+def test_fetch_export_data_since_only(tmp_path):
+    db = _build_session_db(tmp_path / "since_only.db", [
+        (datetime(2026, 5, 31, 12, 0).timestamp(), None),
+        (datetime(2026, 6, 3, 9, 0).timestamp(), None),
+        (datetime(2026, 6, 10, 23, 59).timestamp(), None),
+    ])
+    # Without --until the upper bound remains open (far future).
+    sessions = fetch_export_data(db, since_str="2026-06-01")
+    assert len(sessions) == 2
+
+
+def test_fetch_export_data_until_only(tmp_path):
+    db = _build_session_db(tmp_path / "until_only.db", [
+        (datetime(2026, 5, 30, 12, 0).timestamp(), None),
+        (datetime(2026, 6, 10, 23, 59).timestamp(), None),
+        (datetime(2026, 6, 12, 0, 0).timestamp(), None),
+    ])
+    # Without --since the lower bound remains open (0).
+    sessions = fetch_export_data(db, until_str="2026-06-10")
+    assert len(sessions) == 2
+
+
+def test_fetch_export_data_until_full_day(tmp_path):
+    # --until 2026-06-10 must include the entire day at multiple times.
+    db = _build_session_db(tmp_path / "full_day.db", [
+        (datetime(2026, 6, 10, 0, 0).timestamp(), None),
+        (datetime(2026, 6, 10, 12, 0).timestamp(), None),
+        (datetime(2026, 6, 10, 23, 59).timestamp(), None),
+        (datetime(2026, 6, 11, 0, 0).timestamp(), None),  # next day -> excluded
+    ])
+    sessions = fetch_export_data(db, until_str="2026-06-10")
+    assert len(sessions) == 3
+    assert all(s.start_time <= int(datetime(2026, 6, 10, 23, 59, 59).timestamp())
+               for s in sessions)
+
+
+def test_fetch_export_data_relative_range(tmp_path, monkeypatch):
+    monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2026-06-10 12:00:00")
+    # 1w (Jun 3 00:00) .. yesterday (Jun 9 23:59:59)
+    db = _build_session_db(tmp_path / "rel_range.db", [
+        (datetime(2026, 6, 2, 23, 59).timestamp(), None),  # before -> excluded
+        (datetime(2026, 6, 3, 0, 0).timestamp(), None),    # exact since -> included
+        (datetime(2026, 6, 9, 23, 59).timestamp(), None),  # exact until -> included
+        (datetime(2026, 6, 10, 0, 0).timestamp(), None),   # after -> excluded
+    ])
+    sessions = fetch_export_data(db, since_str="1w", until_str="yesterday")
+    assert len(sessions) == 2
+
+
+def test_fetch_export_data_project_and_date(tmp_path):
+    db = _build_session_db(tmp_path / "proj_date.db", [
+        (datetime(2026, 6, 2, 12, 0).timestamp(), "Alpha"),
+        (datetime(2026, 6, 8, 12, 0).timestamp(), "Alpha"),
+        (datetime(2026, 6, 8, 14, 0).timestamp(), "Beta"),  # different time, same day
+        (datetime(2026, 6, 20, 12, 0).timestamp(), "Alpha"),
+    ])
+    sessions = fetch_export_data(
+        db, project_filter="alpha", since_str="2026-06-01", until_str="2026-06-10"
+    )
+    # Only Alpha sessions within Jun 1..Jun 10: the two on Jun 2 and Jun 8.
+    assert len(sessions) == 2
+
+
+def test_fetch_export_data_backward_compatible_since_only(tmp_path):
+    # Existing callers calling fetch_export_data(since_str=...) with no until_str
+    # must continue working unchanged.
+    db = _build_session_db(tmp_path / "bc.db", [
+        (datetime(2026, 5, 30, 12, 0).timestamp(), None),
+        (datetime(2026, 6, 5, 12, 0).timestamp(), None),
+    ])
+    sessions = fetch_export_data(db, since_str="2026-06-01")
+    assert len(sessions) == 1
+    assert sessions[0].start_time == int(datetime(2026, 6, 5, 12, 0).timestamp())
+
+
+
+def test_parse_since_relative_uses_get_current_time(monkeypatch):
+    # Relative expressions must honour TERMSTORY_DATE_OVERRIDE via get_current_time().
+    monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2026-06-10 12:00:00")
+    assert parse_since("7d") == int(datetime(2026, 6, 3, 0, 0).timestamp())
+
+
+def test_cli_export_with_until(tmp_path, monkeypatch):
+    db_file = tmp_path / "cli_until.db"
+    monkeypatch.setattr("termstory.cli.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.config.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.cli.get_history_files", lambda: [])
+    monkeypatch.setattr("termstory.cli.run_ingestion", lambda db: None)
+
+    db = Database(str(db_file))
+    db.init_db()
+    p = Project(id=1, name="CLI Project", path="~/projects/cli",
+                first_seen=2000, last_seen=2000, session_count=1, total_time=100)
+    cmd = Command(id=60, timestamp=2000, command="echo hi", exit_code=0,
+                  session_id=1, project_id=1)
+    s = Session(id=1, start_time=2000, end_time=2000, duration_seconds=100,
+                project_id=1, commands=[cmd])
+    db.save_data([p], [s], [cmd])
+
+    runner = CliRunner()
+
+    # Both values reach the export layer: an early --until excludes the session
+    # (timestamp ~1970-01-01).
+    result = runner.invoke(app, ["export", "--format", "json",
+                                "--since", "2026-01-01", "--until", "2026-01-31"])
+    combined = (result.stderr or "") + (result.stdout or "")
+    assert "No sessions found matching filters" in combined
+
+    # A wide range that brackets the session includes it.
+    result_all = runner.invoke(app, ["export", "--format", "json",
+                                     "--since", "1969-01-01", "--until", "1971-01-01"])
+    assert result_all.exit_code == 0
+    data = json.loads(result_all.stdout)
+    assert len(data) == 1
+
+
+def test_cli_export_reversed_range_error(tmp_path, monkeypatch):
+    db_file = tmp_path / "cli_reversed.db"
+    monkeypatch.setattr("termstory.cli.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.config.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.cli.get_history_files", lambda: [])
+    monkeypatch.setattr("termstory.cli.run_ingestion", lambda db: None)
+
+    db = Database(str(db_file))
+    db.init_db()
+    runner = CliRunner()
+    result = runner.invoke(app, ["export", "--format", "json",
+                                 "--since", "2026-06-30", "--until", "2026-06-01"])
+    assert result.exit_code == 1
+    combined = (result.stderr or "") + (result.stdout or "")
+    assert "Invalid date range" in combined
+
+
+def test_cli_export_invalid_until_error(tmp_path, monkeypatch):
+    db_file = tmp_path / "cli_invalid_until.db"
+    monkeypatch.setattr("termstory.cli.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.config.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.cli.get_history_files", lambda: [])
+    monkeypatch.setattr("termstory.cli.run_ingestion", lambda db: None)
+
+    db = Database(str(db_file))
+    db.init_db()
+    runner = CliRunner()
+    result = runner.invoke(app, ["export", "--format", "json", "--until", "invalid"])
+    assert result.exit_code == 1
+    combined = (result.stderr or "") + (result.stdout or "")
+    assert "Error" in combined
+
+
+
+
+def test_fetch_export_data_reversed_range(tmp_path):
+    db = _build_session_db(tmp_path / "reversed.db", [
+        (datetime(2026, 6, 5, 12, 0).timestamp(), None),
+    ])
+    with pytest.raises(ValueError):
+        fetch_export_data(db, since_str="2026-06-30", until_str="2026-06-01")
 
