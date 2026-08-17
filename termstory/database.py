@@ -860,23 +860,21 @@ class Database:
             
             placeholders = ",".join("?" for _ in project_ids)
             cursor.execute(f"""
-                SELECT id, name, path, first_seen, last_seen, project_context
-                FROM projects
-                WHERE id IN ({placeholders})
+                SELECT p.id, p.name, p.path, p.first_seen, p.last_seen,
+                       COUNT(s.id) AS session_count,
+                       SUM(s.duration_seconds) AS total_time,
+                       p.project_context
+                FROM projects p
+                LEFT JOIN sessions s ON p.id = s.project_id
+                WHERE p.id IN ({placeholders})
+                GROUP BY p.id
+                ORDER BY p.id
             """, project_ids)
             
             rows = cursor.fetchall()
             projects = []
             for row in rows:
-                p_id, name, path, first, last, context = row
-                # Calculate counts dynamically based on all sessions
-                cursor.execute("""
-                    SELECT COUNT(*), SUM(duration_seconds)
-                    FROM sessions
-                    WHERE project_id = ?
-                """, (p_id,))
-                s_count, t_time = cursor.fetchone()
-                
+                p_id, name, path, first, last, s_count, t_time, context = row
                 projects.append(Project(
                     id=p_id,
                     name=name,
