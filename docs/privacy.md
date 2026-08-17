@@ -20,7 +20,6 @@ BLACKLIST_PATTERNS = [
 ]
 ```
 
-> **Extending the blacklist:** You can add your own patterns via `config.json` → `command_blacklist_patterns`. These are additive (they never replace the built-in list). Plain strings are `fnmatch` globs; strings prefixed with `re:` are regular expressions. Both are matched case-insensitively. Invalid patterns are skipped. Omitting the setting preserves the existing behavior. See `docs/ai-integration.md`.
 ### Redaction Rules
 
 | Type | Pattern | Replacement |

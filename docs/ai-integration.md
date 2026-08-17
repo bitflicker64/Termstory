@@ -39,25 +39,3 @@ No raw session data reaches `_send_llm_request()` directly.
 
 This is enforced across all three AI-facing surfaces: `generate_ai_summary()`, `generate_daily_chronicle_prompt()` (both in `ai.py`), and `generate_answer()` (in `ask.py`). See `docs/privacy.md` for the complete redaction rule table.
 
-### Extending the command blacklist
-
-The built-in session blacklist (`vault`, `aws configure`, `gh auth`, raw token strings, etc.) can be extended with your own patterns via `config.json`. These user patterns are **additive** — they never disable or replace the built-in blacklist.
-
-```json
-{
-  "command_blacklist_patterns": [
-    "doppler *",
-    "sops *",
-    "re:^op\\s+.*secret"
-  ]
-}
-```
-
-- **Plain strings** are matched as `fnmatch` **glob** patterns (case-insensitive). `"doppler *"` matches any command whose text contains `doppler` followed by anything.
-- **Strings prefixed with `re:`** are compiled as **regular expressions** (case-insensitive). `"re:^sops\\s+"` matches any command starting with `sops` followed by whitespace.
-- Matching is case-insensitive, consistent with the built-in blacklist.
-- **Invalid patterns** (e.g. a malformed regex like `"re:[invalid"`) are skipped silently — they affect only that pattern; valid user patterns and the built-in blacklist continue to work.
-- **Omitting** `command_blacklist_patterns` (or setting it to `[]`) preserves the existing behavior exactly.
-
-Because the sanitizer is the single source of truth for all AI-facing paths, configured patterns automatically apply everywhere commands are gated — `generate_ai_summary()`, `generate_daily_chronicle_prompt()`, `generate_answer()`, and the `agy` bridge.
-
