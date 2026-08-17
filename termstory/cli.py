@@ -1254,19 +1254,19 @@ def replay_cmd(
 
 @app.command("export")
 def export_cmd(
-    format: str = typer.Option("json", "--format", "-f", help="Export format: 'json' or 'csv'"),
+    format: str = typer.Option("json", "--format", "-f", help="Export format: 'json', 'csv', or 'markdown'"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Output file path (prints to stdout if omitted)"),
     project: Optional[str] = typer.Option(None, "--project", "-p", help="Filter by project name or path"),
     since: Optional[str] = typer.Option(None, "--since", "-s", help="Filter by since duration (e.g. '7' for 7 days, or YYYY-MM-DD)")
 ):
-    """Export history sessions and commands as JSON or CSV"""
+    """Export history sessions and commands as JSON, CSV, or Markdown"""
     db_path = get_db_path()
     db = Database(db_path)
     safe_init_db(db)
     
     run_ingestion(db)
     
-    from termstory.exporter import fetch_export_data, export_json, export_csv
+    from termstory.exporter import fetch_export_data, export_json, export_csv, export_markdown
     
     try:
         sessions = fetch_export_data(db, project_filter=project, since_str=since)
@@ -1283,8 +1283,10 @@ def export_cmd(
         export_json(sessions, db, output_file=output)
     elif fmt == "csv":
         export_csv(sessions, db, output_file=output)
+    elif fmt in ("markdown", "md"):
+        export_markdown(sessions, db, output_file=output)
     else:
-        Console(stderr=True).print(f"[bold red]Error: Unsupported format '{format}'. Use 'json' or 'csv'.[/]")
+        Console(stderr=True).print(f"[bold red]Error: Unsupported format '{format}'. Use 'json', 'csv', or 'markdown'.[/]")
         raise typer.Exit(code=1)
 
 @app.command("archive")

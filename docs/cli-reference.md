@@ -47,9 +47,10 @@ Generate and automatically open a beautiful, high-density HTML report of your Te
 - `termstory web`
 
 ### 📤 Export (Structured Data Export)
-Export all or filtered sessions as JSON or CSV files to share or perform custom analysis.
+Export all or filtered sessions as JSON, CSV, or Markdown to share or perform custom analysis.
 - `termstory export --format json`
 - `termstory export --format csv --output history.csv`
+- `termstory export --format markdown`
 
 ### 📊 Stats (Detailed Work Telemetry)
 Compute and display high-density, CLI-native command category breakdown tables, tool usage, and terminal telemetry.
@@ -187,6 +188,8 @@ termstory web                # Generate and open a beautiful HTML report in your
 ```bash
 termstory export --format json                           # Export all sessions as JSON to stdout
 termstory export --format csv --output ~/history.csv      # Export as CSV to a file
+termstory export --format markdown                       # Export as Markdown to stdout
+termstory export --format markdown -o sessions.md         # Export as Markdown to a file
 termstory export --project myapp --since 7               # Export last 7 days of "myapp" project
 termstory export --since 2026-06-01                      # Export sessions since specific date
 ```
