@@ -127,7 +127,12 @@ def generate_notebook(
 
                 # Commands
                 commands = s.commands
-                if not all_commands:
+                # Zero-duration sessions (start_time == end_time) consist of a single
+                # command that *defined* the session. Surface that command even when
+                # noise filtering is active, otherwise the session renders as an empty
+                # shell with no commands (see issue #433). Non-zero-duration sessions
+                # keep their existing noise filtering unchanged.
+                if not all_commands and s.start_time != s.end_time:
                     commands = [cmd for cmd in s.commands if not _is_noise_command(cmd.command)]
 
                 if commands:

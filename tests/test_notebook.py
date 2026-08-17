@@ -183,3 +183,56 @@ def test_generate_notebook_redacts_commit_message(temp_db):
     )
     markdown = generate_notebook([s], temp_db)
     assert "hunter2" not in markdown
+
+
+def test_generate_notebook_zero_duration_noise_command_rendered(temp_db):
+    """Issue #433: a zero-duration session (start_time == end_time) must still
+    render its sole command, even when it would otherwise be classified as noise.
+
+    Without the fix the session renders as an empty shell under the default
+    (all_commands=False) rendering because the only command (``echo hello``) is
+    filtered as low-value noise.
+    """
+    t = int(datetime(2026, 6, 5, 9, 0, 0).timestamp())
+    cmd = Command(id=600, timestamp=t, command="echo hello",
+                  exit_code=0, session_id=50, project_id=1)
+    s = Session(id=50, start_time=t, end_time=t, duration_seconds=0,
+                project_id=1, commands=[cmd])
+
+    markdown = generate_notebook([s], temp_db, all_commands=False)
+
+    assert "# 2026-06-05" in markdown
+    assert "* **9:00 AM (1s)**" in markdown
+    assert "echo hello" in markdown
+
+
+def test_generate_notebook_zero_duration_non_noise_command_rendered(temp_db):
+    """Issue #433: a zero-duration session with a clearly non-noise command
+    (``git commit``) must appear in the notebook under default rendering.
+    """
+    t = int(datetime(2026, 6, 5, 9, 30, 0).timestamp())
+    cmd = Command(id=601, timestamp=t, command="git commit -m 'fast fix'",
+                  exit_code=0, session_id=51, project_id=1)
+    s = Session(id=51, start_time=t, end_time=t, duration_seconds=0,
+                project_id=1, commands=[cmd])
+
+    markdown = generate_notebook([s], temp_db, all_commands=False)
+
+    assert "# 2026-06-05" in markdown
+    assert "git commit -m 'fast fix'" in markdown
+
+
+def test_generate_notebook_non_zero_noise_still_filtered(temp_db):
+    """Issue #433 regression guard: noise filtering must remain unchanged for
+    non-zero-duration sessions.
+    """
+    t = int(datetime(2026, 6, 5, 10, 0, 0).timestamp())
+    cmd = Command(id=602, timestamp=t, command="echo hello",
+                  exit_code=0, session_id=52, project_id=1)
+    s = Session(id=52, start_time=t, end_time=t + 60, duration_seconds=60,
+                project_id=1, commands=[cmd])
+
+    markdown = generate_notebook([s], temp_db, all_commands=False)
+
+    assert "# 2026-06-05" in markdown
+    assert "echo hello" not in markdown
