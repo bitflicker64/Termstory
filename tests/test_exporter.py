@@ -810,8 +810,9 @@ def test_cli_export_with_until(tmp_path, monkeypatch):
     # (timestamp ~1970-01-01).
     result = runner.invoke(app, ["export", "--format", "json",
                                 "--since", "2026-01-01", "--until", "2026-01-31"])
-    combined = (result.stderr or "") + (result.stdout or "")
-    assert "No sessions found matching filters" in combined
+    # result.output merges stdout/stderr, so it works whether or not the installed
+    # Click separately captures stderr (e.g. older Click on Python 3.9 CI).
+    assert "No sessions found matching filters" in result.output
 
     # A wide range that brackets the session includes it.
     result_all = runner.invoke(app, ["export", "--format", "json",
@@ -834,8 +835,8 @@ def test_cli_export_reversed_range_error(tmp_path, monkeypatch):
     result = runner.invoke(app, ["export", "--format", "json",
                                  "--since", "2026-06-30", "--until", "2026-06-01"])
     assert result.exit_code == 1
-    combined = (result.stderr or "") + (result.stdout or "")
-    assert "Invalid date range" in combined
+    # result.output merges stdout/stderr, so it works across Click versions.
+    assert "Invalid date range" in result.output
 
 
 def test_cli_export_invalid_until_error(tmp_path, monkeypatch):
@@ -850,8 +851,8 @@ def test_cli_export_invalid_until_error(tmp_path, monkeypatch):
     runner = CliRunner()
     result = runner.invoke(app, ["export", "--format", "json", "--until", "invalid"])
     assert result.exit_code == 1
-    combined = (result.stderr or "") + (result.stdout or "")
-    assert "Error" in combined
+    # result.output merges stdout/stderr, so it works across Click versions.
+    assert "Error" in result.output
 
 
 
