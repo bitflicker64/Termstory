@@ -91,6 +91,63 @@ def test_backup_rotation(tmp_path, monkeypatch):
         assert not os.path.exists(oldest)
 
 
+def test_backup_rotation_clock_skew(tmp_path, monkeypatch):
+    # Regression for #429: when the wall clock jumps backward, a *newer* backup
+    # can receive an earlier wall-clock timestamp in its filename. Rotation must
+    # order by the filesystem timestamp (getctime), not by the embedded filename
+    # timestamp, or it would delete the newest backup instead of the oldest.
+    db_file = tmp_path / "test_clock_skew.db"
+    db_path = str(db_file)
+    monkeypatch.setenv("DB_PATH", db_path)
+    monkeypatch.setattr("termstory.config.get_db_path", lambda: db_path)
+    monkeypatch.setattr("termstory.backup.get_db_path", lambda: db_path)
+
+    db = Database(db_path)
+    db.init_db()
+
+    # Simulate a clock that runs *backward*: each successive backup is created on
+    # disk later (so it has a newer filesystem timestamp) but receives an earlier
+    # wall-clock timestamp in its filename. The last backup created is therefore
+    # the newest on disk yet sorts first lexicographically.
+    class BackwardClock:
+        second = 60  # decremented before first use
+
+        @classmethod
+        def now(cls):
+            cls.second -= 1
+            from datetime import datetime as dt
+            return dt(2026, 6, 18, 19, 0, cls.second)
+
+    monkeypatch.setattr("termstory.backup.datetime", BackwardClock)
+
+    created = [backup_db() for _ in range(12)]
+
+    from termstory.backup import _get_backup_dir
+    import glob
+    backup_dir = _get_backup_dir()
+    remaining = glob.glob(os.path.join(backup_dir, "termstory_backup_*.db"))
+    assert len(remaining) == 10
+
+    # Among the kept backups, order by filesystem timestamp.
+    remaining_by_ctime = sorted(remaining, key=os.path.getctime)
+    newest = remaining_by_ctime[-1]
+    oldest_kept = remaining_by_ctime[0]
+
+    # Confirm the clock-skew setup actually holds: the newest backup has a
+    # lexicographically *earlier* filename than an older backup, but a later
+    # filesystem timestamp.
+    assert os.path.basename(newest) < os.path.basename(oldest_kept)
+    assert os.path.getctime(newest) > os.path.getctime(oldest_kept)
+
+    # Rotation must delete the genuinely oldest backups (the first two created).
+    for backup in created[:2]:
+        assert not os.path.exists(backup)
+
+    # The newest backup, despite carrying the misleading (earliest) filename,
+    # must be preserved.
+    assert os.path.isfile(created[-1])
+
+
 def test_backup_survives_rotation_failure(tmp_path, monkeypatch, caplog):
     db_file = tmp_path / "test_rotation_failure.db"
     db_path = str(db_file)

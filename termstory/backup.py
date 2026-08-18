@@ -22,8 +22,9 @@ def backup_db() -> str:
 
     Backup filenames use a microsecond-precision timestamp
     (``termstory_backup_YYYYMMDD_HHMMSS_mmmmmm.db``) so back-to-back backups
-    never collide. The fixed-width timestamp keeps filenames lexicographically
-    sortable, which backup rotation relies on to find the oldest backups.
+    never collide. Rotation finds the oldest backups using the filesystem
+    timestamp rather than the timestamp embedded in the filename, because the
+    wall clock can jump backward between backups.
 
     Returns:
         The absolute path to the created backup file.
@@ -49,7 +50,15 @@ def backup_db() -> str:
 
     # Rotate backups: keep at most 10 latest backups
     try:
-        backups = sorted(glob.glob(os.path.join(backup_dir, "termstory_backup_*.db")))
+        # Order by filesystem timestamp (getctime) rather than by the timestamp
+        # embedded in the filename. If the wall clock runs backward (NTP
+        # correction, VM snapshot restore), a *newer* backup can receive an
+        # earlier name; lexicographic ordering would then rotate away the newest
+        # backup instead of the oldest.
+        backups = sorted(
+            glob.glob(os.path.join(backup_dir, "termstory_backup_*.db")),
+            key=os.path.getctime,
+        )
         while len(backups) > 10:
             oldest = backups.pop(0)
             if os.path.exists(oldest):
