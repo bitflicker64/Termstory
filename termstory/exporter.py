@@ -1,6 +1,7 @@
 import csv
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from termstory import date_utils
@@ -43,40 +44,142 @@ def _safe_fromtimestamp(ts: float) -> datetime:
         local_dt = utc_dt.astimezone(timezone(local_offset))
     return local_dt.replace(tzinfo=None)
 
+def _parse_relative_offset(expr: str) -> Optional[timedelta]:
+    """Parse a relative day/week expression like ``7d`` or ``1w`` into a timedelta.
+
+    Returns ``None`` when the expression is not a relative day/week offset, so
+    callers can fall back to other formats.
+    """
+    m = re.match(r"^(\d+)\s*(d|w)$", expr.strip().lower())
+    if not m:
+        return None
+    num = int(m.group(1))
+    unit = m.group(2)
+    # A week is always 7 days for this purpose (matches timedelta(weeks=...)).
+    return timedelta(days=num) if unit == "d" else timedelta(weeks=num)
+
+
 def parse_since(since_str: Optional[str]) -> Optional[int]:
-    """Parse a since string (either number of days or a date string) into a Unix timestamp."""
+    """Parse a since string into a Unix timestamp (inclusive lower bound).
+
+    Supported formats, resolved via :func:`termstory.date_utils.get_current_time`
+    so ``TERMSTORY_DATE_OVERRIDE`` is respected for relative expressions:
+
+    * ``3`` (number of days) / ``7d`` / ``1w`` / ``yesterday`` — start of that day
+    * any ISO 8601 date parsed by dateutil (e.g. ``2026-06-01``)
+    """
     if not since_str:
         return None
-    
+
     since_str = since_str.strip()
-    if since_str.isdigit():
-        days = int(since_str)
-        now = date_utils.get_current_time()
-        dt = now - timedelta(days=days)
-        # Start of that day
+    now = date_utils.get_current_time()
+
+    # Relative day/week expression, e.g. "7d" or "1w"
+    delta = _parse_relative_offset(since_str)
+    if delta is not None:
+        dt = now - delta
         start_of_day = datetime.combine(dt.date(), datetime.min.time())
         return _get_timestamp(start_of_day)
-    
+
+    if since_str.lower() == "yesterday":
+        dt = now - timedelta(days=1)
+        start_of_day = datetime.combine(dt.date(), datetime.min.time())
+        return _get_timestamp(start_of_day)
+
+    # Numeric day count (existing legacy behavior): start of that day
+    if since_str.isdigit():
+        days = int(since_str)
+        dt = now - timedelta(days=days)
+        start_of_day = datetime.combine(dt.date(), datetime.min.time())
+        return _get_timestamp(start_of_day)
+
     try:
         dt = date_parser.parse(since_str)
         return _get_timestamp(dt)
     except Exception as e:
         raise ValueError(f"Invalid date or day count format '{since_str}': {e}")
 
+
+def parse_until(until_str: Optional[str]) -> Optional[int]:
+    """Parse an until string into an inclusive upper-bound Unix timestamp.
+
+    Supported formats, resolved via :func:`termstory.date_utils.get_current_time`
+    so ``TERMSTORY_DATE_OVERRIDE`` is respected for relative expressions:
+
+    * ``7d`` / ``1w`` / ``yesterday`` — end of that day
+    * any ISO 8601 date parsed by dateutil (e.g. ``2026-06-01``)
+
+    A date-only value always resolves to the *end* of that day (23:59:59) so that
+    the entire specified day is included in the range.
+    """
+    if not until_str:
+        return None
+
+    until_str = until_str.strip()
+    now = date_utils.get_current_time()
+
+    # Relative day/week expression, e.g. "7d" or "1w"
+    delta = _parse_relative_offset(until_str)
+    if delta is not None:
+        dt = now - delta
+        end_of_day = datetime.combine(dt.date(), datetime.max.time())
+        return _get_timestamp(end_of_day)
+
+    if until_str.lower() == "yesterday":
+        dt = now - timedelta(days=1)
+        end_of_day = datetime.combine(dt.date(), datetime.max.time())
+        return _get_timestamp(end_of_day)
+
+    # Parse the ISO 8601 date string. Detect whether the user supplied an
+    # explicit time component: dateutil normalizes "2026-06-10" and
+    # "2026-06-10T00:00:00" both to midnight, so we inspect the raw string.
+    _has_time = bool(re.search(r"[T\s]\d{1,2}:\d{2}", until_str))
+    try:
+        dt = date_parser.parse(until_str)
+        if _has_time:
+            # Explicit time was given — preserve it exactly.
+            return _get_timestamp(dt)
+        # Date-only: snap to end-of-day so the entire day is included.
+        end_of_day = datetime.combine(dt.date(), datetime.max.time())
+        return _get_timestamp(end_of_day)
+    except Exception as e:
+        raise ValueError(f"Invalid date or day count format '{until_str}': {e}")
+
+
 def fetch_export_data(
     db: Database,
     project_filter: Optional[str] = None,
-    since_str: Optional[str] = None
+    since_str: Optional[str] = None,
+    until_str: Optional[str] = None
 ) -> List[Session]:
-    """Fetch and filter sessions with their commands and commits from the database."""
+    """Fetch and filter sessions with their commands and commits from the database.
+
+    Both date bounds are inclusive over ``session.start_time``:
+
+        since_ts <= session.start_time <= until_ts
+
+    ``since_str`` / ``until_str`` are optional; when omitted the corresponding
+    bound is left open (all history, or far into the future for ``until_str``).
+    """
     start_ts = 0
     if since_str:
         since_ts = parse_since(since_str)
         if since_ts is not None:
             start_ts = since_ts
-            
+
+    end_ts = _FAR_FUTURE_TS
+    if until_str:
+        until_ts = parse_until(until_str)
+        if until_ts is not None:
+            end_ts = until_ts
+
+    if start_ts > end_ts:
+        raise ValueError(
+            "Invalid date range: --since must not be after --until."
+        )
+
     # Fetch all sessions in the range (up to far in the future)
-    sessions = db.get_range_sessions(start_ts, _FAR_FUTURE_TS)
+    sessions = db.get_range_sessions(start_ts, end_ts)
     
     # Get project info to map names/paths
     project_ids = list(set(s.project_id for s in sessions if s.project_id is not None))

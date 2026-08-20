@@ -192,7 +192,16 @@ termstory export --format markdown                       # Export as Markdown to
 termstory export --format markdown -o sessions.md         # Export as Markdown to a file
 termstory export --project myapp --since 7               # Export last 7 days of "myapp" project
 termstory export --since 2026-06-01                      # Export sessions since specific date
+termstory export --since 2026-06-01 --until 2026-06-30   # Export a specific date range
+termstory export --since 7d                              # Export last 7 days
+termstory export --since 1w --until yesterday            # Export from 1 week ago through yesterday
 ```
+
+The `--since` option defines the lower bound, and `--until` defines the inclusive
+upper bound of the exported range (both applied to each session's start time).
+`--until` is optional and, when given a date only (e.g. `2026-06-10`), includes
+the entire specified day. Relative expressions such as `7d`, `1w`, and
+`yesterday` are also supported.
 
 ### Tags
 
