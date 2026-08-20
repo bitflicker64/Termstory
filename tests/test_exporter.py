@@ -864,3 +864,14 @@ def test_fetch_export_data_reversed_range(tmp_path):
     with pytest.raises(ValueError):
         fetch_export_data(db, since_str="2026-06-30", until_str="2026-06-01")
 
+
+def test_parse_until_preserves_explicit_time():
+    # Regression: a timestamped --until (e.g. "2026-06-10T12:00:00") must
+    # preserve the explicit time instead of snapping to 23:59:59. Only
+    # date-only inputs get end-of-day normalization.
+    assert parse_until("2026-06-10") == int(datetime(2026, 6, 10, 23, 59, 59).timestamp())
+    assert parse_until("2026-06-10T12:00:00") == int(datetime(2026, 6, 10, 12, 0, 0).timestamp())
+    assert parse_until("2026-06-10 14:30:00") == int(datetime(2026, 6, 10, 14, 30, 0).timestamp())
+    # Explicit midnight must NOT be expanded to end-of-day — the user asked for 00:00:00.
+    assert parse_until("2026-06-10T00:00:00") == int(datetime(2026, 6, 10, 0, 0, 0).timestamp())
+

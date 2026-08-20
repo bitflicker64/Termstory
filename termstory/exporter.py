@@ -130,9 +130,16 @@ def parse_until(until_str: Optional[str]) -> Optional[int]:
         end_of_day = datetime.combine(dt.date(), datetime.max.time())
         return _get_timestamp(end_of_day)
 
+    # Parse the ISO 8601 date string. Detect whether the user supplied an
+    # explicit time component: dateutil normalizes "2026-06-10" and
+    # "2026-06-10T00:00:00" both to midnight, so we inspect the raw string.
+    _has_time = bool(re.search(r"[T\s]\d{1,2}:\d{2}", until_str))
     try:
         dt = date_parser.parse(until_str)
-        # Inclusive: a date-only --until covers the entire specified day.
+        if _has_time:
+            # Explicit time was given — preserve it exactly.
+            return _get_timestamp(dt)
+        # Date-only: snap to end-of-day so the entire day is included.
         end_of_day = datetime.combine(dt.date(), datetime.max.time())
         return _get_timestamp(end_of_day)
     except Exception as e:
