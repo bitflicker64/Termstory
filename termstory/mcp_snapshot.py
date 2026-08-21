@@ -11,6 +11,14 @@ from termstory.sanitizer import redact_command
 
 logger = logging.getLogger(__name__)
 
+# Cap the number of uncommitted-file entries retained in a single snapshot. A
+# `git status` listing can otherwise surface tens of thousands of untracked
+# files (e.g. scattered build artifacts), producing an enormous snapshot and
+# heavy per-entry scrubbing. `--untracked-files=normal` already collapses each
+# huge *untracked directory* (node_modules/, dist/, build/) to a single entry,
+# so this cap only bounds the pathological scattered-file case.
+_MAX_UNCOMMITTED_FILES = 1000
+
 # IDE/editor environment variable prefixes. Their *presence* drives IDE
 # detection, but their values are never persisted: they routinely hold socket
 # paths (e.g. VSCODE_IPC_HOOK_CLI, NVIM_LISTEN_ADDRESS), askpass helpers,
@@ -180,22 +188,45 @@ def capture_git_status(cwd: str) -> Dict[str, Any]:
         if branch_res.returncode == 0:
             result["branch"] = branch_res.stdout.strip()
             
-        # Get uncommitted files (modified, untracked, deleted, etc.)
-        status_res = subprocess.run(
-            ["git", "-C", cwd, "status", "--porcelain"],
+        # Get uncommitted files (modified, untracked, deleted, etc.).
+        # `--untracked-files=normal` prevents Git from recursively walking huge
+        # untracked directories (node_modules/, dist/, build/): each such
+        # directory is reported as a single `?? dir/` entry instead of being
+        # enumerated in full, bounding the cost on large untracked trees. The
+        # retained list is additionally capped by _MAX_UNCOMMITTED_FILES so a
+        # pathological number of scattered untracked files cannot produce an
+        # unbounded snapshot. We use a streaming approach with Popen to prevent
+        # memory exhaustion.
+        proc = subprocess.Popen(
+            ["git", "-C", cwd, "status", "--porcelain", "--untracked-files=normal"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             errors="replace",
-            check=False,
-            timeout=5
         )
-        if status_res.returncode == 0:
-            uncommitted = []
-            for line in status_res.stdout.splitlines():
+        uncommitted = []
+        truncated = False
+        
+        if proc.stdout:
+            for line in proc.stdout:
                 if line.strip():
                     uncommitted.append(_scrub_git_path(line.strip()))
+                    if len(uncommitted) >= _MAX_UNCOMMITTED_FILES:
+                        truncated = True
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                        break
+                        
+        if not truncated:
+            proc.wait(timeout=5)
+            
+        if proc.returncode == 0 or truncated:
             result["uncommitted_files"] = uncommitted
+            if truncated:
+                result["uncommitted_files_truncated"] = True
             
     except (subprocess.TimeoutExpired, OSError):
         logger.exception(
