@@ -17,13 +17,28 @@ def _get_backup_dir() -> str:
     return backup_dir
 
 
+def _backup_creation_key(path: str) -> tuple:
+    """Return a stable sorting key expressing backup creation order.
+
+    Prefer the filesystem birth/creation timestamp where it is reliably exposed
+    (macOS/BSD ``stat_result.st_birthtime``; on Windows ``st_ctime`` is creation
+    time). Linux exposes no birth time, so ``st_ctime`` is the fallback. The
+    filename is used only to break exact timestamp ties, keeping the overall
+    order total and deterministic without trusting the wall-clock name.
+    """
+    st = os.stat(path)
+    creation = getattr(st, "st_birthtime", st.st_ctime)
+    return creation, os.path.basename(path)
+
+
 def backup_db() -> str:
     """Create a timestamped backup of the TermStory database.
 
     Backup filenames use a microsecond-precision timestamp
     (``termstory_backup_YYYYMMDD_HHMMSS_mmmmmm.db``) so back-to-back backups
-    never collide. The fixed-width timestamp keeps filenames lexicographically
-    sortable, which backup rotation relies on to find the oldest backups.
+    never collide. Rotation picks the oldest backup by filesystem creation
+    order rather than by the wall-clock timestamp embedded in the filename,
+    because the wall clock can jump backward between backups.
 
     Returns:
         The absolute path to the created backup file.
@@ -49,7 +64,15 @@ def backup_db() -> str:
 
     # Rotate backups: keep at most 10 latest backups
     try:
-        backups = sorted(glob.glob(os.path.join(backup_dir, "termstory_backup_*.db")))
+        # Order by filesystem creation time (see _backup_creation_key) rather
+        # than by the timestamp embedded in the filename. If the wall clock runs
+        # backward (NTP correction, VM snapshot restore), a *newer* backup can
+        # receive an earlier name; lexicographic ordering would then rotate away
+        # the newest backup instead of the oldest.
+        backups = sorted(
+            glob.glob(os.path.join(backup_dir, "termstory_backup_*.db")),
+            key=_backup_creation_key,
+        )
         while len(backups) > 10:
             oldest = backups.pop(0)
             if os.path.exists(oldest):
