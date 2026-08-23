@@ -157,6 +157,92 @@ def project_breakdown(db: Database) -> Dict[str, Dict[str, Any]]:
         
     return breakdown
 
+def stats_json(db: Database) -> Dict[str, Any]:
+    """Assemble a plain, machine-readable statistics payload.
+
+    Reuses the existing ``project_breakdown()`` calculation (including the
+    ``General / No Project`` -> ``Other`` mapping) instead of duplicating it, and
+    computes the top-level session/command/project totals plus the overall activity
+    time window directly from the database.
+
+    All return values are plain JSON-compatible primitives (ints, strings or None) so
+    the result can be passed straight to ``json.dumps()`` with no custom serializer.
+
+    Returns a dict shaped as::
+
+        {
+            "total_sessions": int,
+            "total_commands": int,
+            "total_projects": int,
+            "time_range": {"earliest": str | None, "latest": str | None},
+            "projects": [
+                {"name", "id", "path", "commands_count", "total_duration",
+                 "sessions_count", "first_seen", "last_seen"}, ...
+            ],
+        }
+
+    For an empty database, all totals are 0, ``projects`` is ``[]`` and the time
+    range is ``{"earliest": None, "latest": None}``.
+    """
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM sessions")
+        total_sessions = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM commands")
+        total_commands = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM projects")
+        total_projects = cursor.fetchone()[0]
+
+        # Overall activity window covering both sessions and commands.
+        cursor.execute(
+            "SELECT MIN(start_time), MAX(end_time) FROM sessions "
+            "WHERE start_time IS NOT NULL"
+        )
+        s_min, s_max = cursor.fetchone()
+        cursor.execute(
+            "SELECT MIN(timestamp), MAX(timestamp) FROM commands "
+            "WHERE timestamp IS NOT NULL"
+        )
+        c_min, c_max = cursor.fetchone()
+    finally:
+        conn.close()
+
+    times = [t for t in (s_min, s_max, c_min, c_max) if t is not None]
+    if times:
+        earliest = datetime.fromtimestamp(min(times)).isoformat()
+        latest = datetime.fromtimestamp(max(times)).isoformat()
+    else:
+        earliest = None
+        latest = None
+
+    projects = []
+    for name, stats in project_breakdown(db).items():
+        projects.append({
+            "name": name,
+            "id": stats["id"],
+            "path": stats["path"],
+            "commands_count": stats["commands_count"],
+            "total_duration": stats["total_duration"],
+            "sessions_count": stats["sessions_count"],
+            "first_seen": (
+                datetime.fromtimestamp(stats["first_seen"]).isoformat()
+                if stats["first_seen"] is not None else None
+            ),
+            "last_seen": (
+                datetime.fromtimestamp(stats["last_seen"]).isoformat()
+                if stats["last_seen"] is not None else None
+            ),
+        })
+
+    return {
+        "total_sessions": total_sessions,
+        "total_commands": total_commands,
+        "total_projects": total_projects,
+        "time_range": {"earliest": earliest, "latest": latest},
+        "projects": projects,
+    }
+
 _LANG_CACHE = {}
 
 def detect_project_language_from_files(path: str) -> Optional[str]:

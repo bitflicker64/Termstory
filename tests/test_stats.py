@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from termstory.database import Database
 from termstory.models import Command, Session, Project
-from termstory.stats import daily_activity_heatmap, project_breakdown, language_detection, peak_hours, detect_project_language_from_files, _LANG_CACHE
+from termstory.stats import daily_activity_heatmap, project_breakdown, language_detection, peak_hours, detect_project_language_from_files, _LANG_CACHE, stats_json
 from termstory.formatter import format_stats_output
 
 @pytest.fixture
@@ -145,6 +145,59 @@ def test_format_stats_output(temp_db):
     assert "TermStory" in output
     assert "Python" in output
 
+def test_stats_json_populated(temp_db):
+    now_ts = int(time.time())
+    # Project 1: "General / No Project" -> should map to "Other"
+    p1 = Project(id=1, name="General / No Project", path=None, first_seen=now_ts, last_seen=now_ts + 60, session_count=1, total_time=60)
+    cmd1 = Command(timestamp=now_ts, command="ls", exit_code=0, session_id=1, project_id=1)
+    s1 = Session(id=1, start_time=now_ts, end_time=now_ts + 60, duration_seconds=60, project_id=1, commands=[cmd1])
+
+    # Project 2: "TermStory"
+    p2 = Project(id=2, name="TermStory", path="~/termstory", first_seen=now_ts + 100, last_seen=now_ts + 200, session_count=1, total_time=100)
+    cmd2 = Command(timestamp=now_ts + 100, command="git diff", exit_code=0, session_id=2, project_id=2)
+    s2 = Session(id=2, start_time=now_ts + 100, end_time=now_ts + 200, duration_seconds=100, project_id=2, commands=[cmd2])
+
+    temp_db.save_data([p1, p2], [s1, s2], [cmd1, cmd2])
+
+    data = stats_json(temp_db)
+
+    assert data["total_sessions"] == 2
+    assert data["total_commands"] == 2
+    assert data["total_projects"] == 2
+
+    # Time range spans earliest command and latest session end.
+    assert data["time_range"]["earliest"] == datetime.fromtimestamp(now_ts).isoformat()
+    assert data["time_range"]["latest"] == datetime.fromtimestamp(now_ts + 200).isoformat()
+
+    # Projects are a list (never keyed by name).
+    assert isinstance(data["projects"], list)
+    names = {p["name"] for p in data["projects"]}
+    assert "Other" in names
+    assert "TermStory" in names
+    assert "General / No Project" not in names
+
+    termstory_entry = next(p for p in data["projects"] if p["name"] == "TermStory")
+    assert termstory_entry["commands_count"] == 1
+    assert termstory_entry["sessions_count"] == 1
+    assert termstory_entry["total_duration"] == 100
+    assert termstory_entry["path"] == "~/termstory"
+    assert termstory_entry["id"] == 2
+    assert termstory_entry["first_seen"] == datetime.fromtimestamp(now_ts + 100).isoformat()
+    assert termstory_entry["last_seen"] == datetime.fromtimestamp(now_ts + 200).isoformat()
+
+    other_entry = next(p for p in data["projects"] if p["name"] == "Other")
+    assert other_entry["commands_count"] == 1
+    assert other_entry["sessions_count"] == 1
+
+
+def test_stats_json_empty(temp_db):
+    data = stats_json(temp_db)
+
+    assert data["total_sessions"] == 0
+    assert data["total_commands"] == 0
+    assert data["total_projects"] == 0
+    assert data["projects"] == []
+    assert data["time_range"] == {"earliest": None, "latest": None}
 
 @pytest.fixture(autouse=True)
 def clear_cache():
