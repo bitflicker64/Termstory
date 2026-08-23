@@ -72,7 +72,10 @@ machine-readable integrations. The output is pure JSON on stdout. The JSON inclu
   and `last_seen`
 
 Project names follow the same semantics as the human-readable output, i.e. the
-empty/`General / No Project` bucket is reported as `Other`. On an empty
+empty/`General / No Project` bucket is reported as `Other`. Unlike the
+human table, JSON entries are keyed by project identity (`id`), so two distinct
+projects that happen to share a display name are listed as separate entries with
+their own `id`/`path` and statistics rather than being merged. On an empty
 database, `stats --json` reports zero totals, an empty `projects` list, and a
 `time_range` of `{"earliest": null, "latest": null}`.
 

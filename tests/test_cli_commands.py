@@ -837,6 +837,9 @@ def test_cli_stats_json_populated(tmp_path, monkeypatch):
     monkeypatch.setattr("termstory.cli.get_db_path", lambda: str(db_file))
     monkeypatch.setattr("termstory.config.get_db_path", lambda: str(db_file))
     monkeypatch.setattr("termstory.cli.get_history_files", lambda: [])
+    # Ingestion warnings go to stderr; silence ingestion so the JSON-purity
+    # assertions hold even under CliRunner builds that mix stderr into stdout.
+    monkeypatch.setattr("termstory.cli.run_ingestion", lambda db: None)
 
     db = Database(str(db_file))
     db.init_db()
@@ -875,6 +878,9 @@ def test_cli_stats_json_empty(tmp_path, monkeypatch):
     monkeypatch.setattr("termstory.cli.get_db_path", lambda: str(db_file))
     monkeypatch.setattr("termstory.config.get_db_path", lambda: str(db_file))
     monkeypatch.setattr("termstory.cli.get_history_files", lambda: [])
+    # Ingestion warnings go to stderr; silence ingestion so the JSON-purity
+    # assertions hold even under CliRunner builds that mix stderr into stdout.
+    monkeypatch.setattr("termstory.cli.run_ingestion", lambda db: None)
 
     db = Database(str(db_file))
     db.init_db()

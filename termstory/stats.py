@@ -157,13 +157,128 @@ def project_breakdown(db: Database) -> Dict[str, Dict[str, Any]]:
         
     return breakdown
 
+def _project_display_name(name):
+    """Map empty/'General / No Project' project names to 'Other'.
+
+    Mirrors the display-name rule used by ``project_breakdown()`` so machine-readable
+    output stays label-consistent with the human-readable dashboard.
+    """
+    if not name or name == "General / No Project":
+        return "Other"
+    return name
+
+def _safe_datetime_from_ts(ts):
+    """Convert a Unix timestamp to a ``datetime``, skipping invalid values.
+
+    Returns ``None`` for ``None``/out-of-range input instead of raising, following
+    the existing repository convention (see ``insights.analyze_all``, which wraps
+    ``datetime.fromtimestamp`` in ``except (OSError, ValueError, OverflowError)``)
+    so a single malformed row cannot crash ``stats --json``.
+    """
+    if ts is None:
+        return None
+    try:
+        return datetime.fromtimestamp(ts)
+    except (OSError, ValueError, OverflowError):
+        return None
+
+def _iso_from_ts(ts):
+    """Convert a Unix timestamp to a stable ISO-8601 string (or ``None``)."""
+    dt = _safe_datetime_from_ts(ts)
+    return dt.isoformat() if dt is not None else None
+
+def project_breakdown_json(db: Database):
+    """Identity-keyed variant of :func:`project_breakdown` for JSON output.
+
+    ``project_breakdown()`` aggregates into a name-keyed dict, which silently merges
+    two distinct projects that share a display name (keeping only one id/path). This
+    variant keys each aggregate by the project's stable ``id`` so same-named projects
+    stay separate rows, while preserving:
+
+    * the ``General / No Project`` -> ``Other`` display-name mapping, and
+    * folding project-less activity (``project_id IS NULL``) into a single
+      ``Other`` bucket (dropped when it has no activity), like project_breakdown().
+
+    Returns a list of plain dicts sorted deterministically by
+    ``(-total_duration, name, id)`` so JSON output is stable across runs.
+    """
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, path, first_seen, last_seen FROM projects")
+        projects = cursor.fetchall()
+
+        cursor.execute("SELECT project_id, COUNT(*) FROM commands GROUP BY project_id")
+        cmd_counts = dict(cursor.fetchall())
+
+        cursor.execute(
+            "SELECT project_id, COUNT(*), SUM(duration_seconds) "
+            "FROM sessions GROUP BY project_id"
+        )
+        session_stats = {row[0]: (row[1], row[2] or 0) for row in cursor.fetchall()}
+
+        # First/last activity for project-less rows (mirrors project_breakdown).
+        cursor.execute(
+            "SELECT MIN(timestamp), MAX(timestamp) FROM commands WHERE project_id IS NULL"
+        )
+        c_min, c_max = cursor.fetchone()
+        cursor.execute(
+            "SELECT MIN(start_time), MAX(end_time) FROM sessions WHERE project_id IS NULL"
+        )
+        s_min, s_max = cursor.fetchone()
+    finally:
+        conn.close()
+
+    entries = {}
+    for p_id, name, path, first_seen, last_seen in projects:
+        sess_count, total_dur = session_stats.get(p_id, (0, 0))
+        entries[p_id] = {
+            "name": _project_display_name(name),
+            "id": p_id,
+            "path": path,
+            "commands_count": cmd_counts.get(p_id, 0),
+            "total_duration": total_dur,
+            "sessions_count": sess_count,
+            "first_seen": first_seen,
+            "last_seen": last_seen,
+        }
+
+    null_sess, null_dur = session_stats.get(None, (0, 0))
+    null_cmds = cmd_counts.get(None, 0)
+    if null_cmds or null_sess or null_dur:
+        times = [t for t in (c_min, c_max, s_min, s_max) if t is not None]
+        entries[None] = {
+            "name": "Other",
+            "id": None,
+            "path": None,
+            "commands_count": null_cmds,
+            "total_duration": null_dur,
+            "sessions_count": null_sess,
+            "first_seen": min(times) if times else None,
+            "last_seen": max(times) if times else None,
+        }
+
+    def _sort_key(p_id):
+        e = entries[p_id]
+        return (-e["total_duration"], e["name"], p_id is None, p_id or 0)
+
+    return [entries[key] for key in sorted(entries.keys(), key=_sort_key)]
+
 def stats_json(db: Database) -> Dict[str, Any]:
     """Assemble a plain, machine-readable statistics payload.
 
-    Reuses the existing ``project_breakdown()`` calculation (including the
-    ``General / No Project`` -> ``Other`` mapping) instead of duplicating it, and
-    computes the top-level session/command/project totals plus the overall activity
-    time window directly from the database.
+    Uses the identity-keyed :func:`project_breakdown_json` variant (preserving the
+    ``General / No Project`` -> ``Other`` display mapping) instead of duplicating the
+    calculation, and computes the top-level session/command/project totals plus the
+    overall activity window directly from the database.
+
+    The activity window is built from every valid timestamp source via ``UNION ALL``
+    (session starts, non-NULL session ends, and command timestamps) so an unfinished
+    session (``end_time IS NULL``) still contributes its ``start_time`` to ``latest``.
+
+    Timestamps are serialized with :func:`_iso_from_ts`, which follows the existing
+    repository convention of skipping invalid/out-of-range values rather than
+    crashing.
 
     All return values are plain JSON-compatible primitives (ints, strings or None) so
     the result can be passed straight to ``json.dumps()`` with no custom serializer.
@@ -194,54 +309,63 @@ def stats_json(db: Database) -> Dict[str, Any]:
         cursor.execute("SELECT COUNT(*) FROM projects")
         total_projects = cursor.fetchone()[0]
 
-        # Overall activity window covering both sessions and commands.
-        cursor.execute(
-            "SELECT MIN(start_time), MAX(end_time) FROM sessions "
-            "WHERE start_time IS NOT NULL"
+        # Collect every timestamp source via UNION ALL. Doing MIN/MAX in SQL here
+        # would be wrong twice over: an unfinished session (end_time IS NULL) must
+        # still contribute its start_time to `latest`, and SQLite would happily
+        # return an out-of-range outlier that Python cannot convert -- masking all
+        # valid activity. So candidates are filtered/converted per the repository
+        # convention (skip OSError/ValueError/OverflowError) before min/max.
+        sql = (
+            "SELECT ts FROM ("
+            " SELECT start_time AS ts FROM sessions WHERE start_time IS NOT NULL"
+            " UNION ALL"
+            " SELECT end_time AS ts FROM sessions WHERE end_time IS NOT NULL"
+            " UNION ALL"
+            " SELECT timestamp AS ts FROM commands WHERE timestamp IS NOT NULL"
+            ") AS activity"
         )
-        s_min, s_max = cursor.fetchone()
-        cursor.execute(
-            "SELECT MIN(timestamp), MAX(timestamp) FROM commands "
-            "WHERE timestamp IS NOT NULL"
-        )
-        c_min, c_max = cursor.fetchone()
+        cursor.execute(sql)
+        candidate_rows = cursor.fetchall()
     finally:
         conn.close()
 
-    times = [t for t in (s_min, s_max, c_min, c_max) if t is not None]
-    if times:
-        earliest = datetime.fromtimestamp(min(times)).isoformat()
-        latest = datetime.fromtimestamp(max(times)).isoformat()
+    valid_datetimes = []
+    for (ts,) in candidate_rows:
+        dt = _safe_datetime_from_ts(ts)
+        if dt is not None:
+            valid_datetimes.append(dt)
+
+    if valid_datetimes:
+        earliest_dt = min(valid_datetimes)
+        latest_dt = max(valid_datetimes)
     else:
-        earliest = None
-        latest = None
+        earliest_dt = None
+        latest_dt = None
 
     projects = []
-    for name, stats in project_breakdown(db).items():
+    for stats in project_breakdown_json(db):
         projects.append({
-            "name": name,
+            "name": stats["name"],
             "id": stats["id"],
             "path": stats["path"],
             "commands_count": stats["commands_count"],
             "total_duration": stats["total_duration"],
             "sessions_count": stats["sessions_count"],
-            "first_seen": (
-                datetime.fromtimestamp(stats["first_seen"]).isoformat()
-                if stats["first_seen"] is not None else None
-            ),
-            "last_seen": (
-                datetime.fromtimestamp(stats["last_seen"]).isoformat()
-                if stats["last_seen"] is not None else None
-            ),
+            "first_seen": _iso_from_ts(stats["first_seen"]),
+            "last_seen": _iso_from_ts(stats["last_seen"]),
         })
 
     return {
         "total_sessions": total_sessions,
         "total_commands": total_commands,
         "total_projects": total_projects,
-        "time_range": {"earliest": earliest, "latest": latest},
+        "time_range": {
+            "earliest": earliest_dt.isoformat() if earliest_dt else None,
+            "latest": latest_dt.isoformat() if latest_dt else None,
+        },
         "projects": projects,
     }
+
 
 _LANG_CACHE = {}
 
