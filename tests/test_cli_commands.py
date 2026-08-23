@@ -831,6 +831,73 @@ def test_cli_stats_command(tmp_path, monkeypatch):
     assert "HugeGraph" in result.stdout
 
 
+def test_cli_stats_json_populated(tmp_path, monkeypatch):
+    import json
+    db_file = tmp_path / "test_cli_stats_json.db"
+    monkeypatch.setattr("termstory.cli.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.config.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.cli.get_history_files", lambda: [])
+    # Ingestion warnings go to stderr; silence ingestion so the JSON-purity
+    # assertions hold even under CliRunner builds that mix stderr into stdout.
+    monkeypatch.setattr("termstory.cli.run_ingestion", lambda db: None)
+
+    db = Database(str(db_file))
+    db.init_db()
+
+    from termstory.date_utils import get_current_time
+    now = int(get_current_time().timestamp())
+    p = Project(id=1, name="HugeGraph", path="~/projects/incubator-hugegraph", first_seen=now, last_seen=now, session_count=1, total_time=100)
+    cmd = Command(timestamp=now, command="docker run nginx", session_id=1, project_id=1)
+    s = Session(id=1, start_time=now, end_time=now + 100, duration_seconds=100, project_id=1, commands=[cmd])
+    db.save_data([p], [s], [cmd])
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "--json"])
+    assert result.exit_code == 0
+
+    data = json.loads(result.stdout)
+    assert data["total_sessions"] == 1
+    assert data["total_commands"] == 1
+    assert data["total_projects"] == 1
+    assert data["time_range"]["earliest"] is not None
+    assert data["time_range"]["latest"] is not None
+    assert isinstance(data["projects"], list)
+    assert len(data["projects"]) == 1
+    proj = data["projects"][0]
+    assert proj["name"] == "HugeGraph"
+    assert "commands_count" in proj
+    assert "total_duration" in proj
+    assert "sessions_count" in proj
+    assert "first_seen" in proj
+    assert "last_seen" in proj
+
+
+def test_cli_stats_json_empty(tmp_path, monkeypatch):
+    import json
+    db_file = tmp_path / "test_cli_stats_json_empty.db"
+    monkeypatch.setattr("termstory.cli.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.config.get_db_path", lambda: str(db_file))
+    monkeypatch.setattr("termstory.cli.get_history_files", lambda: [])
+    # Ingestion warnings go to stderr; silence ingestion so the JSON-purity
+    # assertions hold even under CliRunner builds that mix stderr into stdout.
+    monkeypatch.setattr("termstory.cli.run_ingestion", lambda db: None)
+
+    db = Database(str(db_file))
+    db.init_db()
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["stats", "--json"])
+    assert result.exit_code == 0
+
+    data = json.loads(result.stdout)
+    assert data["total_sessions"] == 0
+    assert data["total_commands"] == 0
+    assert data["total_projects"] == 0
+    assert data["projects"] == []
+    assert data["time_range"]["earliest"] is None
+    assert data["time_range"]["latest"] is None
+
+
 def test_cli_project_context_command(tmp_path, monkeypatch):
     db_file = tmp_path / "test_cli_project_context.db"
     monkeypatch.setattr("termstory.cli.get_db_path", lambda: str(db_file))

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from termstory.database import Database
 from termstory.models import Command, Session, Project
-from termstory.stats import daily_activity_heatmap, project_breakdown, language_detection, peak_hours, detect_project_language_from_files, _LANG_CACHE
+from termstory.stats import daily_activity_heatmap, project_breakdown, language_detection, peak_hours, detect_project_language_from_files, _LANG_CACHE, stats_json
 from termstory.formatter import format_stats_output
 
 @pytest.fixture
@@ -144,6 +144,143 @@ def test_format_stats_output(temp_db):
     assert "Project Breakdown" in output
     assert "TermStory" in output
     assert "Python" in output
+
+def test_stats_json_populated(temp_db):
+    now_ts = int(time.time())
+    # Project 1: "General / No Project" -> should map to "Other"
+    p1 = Project(id=1, name="General / No Project", path=None, first_seen=now_ts, last_seen=now_ts + 60, session_count=1, total_time=60)
+    cmd1 = Command(timestamp=now_ts, command="ls", exit_code=0, session_id=1, project_id=1)
+    s1 = Session(id=1, start_time=now_ts, end_time=now_ts + 60, duration_seconds=60, project_id=1, commands=[cmd1])
+
+    # Project 2: "TermStory"
+    p2 = Project(id=2, name="TermStory", path="~/termstory", first_seen=now_ts + 100, last_seen=now_ts + 200, session_count=1, total_time=100)
+    cmd2 = Command(timestamp=now_ts + 100, command="git diff", exit_code=0, session_id=2, project_id=2)
+    s2 = Session(id=2, start_time=now_ts + 100, end_time=now_ts + 200, duration_seconds=100, project_id=2, commands=[cmd2])
+
+    temp_db.save_data([p1, p2], [s1, s2], [cmd1, cmd2])
+
+    data = stats_json(temp_db)
+
+    assert data["total_sessions"] == 2
+    assert data["total_commands"] == 2
+    assert data["total_projects"] == 2
+
+    # Time range spans earliest command and latest session end.
+    assert data["time_range"]["earliest"] == datetime.fromtimestamp(now_ts).isoformat()
+    assert data["time_range"]["latest"] == datetime.fromtimestamp(now_ts + 200).isoformat()
+
+    # Projects are a list (never keyed by name).
+    assert isinstance(data["projects"], list)
+    names = {p["name"] for p in data["projects"]}
+    assert "Other" in names
+    assert "TermStory" in names
+    assert "General / No Project" not in names
+
+    termstory_entry = next(p for p in data["projects"] if p["name"] == "TermStory")
+    assert termstory_entry["commands_count"] == 1
+    assert termstory_entry["sessions_count"] == 1
+    assert termstory_entry["total_duration"] == 100
+    assert termstory_entry["path"] == "~/termstory"
+    assert termstory_entry["id"] == 2
+    assert termstory_entry["first_seen"] == datetime.fromtimestamp(now_ts + 100).isoformat()
+    assert termstory_entry["last_seen"] == datetime.fromtimestamp(now_ts + 200).isoformat()
+
+    other_entry = next(p for p in data["projects"] if p["name"] == "Other")
+    assert other_entry["commands_count"] == 1
+    assert other_entry["sessions_count"] == 1
+    # Identity-keyed JSON keeps the mapped project's own id/path.
+    assert other_entry["id"] == 1
+    assert other_entry["path"] is None
+
+
+def test_stats_json_empty(temp_db):
+    data = stats_json(temp_db)
+
+    assert data["total_sessions"] == 0
+    assert data["total_commands"] == 0
+    assert data["total_projects"] == 0
+    assert data["projects"] == []
+    assert data["time_range"] == {"earliest": None, "latest": None}
+
+def test_stats_json_unfinished_session_latest(temp_db):
+    base = int(time.time())
+    p = Project(id=1, name="Alpha", path="~/alpha", first_seen=base, last_seen=base + 300, session_count=2, total_time=100)
+    cmd = Command(timestamp=base + 150, command="git status", exit_code=0, session_id=1, project_id=1)
+    completed = Session(id=1, start_time=base + 100, end_time=base + 200, duration_seconds=100, project_id=1, commands=[cmd])
+    temp_db.save_data([p], [completed], [cmd])
+
+    # Later *unfinished* session: end_time/duration are NULL while still running.
+    conn = temp_db.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO sessions (start_time, end_time, duration_seconds, project_id) "
+            "VALUES (?, NULL, NULL, 1)",
+            (base + 300,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    data = stats_json(temp_db)
+
+    assert data["total_sessions"] == 2
+    assert data["total_commands"] == 1
+    # The unfinished session's start_time must bound `latest`.
+    assert data["time_range"]["latest"] == datetime.fromtimestamp(base + 300).isoformat()
+    assert data["time_range"]["earliest"] == datetime.fromtimestamp(base + 100).isoformat()
+
+
+def test_stats_json_duplicate_project_names(temp_db):
+    base = int(time.time())
+    pa = Project(id=1, name="demo", path="/repo/a", first_seen=base, last_seen=base + 10, session_count=1, total_time=10)
+    pb = Project(id=2, name="demo", path="/repo/b", first_seen=base + 20, last_seen=base + 40, session_count=1, total_time=20)
+    ca = Command(timestamp=base + 5, command="echo a", exit_code=0, session_id=1, project_id=1)
+    sa = Session(id=1, start_time=base, end_time=base + 10, duration_seconds=10, project_id=1, commands=[ca])
+    cb = Command(timestamp=base + 25, command="echo b", exit_code=0, session_id=2, project_id=2)
+    sb = Session(id=2, start_time=base + 20, end_time=base + 40, duration_seconds=20, project_id=2, commands=[cb])
+    temp_db.save_data([pa, pb], [sa, sb], [ca, cb])
+
+    data = stats_json(temp_db)
+
+    assert data["total_projects"] == 2
+    assert len(data["projects"]) == 2
+    demos = [entry for entry in data["projects"] if entry["name"] == "demo"]
+    assert len(demos) == 2
+    by_id = {entry["id"]: entry for entry in demos}
+    assert set(by_id) == {1, 2}
+    assert by_id[1]["path"] == "/repo/a"
+    assert by_id[2]["path"] == "/repo/b"
+    # Stats must stay attached to the correct project identity.
+    assert by_id[1]["commands_count"] == 1 and by_id[1]["sessions_count"] == 1
+    assert by_id[1]["total_duration"] == 10
+    assert by_id[2]["commands_count"] == 1 and by_id[2]["sessions_count"] == 1
+    assert by_id[2]["total_duration"] == 20
+
+
+def test_stats_json_skips_invalid_timestamps(temp_db):
+    base = int(time.time())
+    p = Project(id=1, name="Valid", path="~/valid", first_seen=base, last_seen=base + 50, session_count=2, total_time=50)
+    cmd = Command(timestamp=base + 10, command="ls", exit_code=0, session_id=1, project_id=1)
+    good = Session(id=1, start_time=base, end_time=base + 50, duration_seconds=50, project_id=1, commands=[cmd])
+    temp_db.save_data([p], [good], [cmd])
+
+    # Out-of-range timestamp (same shape insights.analyze_all already guards
+    # against) must not crash stats_json().
+    conn = temp_db.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO sessions (start_time, end_time, duration_seconds, project_id) "
+            "VALUES (?, NULL, NULL, 1)",
+            (-999999999999,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    data = stats_json(temp_db)  # Must not raise.
+
+    assert data["time_range"]["earliest"] == datetime.fromtimestamp(base).isoformat()
+    assert data["time_range"]["latest"] == datetime.fromtimestamp(base + 50).isoformat()
 
 
 @pytest.fixture(autouse=True)

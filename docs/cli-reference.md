@@ -55,6 +55,29 @@ Export all or filtered sessions as JSON, CSV, or Markdown to share or perform cu
 ### 📊 Stats (Detailed Work Telemetry)
 Compute and display high-density, CLI-native command category breakdown tables, tool usage, and terminal telemetry.
 - `termstory stats`
+- `termstory stats --json`
+
+`termstory stats --json` emits machine-readable JSON (instead of the Rich/human
+dashboard) intended for CI/CD pipelines, dashboards, scripts, and other
+machine-readable integrations. The output is pure JSON on stdout. The JSON includes:
+
+- `total_sessions` — total session count (`int`)
+- `total_commands` — total command count (`int`)
+- `total_projects` — total project count (`int`)
+- `time_range` — activity window:
+  - `earliest` — ISO-8601 timestamp of earliest activity, or `null`
+  - `latest` — ISO-8601 timestamp of latest activity, or `null`
+- `projects` — per-project breakdown list where each entry has `name`, `id`,
+  `path`, `commands_count`, `total_duration`, `sessions_count`, `first_seen`,
+  and `last_seen`
+
+Project names follow the same semantics as the human-readable output, i.e. the
+empty/`General / No Project` bucket is reported as `Other`. Unlike the
+human table, JSON entries are keyed by project identity (`id`), so two distinct
+projects that happen to share a display name are listed as separate entries with
+their own `id`/`path` and statistics rather than being merged. On an empty
+database, `stats --json` reports zero totals, an empty `projects` list, and a
+`time_range` of `{"earliest": null, "latest": null}`.
 
 ### 🏷️ Tags (Session Classification)
 Auto-classify and tag sessions (`deploy`, `debug`, `setup`, `test`, `docs`) based on shell commands and git commit messages.
@@ -149,6 +172,7 @@ termstory anger-translator   # Translate recent commits/errors into emotional st
 
 ```bash
 termstory stats              # Detailed, high-density work statistics and telemetry
+termstory stats --json       # Output session statistics as machine-readable JSON
 ```
 
 ### Ask

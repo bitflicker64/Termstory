@@ -418,7 +418,9 @@ def show_insights():
 
 
 @app.command("stats")
-def show_stats():
+def show_stats(
+    json_out: bool = typer.Option(False, "--json", help="Output session statistics as machine-readable JSON"),
+):
     """Show detailed, high-density work statistics and telemetry"""
     db_path = get_db_path()
     db = Database(db_path)
@@ -426,6 +428,12 @@ def show_stats():
     
     run_ingestion(db)
     
+    if json_out:
+        import json
+        from termstory.stats import stats_json
+        print(json.dumps(stats_json(db), indent=2))
+        return
+
     output = format_stats_output(db)
     from rich.text import Text
     console.print(Text.from_ansi(output))
