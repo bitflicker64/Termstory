@@ -16,6 +16,7 @@ from termstory.reminder import (
     save_reminders,
     get_reminders_file_path,
     cluster_commands,
+    generate_cluster_summary,
     _DEFAULT_CLUSTERING_THRESHOLD,
     consolidate_sleep_contexts
 )
@@ -534,3 +535,102 @@ def test_consolidate_sleep_contexts_reads_config_once_not_per_chunk(tmp_path, mo
         f"load_config() was called {call_count[0]} times for 3 chunks — "
         "expected exactly 1 (resolved once per run, not once per chunk)"
     )
+
+
+def _patch_cluster_llm(monkeypatch, provider="groq"):
+    """Point generate_cluster_summary at a fake provider and capture the outbound
+    LLM prompt via _send_llm_request — the request boundary it actually uses."""
+    config = {
+        "active_provider": provider,
+        "providers": {
+            provider: {
+                "api_key": "test-key",
+                "api_base_url": "https://api.example.test/v1",
+                "model_name": "test-model",
+            }
+        },
+    }
+    monkeypatch.setattr("termstory.config.load_config", lambda: config)
+
+    calls = []
+
+    def fake_send_llm_request(prompt, *args, **kwargs):
+        calls.append({"prompt": prompt})
+        return "Shipped the feature"
+
+    monkeypatch.setattr("termstory.ai._send_llm_request", fake_send_llm_request)
+    return calls
+
+
+def test_generate_cluster_summary_redacts_secrets_from_llm_prompt(monkeypatch):
+    """Regression test for issue #449: secrets must be scrubbed by
+    sanitize_session_commands() before the cluster prompt reaches the LLM."""
+    calls = _patch_cluster_llm(monkeypatch)
+
+    result = generate_cluster_summary(
+        [
+            "git status",
+            # Not blacklisted (no 'aws configure'), but carries a fake AWS key
+            # that redact_command() must turn into [REDACTED_AWS_KEY].
+            "aws s3 ls --access-key AKIAIOSFODNN7EXAMPLE",
+        ]
+    )
+
+    assert len(calls) == 1
+    sent_prompt = calls[0]["prompt"]
+    assert "AKIAIOSFODNN7EXAMPLE" not in sent_prompt
+    assert "[REDACTED_AWS_KEY]" in sent_prompt
+    assert "git status" in sent_prompt
+    assert result == "Shipped the feature"
+
+
+def test_generate_cluster_summary_blacklisted_commands_never_reach_llm(monkeypatch):
+    """A cluster containing a blacklisted command (e.g. vault) must return the
+    standard redaction marker and must not trigger any LLM request."""
+    calls = _patch_cluster_llm(monkeypatch)
+
+    result = generate_cluster_summary(
+        [
+            "cd project",
+            "vault read secret/data/prod",
+        ]
+    )
+
+    assert result == "[REDACTED: Security/Authentication Operations]"
+    assert calls == []
+
+
+def test_generate_cluster_summary_keeps_normal_commands_in_prompt(monkeypatch):
+    """Ordinary (non-blacklisted) commands must still be summarized by the LLM
+    path with their sanitized text present in the prompt."""
+    calls = _patch_cluster_llm(monkeypatch)
+
+    result = generate_cluster_summary(
+        [
+            "docker compose up -d",
+            "pytest tests/ -q",
+        ]
+    )
+
+    assert len(calls) == 1
+    sent_prompt = calls[0]["prompt"]
+    assert "- docker compose up -d" in sent_prompt
+    assert "- pytest tests/ -q" in sent_prompt
+    assert result == "Shipped the feature"
+
+
+def test_generate_cluster_summary_disabled_provider_stays_local(monkeypatch):
+    """provider == "disabled" keeps the original local fallback behavior: no
+    sanitization/request logic and definitely no LLM call."""
+    config = {"active_provider": "disabled"}
+    monkeypatch.setattr("termstory.config.load_config", lambda: config)
+    calls = []
+    monkeypatch.setattr(
+        "termstory.ai._send_llm_request",
+        lambda *args, **kwargs: calls.append(args),
+    )
+
+    result = generate_cluster_summary(["git status", "docker ps"])
+
+    assert result == "Worked on commands: git, docker"
+    assert calls == []

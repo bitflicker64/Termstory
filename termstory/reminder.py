@@ -7,6 +7,7 @@ import sqlite3
 import time
 from typing import List, Dict, Optional, Tuple
 from termstory.config import get_app_dir, load_config
+from termstory.sanitizer import sanitize_session_commands
 
 logger = logging.getLogger(__name__)
 
@@ -259,7 +260,14 @@ def cluster_commands(commands: List[str], threshold: Optional[float] = None) -> 
 
 
 def generate_cluster_summary(commands: List[str]) -> str:
-    """Generate a single-line, high-density summary of a command cluster."""
+    """Generate a single-line, high-density summary of a command cluster.
+
+    Security: commands are sanitized via sanitize_session_commands() before being
+    embedded in the LLM prompt (same contract as generate_ai_summary()). Clusters
+    containing blacklisted commands (vault, aws configure, gh auth, raw token
+    strings, etc.) never reach the LLM; the standard redaction marker is returned
+    instead.
+    """
     from termstory.config import load_config, get_config_value
     config = load_config()
     provider = config.get("active_provider", "disabled")
@@ -274,12 +282,19 @@ def generate_cluster_summary(commands: List[str]) -> str:
             return "Idle session"
         return f"Worked on commands: {', '.join(unique[:3])}"
 
+    # Sanitize before anything reaches the LLM prompt. A blacklisted cluster
+    # (any vault/aws configure/gh auth-style command) never leaves the machine.
+    sanitized_cmds, is_blacklisted = sanitize_session_commands(commands)
+    if is_blacklisted:
+        # sanitized_cmds is None here — never iterate it.
+        return "[REDACTED: Security/Authentication Operations]"
+
     # Query LLM
     from termstory.ai import _send_llm_request
     prompt = (
         "You are a developer memory engine. Summarize the following cluster of raw terminal commands "
         "into a single-line, high-density, tech-dense summary of what the developer was doing (e.g. 'Set up Docker container and verified logs').\n\n"
-        "Commands:\n" + "\n".join(f"- {c}" for c in commands) + "\n\n"
+        "Commands:\n" + "\n".join(f"- {c}" for c in sanitized_cmds) + "\n\n"
         "Return ONLY the single line summary. No markdown formatting, no conversational filler, and no surrounding quotes."
     )
     
@@ -295,9 +310,10 @@ def generate_cluster_summary(commands: List[str]) -> str:
         from rich.markup import escape
         return escape(summary.strip())
     
-    # Fallback if request failed
+    # Fallback if request failed (local string only — still derived from the
+    # sanitized list so raw command text is never reused downstream).
     unique = []
-    for c in commands:
+    for c in sanitized_cmds:
         base = c.split()[0] if c.strip() else ""
         if base and base not in unique:
             unique.append(base)
