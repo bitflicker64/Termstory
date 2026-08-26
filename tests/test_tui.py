@@ -14,6 +14,7 @@ from termstory.tui import (
     MatrixDefragCanvas,
     OnboardingScreen,
     TermStoryWorkspace,
+    _compute_highlight_days,
     calculate_dashboard_stats,
     calculate_streak,
     clean_command_to_memory,
@@ -86,6 +87,245 @@ def test_generate_heatmap():
     heatmap = generate_heatmap(sessions, days_limit=30)
     assert "█" in heatmap or "■" in heatmap or "▄" in heatmap
     assert "░" in heatmap
+
+
+def test_highlight_days_visible_window_scopes_personal_best(monkeypatch):
+    """Regression for issue #446: a prolific day OUTSIDE the visible window must
+    not suppress personal-best highlights on days INSIDE the window.
+
+    The old behaviour computed the personal-best across the entire session
+    history, so a single historically-prolific day set ``max_count`` and recent
+    (lower-count) visible days never got highlighted. The visible window here
+    is ``days_limit=4`` (the 4 most recent days ending today)."""
+    now = datetime(2026, 6, 2, 12, 0)
+    monkeypatch.setattr("termstory.tui.get_current_time", lambda: now)
+    today = now.date()
+
+    historical_day = today - timedelta(days=10)   # outside the 4-day window
+    day_a = today                                  # inside
+    day_b = today - timedelta(days=1)              # inside
+    day_c = today - timedelta(days=2)              # inside
+
+    # A single prolific day long before the visible window used to set the bar.
+    day_counts = {
+        historical_day: 1000,
+        day_a: 100,
+        day_b: 100,
+        day_c: 100,
+    }
+
+    highlight = _compute_highlight_days(day_counts, [], days_limit=4)
+
+    assert historical_day not in highlight
+    assert highlight == {day_a, day_b, day_c}
+
+
+def test_calculate_dashboard_stats_scopes_personal_best_to_all_history_window(monkeypatch):
+    """Regression for issue #446 via the dashboard path.
+
+    Contract: ``calculate_dashboard_stats()`` requires an already-resolved
+    concrete window — ``days_limit=None`` is resolved upstream by
+    ``update_stats_header()`` (``self.days_limit or 90``) because
+    ``generate_heatmap()`` can only render a concrete day count. This test
+    therefore exercises All History semantics via the exact resolved rendered
+    window (90 days) that the app passes in that mode; see
+    ``test_tui_all_history_scopes_highlight_cache_to_rendered_window`` for the
+    end-to-end ``days_limit=None`` resolution itself.
+    """
+    now = datetime(2026, 6, 2, 12, 0)
+    monkeypatch.setattr("termstory.tui.get_current_time", lambda: now)
+
+    today = now.date()
+    recent_a = int((now - timedelta(days=0)).timestamp())
+    recent_b = int((now - timedelta(days=1)).timestamp())
+    recent_c = int((now - timedelta(days=2)).timestamp())
+    old_z = int((now - timedelta(days=100)).timestamp())  # outside 90-day window
+
+    def session(sid, ts, count):
+        return Session(
+            id=sid,
+            start_time=ts,
+            end_time=ts + 600,
+            duration_seconds=600,
+            project_id=1,
+            commands=[Command(timestamp=ts, command=f"cmd_{count}") for _ in range(count)],
+        )
+
+    sessions = [
+        session(1, old_z, 1000),   # prolific day, outside the visible window
+        session(2, recent_a, 100),  # visible, personal best (tie)
+        session(3, recent_b, 100),  # visible, personal best (tie)
+        session(4, recent_c, 100),  # visible, personal best (tie)
+    ]
+
+    # 90 = the window update_stats_header() resolves from days_limit=None.
+    stats = calculate_dashboard_stats(sessions, [], days_limit=90, pulse_phase=0)
+
+    highlight = stats["highlight_days"]
+    # The prolific day 100 days ago is outside the 90-day window and must not
+    # suppress the visible recent days from being personal-best highlights.
+    assert (today - timedelta(days=100)) not in highlight
+    assert today in highlight
+    assert today - timedelta(days=1) in highlight
+    assert today - timedelta(days=2) in highlight
+
+
+@pytest.mark.asyncio
+async def test_tui_all_history_scopes_highlight_cache_to_rendered_window(monkeypatch):
+    """End-to-end issue #446 coverage of ``days_limit=None`` ("All History").
+
+    cli.py wires ``--all-history`` to ``TermStoryWorkspace(db, days_limit=None)``.
+    All sessions are still loaded from the DB, but update_stats_header() must
+    resolve the actually rendered heatmap window (``self.days_limit or 90``)
+    before computing the personal-best highlight cache — so a prolific day
+    outside that window can neither be highlighted itself nor suppress the
+    tied personal-best days that ARE rendered.
+    """
+    now = datetime(2026, 6, 2, 12, 0)
+    monkeypatch.setattr("termstory.tui.get_current_time", lambda: now)
+
+    def ts(days_ago):
+        return int((now - timedelta(days=days_ago)).timestamp())
+
+    project = Project(
+        id=1,
+        name="Project Alpha",
+        path="~/alpha",
+        first_seen=ts(100),
+        last_seen=ts(0),
+        session_count=4,
+        total_time=2400,
+    )
+
+    sessions = []
+    commands = []
+    # (session_id, days_ago, command_count): one prolific historical day plus
+    # three visible days tied at a lower count.
+    for sid, days_ago, count in [(1, 100, 1000), (2, 0, 100), (3, 1, 100), (4, 2, 100)]:
+        start = ts(days_ago)
+        cmds = [
+            Command(timestamp=start + i, command=f"cmd_{i}", session_id=sid, project_id=1)
+            for i in range(count)
+        ]
+        commands.extend(cmds)
+        sessions.append(
+            Session(
+                id=sid,
+                start_time=start,
+                end_time=start + 600,
+                duration_seconds=600,
+                project_id=1,
+                commands=cmds,
+            )
+        )
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = os.path.join(tmp_dir, "test.db")
+        db = Database(db_path)
+        db.init_db()
+        db.save_data([project], sessions, commands)
+
+        app = TermStoryWorkspace(
+            db,
+            days_limit=None,  # All History mode
+            config_override={
+                "has_seen_onboarding": True,
+                "ai_enabled": False,
+                "active_provider": "disabled",
+            },
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # All History still LOADS every session — the fix must scope only
+            # the personal-best comparison, never drop historical data.
+            assert len(app.sessions) == len(sessions)
+
+            today = now.date()
+            highlight = getattr(app, "_cached_highlight_days")
+            assert today in highlight
+            assert today - timedelta(days=1) in highlight
+            assert today - timedelta(days=2) in highlight
+            # Outside the rendered 90-day window: neither highlighted nor
+            # allowed to suppress the ties above.
+            assert today - timedelta(days=100) not in highlight
+
+            # The raw None still flows to the label; only rendering/highlights
+            # use the resolved 90-day window.
+            stats_panel = app.query_one("#stats-panel")
+            assert "Activity (All History):" in str(stats_panel.render())
+
+
+@pytest.mark.asyncio
+async def test_tui_highlight_cache_invalidates_across_midnight(monkeypatch):
+    """Issue #446 review fix: the highlight cache must be keyed on the current
+    date too, not just session_count.
+
+    With ``days_limit=1`` and one session on day A, day A's tick caches
+    ``{A}``. After midnight (day B) the rendered window is ``{B}`` only and no
+    new session appeared — the stale cache must NOT keep serving ``{A}``.
+    """
+    clock = {"now": datetime(2026, 6, 2, 12, 0)}
+    monkeypatch.setattr("termstory.tui.get_current_time", lambda: clock["now"])
+
+    day_a = clock["now"].date()
+    start_a = int(clock["now"].timestamp())
+    project = Project(
+        id=1,
+        name="Project Alpha",
+        path="~/alpha",
+        first_seen=start_a,
+        last_seen=start_a,
+        session_count=1,
+        total_time=600,
+    )
+    cmds = [
+        Command(timestamp=start_a + i, command=f"cmd_{i}", session_id=1, project_id=1)
+        for i in range(10)
+    ]
+    session_a = Session(
+        id=1,
+        start_time=start_a,
+        end_time=start_a + 600,
+        duration_seconds=600,
+        project_id=1,
+        commands=cmds,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = os.path.join(tmp_dir, "test.db")
+        db = Database(db_path)
+        db.init_db()
+        db.save_data([project], [session_a], cmds)
+
+        app = TermStoryWorkspace(
+            db,
+            days_limit=1,
+            config_override={
+                "has_seen_onboarding": True,
+                "ai_enabled": False,
+                "active_provider": "disabled",
+            },
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # Day A: today's session is the personal best inside {A}.
+            assert app._cached_highlight_days == {day_a}
+            assert app._cached_highlight_date == day_a
+
+            # Midnight rolls over; NO new session is created.
+            clock["now"] = clock["now"] + timedelta(days=1)
+            day_b = clock["now"].date()
+            assert len(app.sessions) == 1  # session_count unchanged...
+
+            app.update_stats_header()
+
+            # ...yet the cache was recomputed for day B's rendered window:
+            # the session's day A is now outside it and nothing is highlightable.
+            assert app._cached_highlight_date == day_b
+            assert app._cached_highlight_days == set()
+            assert app._cached_highlight_session_count == 1
 
 
 def test_get_session_memory_str():

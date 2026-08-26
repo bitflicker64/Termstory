@@ -80,7 +80,7 @@ def _make_session(
 
 def test_highlight_days_empty_when_no_sessions():
     """No sessions → no highlight days."""
-    assert _compute_highlight_days({}, []) == set()
+    assert _compute_highlight_days({}, [], days_limit=30) == set()
 
 
 def test_highlight_days_personal_best_command_count():
@@ -91,7 +91,7 @@ def test_highlight_days_personal_best_command_count():
 
     day_counts = {today: 50, yesterday: 10}
     # The sessions list is only used for the 8-hour check, so pass empty.
-    highlight = _compute_highlight_days(day_counts, [])
+    highlight = _compute_highlight_days(day_counts, [], days_limit=30)
     assert highlight == {today}
 
 
@@ -103,7 +103,7 @@ def test_highlight_days_ties_for_personal_best_all_highlighted():
     two_days_ago = today - timedelta(days=2)
 
     day_counts = {today: 30, yesterday: 30, two_days_ago: 10}
-    highlight = _compute_highlight_days(day_counts, [])
+    highlight = _compute_highlight_days(day_counts, [], days_limit=30)
     assert highlight == {today, yesterday}
 
 
@@ -111,7 +111,7 @@ def test_highlight_days_zero_count_days_not_highlighted():
     """A day with 0 commands must never be highlighted even if it's the 'max'."""
     today = datetime.now().date()
     day_counts = {today: 0}
-    assert _compute_highlight_days(day_counts, []) == set()
+    assert _compute_highlight_days(day_counts, [], days_limit=30) == set()
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -127,7 +127,7 @@ def test_highlight_days_eight_hour_session_highlighted():
     # 8-hour session today, 0 commands so it won't trigger via personal-best.
     s = _make_session(1, now, EIGHT_HOURS_SECONDS, command_count=0)
     day_counts = {today: 0}
-    highlight = _compute_highlight_days(day_counts, [s])
+    highlight = _compute_highlight_days(day_counts, [s], days_limit=1)
     assert today in highlight
 
 
@@ -138,7 +138,7 @@ def test_highlight_days_just_under_eight_hours_not_highlighted():
 
     s = _make_session(1, now, EIGHT_HOURS_SECONDS - 1, command_count=0)
     day_counts = {today: 0}
-    highlight = _compute_highlight_days(day_counts, [s])
+    highlight = _compute_highlight_days(day_counts, [s], days_limit=1)
     assert today not in highlight
 
 
@@ -149,7 +149,7 @@ def test_highlight_days_eight_hour_exactly_is_highlighted():
 
     s = _make_session(1, now, EIGHT_HOURS_SECONDS, command_count=0)
     day_counts = {today: 0}
-    highlight = _compute_highlight_days(day_counts, [s])
+    highlight = _compute_highlight_days(day_counts, [s], days_limit=1)
     assert today in highlight
 
 
@@ -170,7 +170,7 @@ def test_highlight_days_union_of_personal_best_and_eight_hour():
     )
 
     day_counts = {today: 50, yesterday: 10}
-    highlight = _compute_highlight_days(day_counts, [s_today, s_yesterday])
+    highlight = _compute_highlight_days(day_counts, [s_today, s_yesterday], days_limit=30)
     assert today in highlight      # via personal best
     assert yesterday in highlight  # via 8h session
 
