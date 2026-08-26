@@ -133,7 +133,11 @@ def calculate_streak(sessions: List[Session]) -> int:
 EIGHT_HOURS_SECONDS = 8 * 3600
 
 
-def _compute_highlight_days(day_counts: dict, sessions: List[Session]) -> set:
+def _compute_highlight_days(
+    day_counts: dict,
+    sessions: List[Session],
+    days_limit: int = 30,
+) -> set:
     """Compute the set of dates that should be eligible for the magenta→pink
     pulse animation (issue #42).
 
@@ -144,22 +148,39 @@ def _compute_highlight_days(day_counts: dict, sessions: List[Session]) -> set:
       (b) at least one session that started on that day ran for 8+ continuous
           hours (``duration_seconds >= EIGHT_HOURS_SECONDS``).
 
-    Returns an empty set when there is no activity at all (so the pulse has
-    nothing to highlight — the scan-line effect still runs on its own).
+    The personal-best comparison is scoped to the **visible window**: the
+    ``days_limit`` most recent dates ending at today (``today - (days_limit -
+    1)`` .. ``today``), which is exactly the set of dates ``generate_heatmap``
+    renders. Days outside that window are ignored for the personal-best test,
+    so a single prolific day from long ago can no longer suppress
+    personal-best highlights on recent days inside the window.
 
-    TODO: When ``days_limit`` is ``None`` ("All History" mode), the
-    personal-best computation scans the ENTIRE session history rather than
-    a bounded window. This is correct but may produce surprising results
-    for long-time users (a single prolific day months ago suppresses all
-    other days). A follow-up PR could scope the personal-best to the
-    visible window only. Out of scope for this PR — requires threading
-    ``days_limit`` through the call chain.
+    When ``days_limit`` is ``None`` ("All History" mode), callers resolve it
+    to the rendered window they actually display (e.g. the dashboard's 90-day
+    fallback) before calling — it is never interpreted as an empty or zero-day
+    window here.
+
+    Returns an empty set when there is no visible activity at all (so the
+    pulse has nothing to highlight — the scan-line effect still runs on its
+    own).
     """
-    if not day_counts:
+    if not day_counts or days_limit is None or days_limit <= 0:
         return set()
 
-    max_count = max(day_counts.values())
-    highlight = {d for d, c in day_counts.items() if c > 0 and c == max_count}
+    now = get_current_time().date()
+    visible_days = {now - timedelta(days=i) for i in range(days_limit)}
+
+    visible_day_counts = {
+        d: c for d, c in day_counts.items() if d in visible_days
+    }
+
+    if not visible_day_counts:
+        return set()
+
+    max_count = max(visible_day_counts.values())
+    highlight = {
+        d for d, c in visible_day_counts.items() if c > 0 and c == max_count
+    }
 
     for s in sessions:
         if getattr(s, "duration_seconds", 0) >= EIGHT_HOURS_SECONDS:
@@ -202,6 +223,9 @@ def generate_heatmap(
     highlight = highlight_days or set()
 
     heatmap_blocks = []
+    # These ``days_limit`` dates are THE visible window. _compute_highlight_days()
+    # scopes the personal-best to this exact same date set, derived from the same
+    # resolved ``days_limit`` int — keep the two in sync (issue #446).
     for i in range(days_limit - 1, -1, -1):
         target_date = now - timedelta(days=i)
         cmd_count = day_counts[target_date]
@@ -289,7 +313,8 @@ def calculate_dashboard_stats(
         day_counts = defaultdict(int)
         for s in real_sessions:
             day_counts[datetime.fromtimestamp(s.start_time).date()] += len(s.commands)
-        highlight_days = _compute_highlight_days(day_counts, real_sessions)
+        # Scope the personal-best to the same visible window the heatmap uses.
+        highlight_days = _compute_highlight_days(day_counts, real_sessions, days_limit)
 
     streak = calculate_streak(real_sessions)
     total_seconds = sum(s.duration_seconds for s in sessions)
@@ -3130,7 +3155,14 @@ class TermStoryWorkspace(App):
             day_counts = defaultdict(int)
             for s in real_sessions:
                 day_counts[datetime.fromtimestamp(s.start_time).date()] += len(s.commands)
-            self._cached_highlight_days = _compute_highlight_days(day_counts, real_sessions)
+            # The resolved rendered window (same value passed to
+            # calculate_dashboard_stats/generate_heatmap below) is used so the
+            # personal-best is scoped to the days actually visible in the
+            # heatmap, even in "All History" mode (days_limit is None → 90).
+            resolved_window = self.days_limit or 90
+            self._cached_highlight_days = _compute_highlight_days(
+                day_counts, real_sessions, resolved_window
+            )
             self._cached_highlight_session_count = session_count
 
         stats = calculate_dashboard_stats(
