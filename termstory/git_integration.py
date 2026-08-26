@@ -19,7 +19,10 @@ def is_git_repo(path: str) -> bool:
             check=False,
             timeout=10
         )
-        return res.returncode == 0
+        # Returning True only when both the process succeeded and git reports
+        # that we are inside a work tree. `rev-parse --is-inside-work-tree`
+        # exits 0 and prints "false" for a .git directory or a bare repo.
+        return res.returncode == 0 and res.stdout.strip() == "true"
     except Exception:
         return False
 
