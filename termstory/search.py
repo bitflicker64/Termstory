@@ -23,10 +23,20 @@ def advanced_search(
         cursor = conn.cursor()
         
         if fts and query:
-            try:
-                return _search_new_fts5(conn, query, project_filter, since_ts, until_ts, tag_filters, limit)
-            except sqlite3.OperationalError:
-                logger.warning("FTS5 advanced search failed, falling back", exc_info=True)
+            # #467: an FTS index can exist yet be stale/incomplete relative to
+            # the authoritative commands table (lost triggers, interrupted
+            # migration, restored backup). Searching such an index silently
+            # omits records, so verify coverage first and route around it.
+            if _commands_fts_is_consistent(conn):
+                try:
+                    return _search_new_fts5(conn, query, project_filter, since_ts, until_ts, tag_filters, limit)
+                except sqlite3.OperationalError:
+                    logger.warning("FTS5 advanced search failed, falling back", exc_info=True)
+            else:
+                logger.warning(
+                    "commands_fts missing or incomplete relative to authoritative "
+                    "commands; skipping FTS5 advanced search (#467)"
+                )
 
         # Check if FTS5 is enabled
         fts_enabled = False
@@ -37,14 +47,90 @@ def advanced_search(
             pass
             
         if fts_enabled and query:
-            try:
-                return _search_fts5(conn, query, project_filter, since_ts, until_ts, tag_filters, limit)
-            except sqlite3.OperationalError:
-                logger.warning("FTS5 search failed, falling back", exc_info=True)
-                
+            # #467: same consistency gate as above, for the manually-synced
+            # search_index backend ('command' rows mirror commands one-to-one).
+            if _search_index_is_consistent(conn):
+                try:
+                    return _search_fts5(conn, query, project_filter, since_ts, until_ts, tag_filters, limit)
+                except sqlite3.OperationalError:
+                    logger.warning("FTS5 search failed, falling back", exc_info=True)
+            else:
+                logger.warning(
+                    "search_index incomplete relative to authoritative commands; "
+                    "using standard SQL search (#467)"
+                )
+
         return _search_standard(conn, query, project_filter, since_ts, until_ts, tag_filters, limit)
     finally:
         conn.close()
+
+
+def _commands_fts_is_consistent(conn: sqlite3.Connection) -> bool:
+    """#467: cheap structural check that commands_fts covers every command.
+
+    commands_fts is an EXTERNAL-CONTENT FTS5 table whose rowids mirror
+    commands.id exactly (content='commands', content_rowid='id'), maintained by
+    triggers. If triggers were lost/dropped or a migration was interrupted, the
+    index keeps existing but silently misses rows, making searches return
+    incomplete results against the authoritative ``commands`` table.
+
+    NOTE: COUNT(*)/MAX(rowid) asked of ``commands_fts`` itself are served from
+    the content table, so they cannot reveal index holes. The ``%_docsize``
+    shadow table, however, holds exactly one row per document actually present
+    in the index (its ``id`` is the docid, i.e. commands.id), which makes it a
+    faithful proxy for index coverage. A healthy index therefore satisfies
+    COUNT(commands_fts_docsize) == COUNT(commands) and MAX(ids) equality. This
+    inspects only index-vs-table structure — never the query's result count —
+    so a healthy index legitimately returning zero matches is never mistaken
+    for corruption. We recover by falling back to the standard SQL search
+    instead of rebuilding because rebuilding belongs to the init/migration
+    lifecycle (_migrate_fts5) and is far too expensive to run per query.
+
+    Any sqlite error (missing shadow tables on exotic builds, absent tables on
+    FTS-less builds) yields False so callers skip straight to the next backend
+    in the chain.
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                (SELECT COUNT(*) FROM commands),
+                (SELECT COUNT(*) FROM commands_fts_docsize),
+                (SELECT MAX(id) FROM commands),
+                (SELECT MAX(id) FROM commands_fts_docsize)
+        """)
+        cmd_count, fts_count, max_cmd_id, max_fts_rowid = cursor.fetchone()
+        return cmd_count == fts_count and max_cmd_id == max_fts_rowid
+    except sqlite3.Error:
+        return False
+
+
+def _search_index_is_consistent(conn: sqlite3.Connection) -> bool:
+    """#467: cheap structural check that search_index covers every command.
+
+    search_index rows of type='command' mirror the authoritative commands table
+    one-to-one: exactly one row per command whose session_id is NOT NULL (each
+    row's ref_id stores that command's session id — see the initial population
+    in Database._migrate_fts5 and the per-session resync in Database.save_data).
+    Unlike commands_fts, search_index has NO sync triggers, so any command
+    written outside save_data leaves the index silently incomplete.
+
+    Compare the indexed-command count against the authoritative count using the
+    exact predicate used when indexing (session_id IS NOT NULL). Structural
+    check only — see _commands_fts_is_consistent for why zero-result queries
+    are unaffected and why recovery falls back instead of rebuilding.
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                (SELECT COUNT(*) FROM commands WHERE session_id IS NOT NULL),
+                (SELECT COUNT(*) FROM search_index WHERE type = 'command')
+        """)
+        authoritative_count, indexed_count = cursor.fetchone()
+        return authoritative_count == indexed_count
+    except sqlite3.Error:
+        return False
 
 
 def _search_new_fts5(
