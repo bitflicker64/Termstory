@@ -32,6 +32,33 @@ def test_compute_tags_from_text():
     # Ordering should be: deploy, debug, setup, test, docs
     assert tags == ["deploy", "setup", "test"]
 
+def test_network_utilities_not_tagged_debug():
+    """Regression test for issue #452: ordinary network utilities must not
+    receive the debug tag. Assertions check 'debug' specifically so another
+    tag cannot mask the result."""
+    for cmd in [
+        "curl https://example.com",
+        "ping 8.8.8.8",
+        "dig example.com",
+        "nslookup example.com",
+    ]:
+        assert "debug" not in compute_tags_from_text([cmd], []), (
+            f"{cmd!r} must not be tagged debug"
+        )
+
+def test_debug_tools_still_tagged_debug():
+    """Regression test for issue #452: removing the bare network-utility
+    patterns must not affect legitimate debugger/profiler commands."""
+    for cmd in [
+        "python3 -m pdb script.py",
+        "gdb ./program",
+        "lldb ./program",
+        "strace ./program",
+    ]:
+        assert "debug" in compute_tags_from_text([cmd], []), (
+            f"{cmd!r} must be tagged debug"
+        )
+
 def test_auto_tag_all_sessions():
     fd, temp_db_path = tempfile.mkstemp()
     os.close(fd)
