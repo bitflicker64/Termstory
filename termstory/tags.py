@@ -17,7 +17,7 @@ TAG_RULES = {
         "cmd_patterns": [
             r"\bdebug(ger)?\b", r"\bpdb\b", r"\bipdb\b", r"\blldb\b", r"\bgdb\b",
             r"\btrace\b", r"\bvalgrind\b", r"\bstrace\b", r"\bprofile(r)?\b",
-            r"\bpyinstrument\b", r"\bcurl\b", r"\bping\b", r"\bdig\b", r"\bnslookup\b",
+            r"\bpyinstrument\b",
             r"\btcpdump\b", r"\bdoctor\b", r"\bdiagnose\b", r"\bdiagnostic\b",
             r"\bjournalctl\b", r"\bdmesg\b", r"\bdocker logs\b"
         ],
