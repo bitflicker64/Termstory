@@ -65,14 +65,12 @@ def test_git_operations_on_temp_repo(tmp_path):
     assert commits[0]["timestamp"] > 0
 
 def test_is_git_repo_worktree_vs_git_dir(tmp_path):
-    # Initialize a temporary git repository
+    # Initialize a temporary git repository. Failure here must fail the test
+    # (no try/except): the regression assertions below are meaningless unless
+    # the temporary repository was successfully initialized.
     repo_path = tmp_path / "repo"
     repo_path.mkdir()
-    try:
-        subprocess.run(["git", "init"], cwd=str(repo_path), check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except Exception:
-        # If git is not installed or init fails, skip the rest of the test
-        return
+    subprocess.run(["git", "init"], cwd=str(repo_path), check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     # The repository root is a valid worktree
     assert is_git_repo(str(repo_path)) is True
