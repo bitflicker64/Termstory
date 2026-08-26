@@ -3,16 +3,25 @@ from datetime import datetime
 from typing import Optional, List, Dict
 
 def format_duration(seconds: int) -> str:
-    """Format duration in seconds to human readable form like 2h 15m, 15m, or 45s"""
+    """Format duration in seconds to human readable form like 1d 2h 15m, 2h 15m, 15m, or 45s.
+
+    Durations of a day or more include a day component and always show the
+    hour part (e.g. "1d 0h"); shorter durations keep their existing format.
+    """
     if seconds <= 0:
         return "0s"
     if seconds < 60:
         return f"{seconds}s"
-    hours = seconds // 3600
+    days = seconds // 86400
+    hours = (seconds % 86400) // 3600
     minutes = (seconds % 3600) // 60
     
     parts = []
-    if hours > 0:
+    if days > 0:
+        parts.append(f"{days}d")
+    # Hours are always shown once days are present ("1d 0h"), but stay
+    # omitted below an hour so sub-day output remains unchanged.
+    if days > 0 or hours > 0:
         parts.append(f"{hours}h")
     if minutes > 0 or not parts:
         parts.append(f"{minutes}m")

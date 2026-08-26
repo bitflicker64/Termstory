@@ -1,4 +1,4 @@
-from termstory.models import Command, Session
+from termstory.models import Command, Session, format_duration
 from termstory.session import create_sessions
 
 def test_create_sessions_empty():
@@ -77,3 +77,23 @@ def test_create_sessions_no_cwd_fragmentation():
     
     assert sessions[0].id == 1
     assert len(sessions[0].commands) == 6
+
+def test_format_duration_sub_day_output_unchanged():
+    """Pre-existing sub-24-hour output must remain byte-for-byte unchanged."""
+    assert format_duration(0) == "0s"
+    assert format_duration(-1) == "0s"
+    assert format_duration(45) == "45s"
+    assert format_duration(59) == "59s"
+    assert format_duration(60) == "1m"
+    assert format_duration(3599) == "59m"
+    assert format_duration(3600) == "1h"
+    assert format_duration(3660) == "1h 1m"
+    assert format_duration(86399) == "23h 59m"
+
+def test_format_duration_multi_day():
+    """Issue #447: durations >= 24h render a day component, with hours always shown."""
+    assert format_duration(86400) == "1d 0h"
+    assert format_duration(86401) == "1d 0h"
+    assert format_duration(90061) == "1d 1h 1m"
+    assert format_duration(259200) == "3d 0h"
+    assert format_duration(7 * 86400 + 2 * 3600) == "7d 2h"
