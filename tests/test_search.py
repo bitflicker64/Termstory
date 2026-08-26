@@ -145,6 +145,144 @@ def test_project_filter_matches_per_command_project(tmp_path, monkeypatch):
     assert len(results) == 0
 
 
+def test_search_result_attributed_to_matched_command_project(tmp_path, monkeypatch):
+    """#457: a search hit must carry the project of the *command* that matched,
+    not the session's final project. One session runs in Acme Billing, then
+    cd's into Mobile Companion and finishes there; searching for a command
+    that ran in Acme must report Acme Billing even though session.project_id
+    points at Mobile Companion. Verified across all three search backends.
+    """
+    monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2026-06-06 12:00:00")
+    db_file = tmp_path / "test_per_cmd_attribution.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    from datetime import datetime
+    now = int(datetime(2026, 6, 6, 12, 0, 0).timestamp())
+
+    p_acme = Project(
+        id=1, name="Acme Billing", path="~/Projects/acme-billing",
+        first_seen=now, last_seen=now, session_count=1, total_time=100,
+    )
+    p_mobile = Project(
+        id=2, name="Mobile Companion", path="~/Projects/mobile-companion",
+        first_seen=now, last_seen=now, session_count=1, total_time=100,
+    )
+
+    # Session ends in Mobile, but the "stripe" command ran in Acme.
+    cmd1 = Command(timestamp=now, command="stripe curl https://api.stripe.com/v1/charges", session_id=1, project_id=1)
+    cmd2 = Command(timestamp=now + 100, command="cd ~/Projects/mobile-companion", session_id=1, project_id=1)
+    cmd3 = Command(timestamp=now + 200, command="npm run test", session_id=1, project_id=2)
+    s1 = Session(
+        id=1, start_time=now, end_time=now + 300, duration_seconds=300,
+        project_id=2, commands=[cmd1, cmd2, cmd3],
+    )
+
+    db.save_data([p_acme, p_mobile], [s1], [cmd1, cmd2, cmd3])
+
+    from termstory.search import advanced_search
+
+    def run_all_backends(query, **kwargs):
+        """Yield (backend_name, results) for the two FTS search implementations."""
+        # _search_new_fts5
+        yield "new_fts5", advanced_search(db, query=query, fts=True, **kwargs)
+        # _search_fts5
+        yield "fts5", advanced_search(db, query=query, **kwargs)
+
+    for backend, results in run_all_backends("stripe"):
+        assert len(results) == 1, f"{backend}: expected exactly one result"
+        assert results[0]["session_id"] == 1
+        # The matched command ran in Acme, even though the session ended in
+        # Mobile. save_data remaps project ids, so compare against the
+        # persisted Project objects.
+        assert results[0]["project_name"] == "Acme Billing", (
+            f"{backend}: expected matched-command project, got {results[0]['project_name']}"
+        )
+        assert results[0]["project_id"] == p_acme.id
+
+    for backend, results in run_all_backends("npm"):
+        assert len(results) == 1, f"{backend}: expected exactly one result"
+        assert results[0]["session_id"] == 1
+        assert results[0]["project_name"] == "Mobile Companion", (
+            f"{backend}: expected matched-command project, got {results[0]['project_name']}"
+        )
+        assert results[0]["project_id"] == p_mobile.id
+
+    # Force the non-FTS fallback path (_search_standard) by removing the index.
+    conn = db.get_connection()
+    conn.execute("DROP TABLE IF EXISTS search_index")
+    conn.commit()
+    conn.close()
+
+    results = advanced_search(db, query="stripe")
+    assert len(results) == 1
+    assert results[0]["project_name"] == "Acme Billing"
+    assert results[0]["project_id"] == p_acme.id
+
+    results = advanced_search(db, query="npm")
+    assert len(results) == 1
+    assert results[0]["project_name"] == "Mobile Companion"
+    assert results[0]["project_id"] == p_mobile.id
+
+    # --project filtering keeps working and the surviving result still carries
+    # the matched command's attribution.
+    results = advanced_search(db, query="stripe", project_filter="Acme")
+    assert len(results) == 1
+    assert results[0]["project_name"] == "Acme Billing"
+
+
+def test_search_falls_back_to_session_project_without_command_attribution(tmp_path, monkeypatch):
+    """#457: when the matched command carries NO explicit per-command project,
+    the result must keep the session-level project (existing behaviour)."""
+    monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2026-06-06 12:00:00")
+    db_file = tmp_path / "test_session_fallback.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    from datetime import datetime
+    now = int(datetime(2026, 6, 6, 12, 0, 0).timestamp())
+
+    p_mobile = Project(
+        id=2, name="Mobile Companion", path="~/Projects/mobile-companion",
+        first_seen=now, last_seen=now, session_count=1, total_time=100,
+    )
+
+    # Matching command without any per-command attribution (project_id=None).
+    cmd1 = Command(timestamp=now, command="terraform plan -out tfplan", session_id=1, project_id=None)
+    s1 = Session(
+        id=1, start_time=now, end_time=now + 300, duration_seconds=300,
+        project_id=2, commands=[cmd1],
+    )
+
+    db.save_data([p_mobile], [s1], [cmd1])
+
+    from termstory.search import advanced_search
+
+    def run_all_backends(query, **kwargs):
+        yield "new_fts5", advanced_search(db, query=query, fts=True, **kwargs)
+        yield "fts5", advanced_search(db, query=query, **kwargs)
+
+    for backend, results in run_all_backends("terraform"):
+        assert len(results) == 1, f"{backend}: expected exactly one result"
+        assert results[0]["session_id"] == 1
+        assert results[0]["project_name"] == "Mobile Companion", (
+            f"{backend}: expected session-project fallback, got {results[0]['project_name']}"
+        )
+        # save_data remaps project ids, so compare against the persisted one.
+        assert results[0]["project_id"] == p_mobile.id
+
+    # Non-FTS fallback path (_search_standard).
+    conn = db.get_connection()
+    conn.execute("DROP TABLE IF EXISTS search_index")
+    conn.commit()
+    conn.close()
+
+    results = advanced_search(db, query="terraform")
+    assert len(results) == 1
+    assert results[0]["project_name"] == "Mobile Companion"
+    assert results[0]["project_id"] == p_mobile.id
+
+
 def test_advanced_search(tmp_path, monkeypatch):
     monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2026-06-06 12:00:00")
     db_file = tmp_path / "test_advanced_search.db"
