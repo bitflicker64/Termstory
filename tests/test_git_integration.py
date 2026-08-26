@@ -19,6 +19,11 @@ def test_clean_commit_message():
     assert clean_commit_message("[PROJ-123] Refactor CI pipeline") == "Refactor CI pipeline"
     assert clean_commit_message("ENG-456: hello world") == "Hello world"
     
+    # Test that ordinary hyphenated identifiers are not mistaken for issue keys
+    assert clean_commit_message("SHA-1 collision check added") == "SHA-1 collision check added"
+    assert clean_commit_message("UTF-8 decoding fix for logs") == "UTF-8 decoding fix for logs"
+    assert clean_commit_message("CVE-2024 mitigation applied") == "CVE-2024 mitigation applied"
+
     # Test emoji shorthand and unicode emoji stripping
     assert clean_commit_message("Refactor CI pipeline :rocket:") == "Refactor CI pipeline"
     assert clean_commit_message("🚧 fix: remove debug logs") == "Remove debug logs"

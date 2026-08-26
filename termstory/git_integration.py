@@ -50,9 +50,11 @@ def clean_commit_message(message: str) -> str:
     msg = re.sub(r':[a-zA-Z0-9_\-+]+:', '', msg)
     msg = msg.strip()
     
-    # 3. Strip any JIRA/issue reference like [ABC-123] or ABC-123 at the start
+    # 3. Strip any JIRA/issue reference like [ABC-123] or ABC-123: at the start.
+    #    Requiring the colon keeps ordinary hyphenated identifiers such as
+    #    SHA-1, UTF-8, and CVE-2024 from being mistaken for an issue key.
     msg = re.sub(r'^\[[A-Za-z]+-\d+\]\s*', '', msg)
-    msg = re.sub(r'^[A-Za-z]+-\d+[:\s]\s*', '', msg)
+    msg = re.sub(r'^[A-Za-z]+-\d+:\s*', '', msg)
     
     # 4. Strip conventional commit prefixes (e.g. feat: fix: chore: etc. with case-insensitive flag at the start, supporting breaking changes and revert)
     msg = re.sub(r'(?i)^(feat|fix|chore|docs|refactor|test|style|ci|perf|build|revert)(?:\([a-zA-Z0-9_\-\/]+\))?!?:\s*', '', msg)
