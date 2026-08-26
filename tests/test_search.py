@@ -597,3 +597,158 @@ def test_operational_error_fallback_preserved(tmp_path, monkeypatch):
     results = advanced_search(db, query="probemarker")
     assert len(results) == 1
 
+
+def test_stale_command_text_recovers_via_standard_sql(tmp_path, monkeypatch):
+    """#471 case: stale indexed TEXT with structurally identical counts/IDs.
+
+    The authoritative command text is changed while the commands_au sync
+    trigger is disabled, so the FTS row keeps the OLD tokens while IDs and
+    row counts remain identical. Searching for the NEW text through the stale
+    index would silently return nothing; search must detect the disabled
+    synchronization and recover through standard SQL instead.
+    """
+    db, now = _build_probe_db(tmp_path)
+    from termstory.search import advanced_search
+
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        # Disable ONLY the text-update sync path.
+        cursor.execute("DROP TRIGGER IF EXISTS commands_au")
+        cursor.execute(
+            "UPDATE commands SET command = 'renovated payload marker' WHERE id = 1"
+        )
+        conn.commit()
+
+        # Sanity: counts AND ids are still perfectly aligned, so any
+        # COUNT/MAX-based structural check alone would call this healthy.
+        cursor.execute("""
+            SELECT (SELECT COUNT(*) FROM commands),
+                   (SELECT COUNT(*) FROM commands_fts_docsize),
+                   (SELECT MAX(id) FROM commands),
+                   (SELECT MAX(id) FROM commands_fts_docsize)
+        """)
+        c_count, d_count, c_max, d_max = cursor.fetchone()
+        assert c_count == d_count and c_max == d_max
+    finally:
+        conn.close()
+
+    new_calls = _spy_backend(monkeypatch, "_search_new_fts5")
+    std_calls = _spy_backend(monkeypatch, "_search_standard")
+
+    results = advanced_search(db, query="renovated", fts=True)
+    assert len(results) == 1
+    assert results[0]["session_id"] == 1
+    assert any("renovated payload marker" in c for c in results[0]["matching_commands"])
+    # Stale-content index was skipped; recovery served authoritative data.
+    assert new_calls == []
+    assert std_calls == ["_search_standard"]
+
+
+def test_offsetting_missing_and_extra_ids_detected(tmp_path, monkeypatch):
+    """#471 case: same COUNT and same MAX(id) but different ID members.
+
+    Simulates lost-delete + lost-insert drift: authoritative ids become
+    {2, 3} while indexed ids are {1, 3}. Counts (2 == 2) and maxima (3 == 3)
+    match, so the previous COUNT/MAX consistency check declared this index
+    healthy even though doc 2 is missing from the index entirely. The sync
+    triggers are restored afterwards so ONLY exact bidirectional membership
+    equality can catch the drift.
+    """
+    from datetime import datetime
+
+    db_file = tmp_path / "offsetting.db"
+    db = Database(str(db_file))
+    db.init_db()
+    now = int(datetime(2026, 6, 6, 12, 0, 0).timestamp())
+
+    p1 = Project(id=1, name="Probe Project", path="~/projects/probe",
+                 first_seen=now, last_seen=now, session_count=1, total_time=100)
+    cmd1 = Command(timestamp=now, command="alphamarker first probe", session_id=1, project_id=1)
+    cmd2 = Command(timestamp=now + 10, command="betamarker second probe", session_id=1, project_id=1)
+    s1 = Session(id=1, start_time=now, end_time=now + 100, duration_seconds=100,
+                 project_id=1, commands=[cmd1, cmd2])
+    db.save_data([p1], [s1], [cmd1, cmd2])  # healthy: ids {1, 2} on both sides
+
+    from termstory.search import advanced_search
+
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        # Lose the insert/delete sync paths, then drift the two sides apart.
+        cursor.execute("DROP TRIGGER IF EXISTS commands_ai")
+        cursor.execute("DROP TRIGGER IF EXISTS commands_ad")
+        cursor.execute("DROP TRIGGER IF EXISTS commands_au")
+        cursor.execute("DELETE FROM commands WHERE id = 1")            # cmds {2}
+        cursor.execute(
+            "INSERT INTO commands (command, timestamp, exit_code, session_id, project_id) "
+            "VALUES ('gammamarker third probe', ?, 0, 1, 1)", (now + 20,)
+        )                                                               # cmds {2, 3}
+        # Re-shape the indexed side to {1, 3}: drop real doc 2, forge doc 3.
+        cursor.execute("DELETE FROM commands_fts_docsize WHERE id = 2")
+        cursor.execute("INSERT INTO commands_fts_docsize (id, sz) VALUES (3, X'00')")
+
+        # The exact flaw being regressed: COUNT and MAX both look healthy.
+        cursor.execute("""
+            SELECT (SELECT COUNT(*) FROM commands),
+                   (SELECT COUNT(*) FROM commands_fts_docsize),
+                   (SELECT MAX(id) FROM commands),
+                   (SELECT MAX(id) FROM commands_fts_docsize)
+        """)
+        c_count, d_count, c_max, d_max = cursor.fetchone()
+        assert (c_count, c_max) == (d_count, d_max) == (2, 3)
+
+        # Restore the sync triggers so the trigger-presence half of the gate
+        # passes and ONLY bidirectional membership equality can detect this.
+        cursor.execute("""
+            CREATE TRIGGER commands_ai AFTER INSERT ON commands BEGIN
+                INSERT INTO commands_fts(rowid, command, exit_code)
+                VALUES (new.id, new.command, new.exit_code);
+            END;
+        """)
+        cursor.execute("""
+            CREATE TRIGGER commands_ad AFTER DELETE ON commands BEGIN
+                INSERT INTO commands_fts(commands_fts, rowid, command, exit_code)
+                VALUES ('delete', old.id, old.command, old.exit_code);
+            END;
+        """)
+        cursor.execute("""
+            CREATE TRIGGER commands_au AFTER UPDATE OF command, exit_code ON commands BEGIN
+                INSERT INTO commands_fts(commands_fts, rowid, command, exit_code)
+                VALUES ('delete', old.id, old.command, old.exit_code);
+                INSERT INTO commands_fts(rowid, command, exit_code)
+                VALUES (new.id, new.command, new.exit_code);
+            END;
+        """)
+        conn.commit()
+    finally:
+        conn.close()
+
+    new_calls = _spy_backend(monkeypatch, "_search_new_fts5")
+    fts_calls = _spy_backend(monkeypatch, "_search_fts5")
+    std_calls = _spy_backend(monkeypatch, "_search_standard")
+
+    # Doc 2 ("betamarker ...") is missing from commands_fts: the drifted
+    # backend must be rejected even though COUNT/MAX look identical.
+    # Additionally stale out the legacy index as well (one of its two
+    # session-1 command rows removed), so NOTHING derived remains trustworthy
+    # and recovery must complete through the authoritative standard SQL path.
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM search_index WHERE type = 'command' "
+            "AND ref_id = '1' AND content LIKE '%betamarker%'"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    results = advanced_search(db, query="betamarker", fts=True)
+    assert len(results) == 1
+    assert results[0]["session_id"] == 1
+    assert any("betamarker second probe" in c for c in results[0]["matching_commands"])
+    assert new_calls == []
+    assert fts_calls == []
+    assert std_calls == ["_search_standard"]
+

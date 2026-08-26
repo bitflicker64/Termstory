@@ -17,6 +17,17 @@ def advanced_search(
 ) -> List[Dict]:
     """
     Advanced search with query, date range (since_ts, until_ts), project, and tag filters.
+
+    Backend selection order:
+      1. ``fts=True`` -> _search_new_fts5 (commands_fts / sessions_fts /
+         ai_summaries_fts), gated by _commands_fts_is_consistent (#467).
+      2. search_index present -> _search_fts5, gated by
+         _search_index_is_consistent (#467).
+      3. Otherwise the authoritative standard SQL path (_search_standard),
+         which is also the recovery route whenever an index is missing,
+         broken, or demonstrably incomplete/stale.
+    Each FTS attempt additionally keeps its OperationalError fallback, so a
+    runtime FTS failure degrades to the next backend exactly as before #467.
     """
     conn = db.get_connection()
     try:
@@ -65,70 +76,145 @@ def advanced_search(
         conn.close()
 
 
+def _fts_sync_triggers_intact(cursor) -> bool:
+    """#471: True when all three commands_fts sync triggers exist.
+
+    Shared precondition for BOTH consistency gates: the triggers ARE the FTS
+    synchronization machinery. Their absence certifies that the database has
+    been mutated outside the application's write paths (dropped manually,
+    interrupted migration, partially restored backup). Neither derived index
+    can prove itself current against such out-of-band mutation — commands_fts
+    misses the affected rows/text, and search_index (which stores no
+    per-command identifier at all) cannot even attempt the proof — so both
+    must defer to the authoritative standard SQL search. This is
+    self-healing: init_db -> _migrate_fts5 recreates any missing trigger via
+    CREATE ... IF NOT EXISTS on the next application start.
+    """
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM sqlite_master "
+            "WHERE type = 'trigger' "
+            "AND name IN ('commands_ai', 'commands_ad', 'commands_au')"
+        )
+        return cursor.fetchone()[0] == 3
+    except sqlite3.Error:
+        return False
+
+
 def _commands_fts_is_consistent(conn: sqlite3.Connection) -> bool:
-    """#467: cheap structural check that commands_fts covers every command.
+    """#467/#471: structural check that commands_fts covers every command with
+    live synchronization and current identities.
 
     commands_fts is an EXTERNAL-CONTENT FTS5 table whose rowids mirror
-    commands.id exactly (content='commands', content_rowid='id'), maintained by
-    triggers. If triggers were lost/dropped or a migration was interrupted, the
-    index keeps existing but silently misses rows, making searches return
-    incomplete results against the authoritative ``commands`` table.
+    commands.id exactly (content='commands', content_rowid='id'), kept in sync
+    solely by the commands_ai/commands_ad/commands_au triggers. Two failure
+    classes must be detected:
 
-    NOTE: COUNT(*)/MAX(rowid) asked of ``commands_fts`` itself are served from
-    the content table, so they cannot reveal index holes. The ``%_docsize``
-    shadow table, however, holds exactly one row per document actually present
-    in the index (its ``id`` is the docid, i.e. commands.id), which makes it a
-    faithful proxy for index coverage. A healthy index therefore satisfies
-    COUNT(commands_fts_docsize) == COUNT(commands) and MAX(ids) equality. This
-    inspects only index-vs-table structure — never the query's result count —
-    so a healthy index legitimately returning zero matches is never mistaken
-    for corruption. We recover by falling back to the standard SQL search
-    instead of rebuilding because rebuilding belongs to the init/migration
-    lifecycle (_migrate_fts5) and is far too expensive to run per query.
+    1. Missing/extra indexed identities — lost or bypassed triggers leave the
+       index silently behind the authoritative ``commands`` table.
+    2. Stale indexed TEXT — every production path that changes ``command``
+       text fires ``commands_au`` (``UPDATE OF command, exit_code``); if that
+       trigger is absent, an UPDATE can desync index content while IDs and
+       counts stay identical. Because external-content tables serve column
+       values from the content table at query time, old indexed text is NOT
+       readable for comparison — trigger presence is therefore the only sound,
+       migration-free signal of content freshness.
 
-    Any sqlite error (missing shadow tables on exotic builds, absent tables on
-    FTS-less builds) yields False so callers skip straight to the next backend
-    in the chain.
+    The identity check compares the ``%_docsize`` shadow table (one row per
+    document actually in the index; its ``id`` is the docid == commands.id)
+    against ``commands`` using exact bidirectional membership equality. Plain
+    COUNT/MAX comparisons are insufficient: ID sets such as {1,3} vs {2,3}
+    share both count and maximum yet differ in membership.
+
+    Efficiency: one statement — three sqlite_master probes plus two anti-joins
+    over integer primary keys. A scan is unavoidable because coverage is
+    inherently a set comparison and no marker column may be added (#467
+    forbids schema changes); these are the cheapest correct probes available
+    and are still orders of magnitude cheaper than rebuilding. Recovery falls
+    back to standard SQL instead of rebuilding, which belongs to the
+    init/migration lifecycle (_migrate_fts5).
+
+    Any sqlite error (missing shadow tables, absent tables on FTS-less builds)
+    yields False so callers skip straight to the next backend in the chain.
+    See _fts_sync_triggers_intact for why trigger presence is required.
     """
     try:
         cursor = conn.cursor()
         cursor.execute("""
             SELECT
-                (SELECT COUNT(*) FROM commands),
-                (SELECT COUNT(*) FROM commands_fts_docsize),
-                (SELECT MAX(id) FROM commands),
-                (SELECT MAX(id) FROM commands_fts_docsize)
+                (SELECT COUNT(*) FROM sqlite_master
+                  WHERE type = 'trigger'
+                    AND name IN ('commands_ai', 'commands_ad', 'commands_au')),
+                EXISTS(SELECT 1 FROM commands c
+                        WHERE NOT EXISTS (SELECT 1 FROM commands_fts_docsize d
+                                           WHERE d.id = c.id)),
+                EXISTS(SELECT 1 FROM commands_fts_docsize d
+                        WHERE NOT EXISTS (SELECT 1 FROM commands c
+                                           WHERE c.id = d.id))
         """)
-        cmd_count, fts_count, max_cmd_id, max_fts_rowid = cursor.fetchone()
-        return cmd_count == fts_count and max_cmd_id == max_fts_rowid
+        triggers_present, missing_ids, extra_ids = cursor.fetchone()
+        return triggers_present == 3 and not missing_ids and not extra_ids
     except sqlite3.Error:
         return False
 
 
 def _search_index_is_consistent(conn: sqlite3.Connection) -> bool:
-    """#467: cheap structural check that search_index covers every command.
+    """#467/#471: structural check that search_index covers every command.
 
-    search_index rows of type='command' mirror the authoritative commands table
-    one-to-one: exactly one row per command whose session_id is NOT NULL (each
-    row's ref_id stores that command's session id — see the initial population
-    in Database._migrate_fts5 and the per-session resync in Database.save_data).
+    search_index rows of type='command' mirror the authoritative commands
+    table: one row per command whose session_id is NOT NULL, with ref_id
+    storing that command's SESSION id (see the initial population in
+    Database._migrate_fts5 and the per-session resync in Database.save_data).
     Unlike commands_fts, search_index has NO sync triggers, so any command
     written outside save_data leaves the index silently incomplete.
 
-    Compare the indexed-command count against the authoritative count using the
-    exact predicate used when indexing (session_id IS NOT NULL). Structural
-    check only — see _commands_fts_is_consistent for why zero-result queries
-    are unaffected and why recovery falls back instead of rebuilding.
+    search_index stores no per-command identifier — rows are distinguishable
+    only by (ref_id, content) — so exact per-command identity coverage cannot
+    be established cheaply (a content-equality probe would scan the whole FTS
+    table per candidate row). The strongest reliable structural signal is
+    therefore per-session MULTIPLICITY equality: for every session, the
+    number of indexed command rows must equal the number of authoritative
+    commands, checked in both directions via EXCEPT. This detects missing
+    entries, duplicated rows, and offsets between sessions that would fool a
+    single global COUNT comparison.
+
+    Residual limitation (documented, accepted): two commands inside the SAME
+    session could swap texts undetected, because per-row identity does not
+    exist in this legacy index shape and adding one would require a schema
+    migration, which #467 forbids. As with commands_fts, this inspects only
+    index-vs-table structure — never query result counts — so legitimate
+    zero-result queries stay on the FTS path, and recovery routes to the
+    authoritative standard SQL search instead of rebuilding.
     """
     try:
         cursor = conn.cursor()
+        # Out-of-band mutation (missing sync triggers) invalidates trust in
+        # every derived representation — see _fts_sync_triggers_intact.
+        if not _fts_sync_triggers_intact(cursor):
+            return False
         cursor.execute("""
             SELECT
-                (SELECT COUNT(*) FROM commands WHERE session_id IS NOT NULL),
-                (SELECT COUNT(*) FROM search_index WHERE type = 'command')
+                EXISTS(
+                    SELECT session_id, COUNT(*) AS n
+                      FROM commands WHERE session_id IS NOT NULL
+                     GROUP BY session_id
+                    EXCEPT
+                    SELECT CAST(ref_id AS INTEGER), COUNT(*) AS n
+                      FROM search_index WHERE type = 'command'
+                     GROUP BY ref_id
+                )
+             OR EXISTS(
+                    SELECT CAST(ref_id AS INTEGER), COUNT(*) AS n
+                      FROM search_index WHERE type = 'command'
+                     GROUP BY ref_id
+                    EXCEPT
+                    SELECT session_id, COUNT(*) AS n
+                      FROM commands WHERE session_id IS NOT NULL
+                     GROUP BY session_id
+                )
         """)
-        authoritative_count, indexed_count = cursor.fetchone()
-        return authoritative_count == indexed_count
+        mismatch = cursor.fetchone()[0]
+        return not mismatch
     except sqlite3.Error:
         return False
 
@@ -142,6 +228,8 @@ def _search_new_fts5(
     tag_filters: Optional[List[str]],
     limit: Optional[int] = None
 ) -> List[Dict]:
+    """Match sessions via commands_fts/sessions_fts/ai_summaries_fts with
+    match-type ranking; callers must have verified index consistency (#467)."""
     cursor = conn.cursor()
     
     terms = query.split()
@@ -251,6 +339,9 @@ def _search_fts5(
     tag_filters: Optional[List[str]],
     limit: Optional[int] = None
 ) -> List[Dict]:
+    """Match sessions via the legacy search_index FTS table (command rows,
+    commit rows, and session summaries); callers must have verified index
+    consistency (#467)."""
     cursor = conn.cursor()
 
     terms = query.split()
@@ -345,6 +436,8 @@ def _search_standard(
     tag_filters: Optional[List[str]],
     limit: Optional[int] = None
 ) -> List[Dict]:
+    """Authoritative LIKE-based search over the raw sessions/commands/commits
+    tables; used when FTS is unavailable and as the #467 recovery path."""
     cursor = conn.cursor()
     params = []
     
@@ -427,6 +520,8 @@ def _search_standard(
     return _populate_results(cursor, rows, query)
 
 def _populate_results(cursor, rows, query: Optional[str]) -> List[Dict]:
+    """Expand session rows into result dicts with all/matching commands and
+    commits, shared by every search backend to keep one result format."""
     results = []
     query_val = f"%{query}%" if query else None
     
