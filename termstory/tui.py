@@ -3146,11 +3146,20 @@ class TermStoryWorkspace(App):
         # This avoids re-iterating all sessions every 0.5s — important for not
         # perturbing the timing of background worker threads (e.g. the exec
         # review worker) on slower Python versions (3.9/3.10).
+        #
+        # Issue #446: highlights are now scoped to the VISIBLE heatmap window,
+        # so the cache is also keyed on the current date (midnight rolls the
+        # rendered window forward even with no new sessions) and on the
+        # resolved window (--days/--all-history flips it).
+        current_date = get_current_time().date()
+        resolved_window = self.days_limit or 90
         real_sessions = [s for s in self.sessions if not getattr(s, "is_legacy", False)]
         session_count = len(real_sessions)
         if (
             not hasattr(self, "_cached_highlight_days")
             or getattr(self, "_cached_highlight_session_count", -1) != session_count
+            or getattr(self, "_cached_highlight_date", None) != current_date
+            or getattr(self, "_cached_highlight_window", None) != resolved_window
         ):
             day_counts = defaultdict(int)
             for s in real_sessions:
@@ -3159,15 +3168,16 @@ class TermStoryWorkspace(App):
             # calculate_dashboard_stats/generate_heatmap below) is used so the
             # personal-best is scoped to the days actually visible in the
             # heatmap, even in "All History" mode (days_limit is None → 90).
-            resolved_window = self.days_limit or 90
             self._cached_highlight_days = _compute_highlight_days(
                 day_counts, real_sessions, resolved_window
             )
             self._cached_highlight_session_count = session_count
+            self._cached_highlight_date = current_date
+            self._cached_highlight_window = resolved_window
 
         stats = calculate_dashboard_stats(
             self.sessions, self.projects,
-            days_limit=self.days_limit or 90,
+            days_limit=resolved_window,
             pulse_phase=pulse,
             highlight_days=self._cached_highlight_days,
         )

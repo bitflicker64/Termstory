@@ -256,6 +256,78 @@ async def test_tui_all_history_scopes_highlight_cache_to_rendered_window(monkeyp
             assert "Activity (All History):" in str(stats_panel.render())
 
 
+@pytest.mark.asyncio
+async def test_tui_highlight_cache_invalidates_across_midnight(monkeypatch):
+    """Issue #446 review fix: the highlight cache must be keyed on the current
+    date too, not just session_count.
+
+    With ``days_limit=1`` and one session on day A, day A's tick caches
+    ``{A}``. After midnight (day B) the rendered window is ``{B}`` only and no
+    new session appeared — the stale cache must NOT keep serving ``{A}``.
+    """
+    clock = {"now": datetime(2026, 6, 2, 12, 0)}
+    monkeypatch.setattr("termstory.tui.get_current_time", lambda: clock["now"])
+
+    day_a = clock["now"].date()
+    start_a = int(clock["now"].timestamp())
+    project = Project(
+        id=1,
+        name="Project Alpha",
+        path="~/alpha",
+        first_seen=start_a,
+        last_seen=start_a,
+        session_count=1,
+        total_time=600,
+    )
+    cmds = [
+        Command(timestamp=start_a + i, command=f"cmd_{i}", session_id=1, project_id=1)
+        for i in range(10)
+    ]
+    session_a = Session(
+        id=1,
+        start_time=start_a,
+        end_time=start_a + 600,
+        duration_seconds=600,
+        project_id=1,
+        commands=cmds,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        db_path = os.path.join(tmp_dir, "test.db")
+        db = Database(db_path)
+        db.init_db()
+        db.save_data([project], [session_a], cmds)
+
+        app = TermStoryWorkspace(
+            db,
+            days_limit=1,
+            config_override={
+                "has_seen_onboarding": True,
+                "ai_enabled": False,
+                "active_provider": "disabled",
+            },
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # Day A: today's session is the personal best inside {A}.
+            assert app._cached_highlight_days == {day_a}
+            assert app._cached_highlight_date == day_a
+
+            # Midnight rolls over; NO new session is created.
+            clock["now"] = clock["now"] + timedelta(days=1)
+            day_b = clock["now"].date()
+            assert len(app.sessions) == 1  # session_count unchanged...
+
+            app.update_stats_header()
+
+            # ...yet the cache was recomputed for day B's rendered window:
+            # the session's day A is now outside it and nothing is highlightable.
+            assert app._cached_highlight_date == day_b
+            assert app._cached_highlight_days == set()
+            assert app._cached_highlight_session_count == 1
+
+
 def test_get_session_memory_str():
     # 1. Commit priority
     s1 = Session(
