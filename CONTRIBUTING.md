@@ -65,7 +65,7 @@ branch on the flag before touching the list.
 secret (`AKIAIO...MPLE`) is not in the captured payload.
 
 Existing reference implementations: `generate_ai_summary()` and `generate_rpg_bio()`
-in `termstory/ai.py`.
+in `termstory/ai.py`, plus `generate_cluster_summary()` in `termstory/reminder.py`.
 
 ## Submitting PRs
 
