@@ -99,15 +99,31 @@ def _search_new_fts5(
             FROM matched_session_ids
             GROUP BY id
         )
-        SELECT s.id, s.start_time, s.end_time, s.duration_seconds, s.project_id, p.name, p.path, s.ai_summary
+        SELECT s.id, s.start_time, s.end_time, s.duration_seconds,
+               COALESCE(ep.id, s.project_id),
+               COALESCE(ep.name, p.name),
+               COALESCE(ep.path, p.path),
+               s.ai_summary
         FROM sessions s
         JOIN best_matches bm ON s.id = bm.id
         LEFT JOIN projects p ON s.project_id = p.id
+        LEFT JOIN projects ep ON ep.id = (
+            -- #457: attribute the result to the project of the earliest
+            -- command that actually matched the query and carries explicit
+            -- per-command attribution; NULL -> fall back to session project.
+            SELECT c.project_id
+            FROM commands c
+            WHERE c.session_id = s.id
+              AND c.id IN (SELECT rowid FROM commands_fts WHERE commands_fts MATCH ?)
+              AND c.project_id IS NOT NULL
+            ORDER BY c.timestamp ASC, c.id ASC
+            LIMIT 1
+        )
         LEFT JOIN commands cmd_per_proj ON cmd_per_proj.session_id = s.id
         LEFT JOIN projects p2 ON cmd_per_proj.project_id = p2.id
         WHERE 1=1
     """
-    params = [fts_query, fts_query, fts_query]
+    params = [fts_query, fts_query, fts_query, fts_query]
 
     if project_filter:
         # Match if the session's final project OR any per-command project
@@ -170,9 +186,26 @@ def _search_fts5(
             FROM search_index
             WHERE search_index MATCH ?
         )
-        SELECT s.id, s.start_time, s.end_time, s.duration_seconds, s.project_id, p.name, p.path, s.ai_summary
+        SELECT s.id, s.start_time, s.end_time, s.duration_seconds,
+               COALESCE(ep.id, s.project_id),
+               COALESCE(ep.name, p.name),
+               COALESCE(ep.path, p.path),
+               s.ai_summary
         FROM sessions s
         LEFT JOIN projects p ON s.project_id = p.id
+        LEFT JOIN projects ep ON ep.id = (
+            -- #457: attribute the result to the project recorded on the
+            -- earliest matching command index entry that carries explicit
+            -- per-command attribution; NULL -> fall back to session project.
+            SELECT project_id
+            FROM search_index
+            WHERE type = 'command'
+              AND CAST(ref_id AS INTEGER) = s.id
+              AND search_index MATCH ?
+              AND project_id IS NOT NULL
+            ORDER BY CAST(timestamp AS INTEGER) ASC, rowid ASC
+            LIMIT 1
+        )
         LEFT JOIN commands cmd_per_proj ON cmd_per_proj.session_id = s.id
         LEFT JOIN projects p2 ON cmd_per_proj.project_id = p2.id
         LEFT JOIN fts_matches f ON (
@@ -184,7 +217,7 @@ def _search_fts5(
         )
         WHERE (f.rank IS NOT NULL OR p.name LIKE ? OR p2.name LIKE ?)
     """
-    params = [fts_query, query_val, query_val]
+    params = [fts_query, fts_query, query_val, query_val]
 
     if project_filter:
         # Match if the session's final project OR any per-command project
@@ -232,9 +265,25 @@ def _search_standard(
     if query:
         query_val = f"%{query}%"
         sql = """
-            SELECT DISTINCT s.id, s.start_time, s.end_time, s.duration_seconds, s.project_id, p.name, p.path, s.ai_summary
+            SELECT DISTINCT s.id, s.start_time, s.end_time, s.duration_seconds,
+                   COALESCE(ep.id, s.project_id),
+                   COALESCE(ep.name, p.name),
+                   COALESCE(ep.path, p.path),
+                   s.ai_summary
             FROM sessions s
             LEFT JOIN projects p ON s.project_id = p.id
+            LEFT JOIN projects ep ON ep.id = (
+                -- #457: attribute the result to the project of the earliest
+                -- command that actually matched the query and carries explicit
+                -- per-command attribution; NULL -> fall back to session project.
+                SELECT c.project_id
+                FROM commands c
+                WHERE c.session_id = s.id
+                  AND c.command LIKE ?
+                  AND c.project_id IS NOT NULL
+                ORDER BY c.timestamp ASC, c.id ASC
+                LIMIT 1
+            )
             LEFT JOIN commands c ON s.id = c.session_id
             LEFT JOIN projects p2 ON c.project_id = p2.id
             LEFT JOIN commits co ON s.project_id = co.project_id
@@ -249,7 +298,7 @@ def _search_standard(
                 OR s.ai_summary LIKE ?
             )
         """
-        params = [query_val, query_val, query_val, query_val, query_val, query_val]
+        params = [query_val, query_val, query_val, query_val, query_val, query_val, query_val]
     else:
         sql = """
             SELECT DISTINCT s.id, s.start_time, s.end_time, s.duration_seconds, s.project_id, p.name, p.path, s.ai_summary
