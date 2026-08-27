@@ -267,6 +267,19 @@ def generate_cluster_summary(commands: List[str]) -> str:
     containing blacklisted commands (vault, aws configure, gh auth, raw token
     strings, etc.) never reach the LLM; the standard redaction marker is returned
     instead.
+
+    Uses the configured AI provider when one is active, otherwise falls back
+    to a local, first-token-per-command summary (the ``active_provider ==
+    "disabled"`` path, which performs no network I/O and is unchanged).
+
+    Raises:
+        Exception: Whatever the configured LLM layer raises (e.g. provider,
+            request, timeout, or response-processing errors not normalized to
+            ``None`` by :func:`termstory.ai._send_llm_request`). Background
+            consolidation treats such exceptions as isolated, per-cluster
+            failures that remain recoverable on the next run (see
+            :func:`consolidate_sleep_contexts`); callers should not assume an
+            exception here means any sibling cluster failed.
     """
     from termstory.config import load_config, get_config_value
     config = load_config()
@@ -323,6 +336,41 @@ def generate_cluster_summary(commands: List[str]) -> str:
 def consolidate_sleep_contexts(db, force: bool = False) -> int:
     """Detect idle periods (30+ min gaps in command history or since last command)
     and consolidate command contexts into summaries.
+
+    Failure isolation contract (per-cluster recovery):
+
+    Each cluster produced by :func:`cluster_commands` is summarized
+    independently. If :func:`generate_cluster_summary` raises for one cluster
+    (LLM/provider timeout, malformed response, request failure, or any other
+    per-cluster processing error), that exception is contained: the cluster
+    contributes no summary this run, sibling clusters keep processing, and the
+    chunk is persisted with only the summaries gathered before the failure.
+    Persistence failures from ``db.save_consolidated_context()`` are *not*
+    swallowed here — they propagate to the caller (a background daemon that
+    already logs uncaught exceptions), because a failed write means successful
+    work was not committed and must not be reported as consolidated.
+
+    Recovery semantics: ``rem_sleep_consolidation`` has no separate watermark
+    column — the next run's eligibility boundary is
+    ``MAX(end_time)`` over persisted rows. Eligible commands are strictly those
+    newer than that boundary. Consequently:
+
+    - A chunk whose clusters all fail persists nothing, so its commands stay
+      eligible and are retried on the next run.
+    - A partially-failed chunk is persisted only up to the point of failure:
+      summaries for clusters whose commands are all strictly older than every
+      command of the earliest failed cluster form a leading chronological
+      prefix, which is saved with an ``end_time`` below the earliest failed
+      timestamp. The surviving work (the failed cluster's commands onward)
+      therefore remains eligible and is retried — overlapping-free, so a
+      retry cannot produce duplicate rows for already-persisted windows.
+    - Retry idempotency: a run starts after the existing watermark and only
+      writes rows ending below it; previously persisted work is never rewritten,
+      so no duplicates can be created despite the absence of a uniqueness
+      constraint on ``(start_time, end_time)``.
+
+    Returns:
+        Number of chunks successfully persisted this run (unchanged meaning).
     """
     # 1. Get the last consolidated end_time
     conn = db.get_connection()
@@ -397,21 +445,94 @@ def consolidate_sleep_contexts(db, force: bool = False) -> int:
         cmd_strs = [c["command"] for c in chunk]
         
         clusters = cluster_commands(cmd_strs, threshold=clustering_threshold)
+
+        # Attach each cluster's earliest command timestamp (set intersection,
+        # as dedup leaves multiple timestamps per command string) so the
+        # checkpoint can be kept below any failed cluster's commands. Without
+        # a per-cluster marker in rem_sleep_consolidation, this chronological
+        # bookkeeping is what keeps failed work discoverable on the next run.
+        cmd_min_ts = {}
+        for c in chunk:
+            if c["command"] not in cmd_min_ts or c["timestamp"] < cmd_min_ts[c["command"]]:
+                cmd_min_ts[c["command"]] = c["timestamp"]
+
         cluster_summaries = []
+        succeeded_with_ts = []  # (summary, latest command timestamp of its cluster)
+        failed_clusters = []
+        failed_earliest_ts = None
         for cluster in clusters:
-            summ = generate_cluster_summary(cluster)
+            # Per-cluster failure isolation: a summarize failure (e.g. LLM
+            # timeout, malformed response, provider error) affects only that
+            # cluster. Sibling clusters still run; a failed cluster contributes
+            # no summary and is never reported as consolidated — its commands
+            # stay recoverable because the checkpoint is not advanced past
+            # them (see persistence below).
+            try:
+                summ = generate_cluster_summary(cluster)
+            except Exception:
+                logger.exception(
+                    "Sleep consolidation: failed to summarize a cluster "
+                    "(commands=%d); its commands remain eligible for retry",
+                    len(cluster),
+                )
+                failed_clusters.append(cluster)
+                fail_floor = min(cmd_min_ts.get(c, start_time) for c in cluster)
+                if failed_earliest_ts is None or fail_floor < failed_earliest_ts:
+                    failed_earliest_ts = fail_floor
+                continue
             if summ:
                 cluster_summaries.append(summ)
+                # Defaulting unknown strings to end_time keeps such a cluster
+                # out of the safe prefix (withheld -> retried), never the
+                # reverse, so success is never claimed prematurely.
+                succeeded_with_ts.append(
+                    (summ, max(cmd_min_ts.get(c, end_time) for c in cluster))
+                )
                 
+        # If no cluster produced a summary, persist nothing and leave the
+        # whole chunk untouched: it stays fully eligible for the next run.
+        # (Preserves normal empty-result behavior as before.)
         if not cluster_summaries:
             continue
-            
-        if len(cluster_summaries) == 1:
-            final_summary = cluster_summaries[0]
+
+        # Persist following the existing checkpoint model. The next run
+        # discovers commands strictly newer than MAX(end_time), so a saved row
+        # must never end at/after a failed cluster's commands — otherwise that
+        # failed work would become permanently undiscoverable while looking
+        # consolidated. With failures present, successful summaries split into:
+        #   - a leading chronological prefix covering only commands strictly
+        #     older than every failure (safe to persist now; a retry starts
+        #     after it, so it cannot be duplicated), and
+        #   - trailing work at/after the failure (withheld, retried later,
+        #     including any successful clusters overlapping that region).
+        # Chunks with no failed cluster keep the original single-write path.
+        if failed_clusters:
+            prefix_summaries = [
+                s for s, cluster_last_ts in succeeded_with_ts
+                if cluster_last_ts < failed_earliest_ts
+            ]
+            if not prefix_summaries:
+                # Nothing fully precedes the failure: withhold everything,
+                # including successful clusters, so the whole chunk retries
+                # intact on the next run (no partial-window rewrites).
+                continue
+            # Anchor the saved row to the actual work being persisted, never
+            # past the earliest failed command (guaranteed by the filter above).
+            save_start = start_time
+            save_end = max(ts for s, ts in succeeded_with_ts if ts < failed_earliest_ts)
+            save_commands = [
+                c["command"] for c in chunk if save_start <= c["timestamp"] <= save_end
+            ]
         else:
-            final_summary = " | ".join(cluster_summaries)
+            prefix_summaries = cluster_summaries
+            save_start, save_end, save_commands = start_time, end_time, cmd_strs
             
-        db.save_consolidated_context(start_time, end_time, final_summary, cmd_strs)
+        if len(prefix_summaries) == 1:
+            final_summary = prefix_summaries[0]
+        else:
+            final_summary = " | ".join(prefix_summaries)
+            
+        db.save_consolidated_context(save_start, save_end, final_summary, save_commands)
         consolidated_count += 1
 
     return consolidated_count

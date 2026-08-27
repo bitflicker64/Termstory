@@ -634,3 +634,372 @@ def test_generate_cluster_summary_disabled_provider_stays_local(monkeypatch):
 
     assert result == "Worked on commands: git, docker"
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for issue #468: recover failed background consolidation
+# without losing work.
+#
+# Persistence/checkpoint model being tested (from termstory/database.py and
+# termstory/reminder.py):
+#   - rem_sleep_consolidation has NO uniqueness constraint on
+#     (start_time, end_time); save_consolidated_context() is a plain INSERT,
+#     so writing the same window twice would duplicate rows.
+#   - There is no separate watermark column: the next consolidation run's
+#     eligibility boundary is MAX(end_time) over persisted rows, and eligible
+#     commands are strictly those newer than it. The tests below therefore
+#     verify retryability through that exact boundary.
+# ---------------------------------------------------------------------------
+
+def _sleep_checkpoint(db):
+    """Return the consolidation checkpoint (MAX(end_time)) for assertions."""
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT MAX(end_time) FROM rem_sleep_consolidation")
+        row = cursor.fetchone()
+        return row[0] if row and row[0] is not None else 0
+    finally:
+        conn.close()
+
+
+def _seed_three_clusters(tmp_path):
+    """Create a Database containing one idle chunk with three orthogonally
+    embeddable two-command clusters (git -> docker -> npm) in chronological
+    order. Returns (db, now, command-timestamp dict per tool family)."""
+    db_file = tmp_path / "test_468.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    now = int(time.time())
+    t_git_a, t_git_b = now - 5900, now - 5890
+    t_docker_a, t_docker_b = now - 5800, now - 5790
+    t_npm_a, t_npm_b = now - 5700, now - 5690
+
+    commands = [
+        Command(timestamp=t_git_a, command="git alpha-one", session_id=1, project_id=1),
+        Command(timestamp=t_git_b, command="git alpha-two", session_id=1, project_id=1),
+        Command(timestamp=t_docker_a, command="docker beta-one", session_id=1, project_id=1),
+        Command(timestamp=t_docker_b, command="docker beta-two", session_id=1, project_id=1),
+        Command(timestamp=t_npm_a, command="npm gamma-one", session_id=1, project_id=1),
+        Command(timestamp=t_npm_b, command="npm gamma-two", session_id=1, project_id=1),
+    ]
+    p = Project(id=1, name="termstory", path="~/projects/termstory",
+                first_seen=now - 6000, last_seen=now, session_count=1, total_time=310)
+    s = Session(id=1, start_time=t_git_a, end_time=t_npm_b, duration_seconds=210,
+                project_id=1, commands=commands)
+    db.save_data([p], [s], commands)
+    return db, now, {
+        "git": (t_git_a, t_git_b),
+        "docker": (t_docker_a, t_docker_b),
+        "npm": (t_npm_a, t_npm_b),
+    }
+
+
+def _fake_three_cluster_embeddings(monkeypatch):
+    """Force the embeddings clustering path with three orthogonal groups so
+    cluster_commands() deterministically yields one cluster per tool family."""
+    import termstory.rag as rag
+
+    mapping = {
+        "git alpha-one": [1.0, 0.0, 0.0],
+        "git alpha-two": [1.0, 0.0, 0.0],
+        "docker beta-one": [0.0, 1.0, 0.0],
+        "docker beta-two": [0.0, 1.0, 0.0],
+        "npm gamma-one": [0.0, 0.0, 1.0],
+        "npm gamma-two": [0.0, 0.0, 1.0],
+    }
+
+    def fake_get_embeddings(texts, model_name="all-MiniLM-L6-v2"):
+        return [list(mapping[t]) for t in texts]
+
+    monkeypatch.setattr(rag, "get_embeddings", fake_get_embeddings)
+    monkeypatch.setattr(rag, "SENTENCE_TRANSFORMERS_AVAILABLE", True)
+
+
+def _summary_stub(failing_prefixes):
+    """Build a generate_cluster_summary stand-in raising for clusters whose
+    first command starts with any prefix in failing_prefixes."""
+    def fake_generate_cluster_summary(cluster):
+        if any(cluster[0].startswith(prefix) for prefix in failing_prefixes):
+            raise TimeoutError("simulated LLM request timeout")
+        return "SUMMARY-" + cluster[0].split()[0]
+    return fake_generate_cluster_summary
+
+
+def test_consolidate_preserves_successful_clusters_when_one_fails(tmp_path, monkeypatch):
+    """A+B (issue #468): with clusters A(ok) -> B(raises) -> C(ok) in one
+    chunk, A's summary survives, B is not marked consolidated, processing
+    continues past B, and the checkpoint stays below B's commands."""
+    db, now, ts = _seed_three_clusters(tmp_path)
+    _fake_three_cluster_embeddings(monkeypatch)
+    # git succeeds, docker raises, npm must still be processed afterwards.
+    seen_after_failure = []
+    base_stub = _summary_stub(["docker"])
+
+    def stub_and_track(cluster):
+        result = base_stub(cluster)
+        seen_after_failure.append(cluster[0].split()[0])
+        return result
+
+    monkeypatch.setattr(
+        "termstory.reminder.generate_cluster_summary", stub_and_track
+    )
+
+    count = consolidate_sleep_contexts(db, force=True)
+
+    # C was processed after B's failure (processing did not abort at B).
+    assert "npm" in seen_after_failure
+
+    # Only the safe prefix (git cluster) was persisted; docker/npm withheld.
+    assert count == 1
+    contexts = db.get_consolidated_contexts()
+    assert len(contexts) == 1
+    ctx = contexts[0]
+    assert ctx["start_time"] == ts["git"][0]
+    assert ctx["end_time"] == ts["git"][1]  # row anchored below the failure
+    assert ctx["commands"] == ["git alpha-one", "git alpha-two"]
+    assert "SUMMARY-git" in ctx["summary"]
+
+    # B is not falsely marked consolidated: its own and C's summary strings
+    # are absent from persisted rows, and their commands are excluded too.
+    assert "SUMMARY-docker" not in ctx["summary"]
+    assert "SUMMARY-npm" not in ctx["summary"]
+    assert "docker beta-one" not in ctx["commands"]
+
+    # Checkpoint did NOT advance past the failed cluster's commands.
+    assert _sleep_checkpoint(db) == ts["git"][1]
+
+
+def test_consolidate_failure_before_all_successes_persists_nothing(tmp_path, monkeypatch):
+    """B (issue #468): when the failing cluster precedes every successful one
+    chronologically, nothing can be safely persisted without advancing the
+    checkpoint over the failed work — so the whole chunk stays retryable."""
+    db, now, ts = _seed_three_clusters(tmp_path)
+    _fake_three_cluster_embeddings(monkeypatch)
+    monkeypatch.setattr(
+        "termstory.reminder.generate_cluster_summary", _summary_stub(["git"])
+    )
+
+    count = consolidate_sleep_contexts(db, force=True)
+
+    # Successful sibling summaries were computed but withheld rather than
+    # persisted ahead of the failure; they will be retried together with it.
+    assert count == 0
+    assert len(db.get_consolidated_contexts()) == 0
+
+    # Nothing was persisted => checkpoint untouched => ALL work (including
+    # the successful clusters' commands) remains eligible next run.
+    assert _sleep_checkpoint(db) == 0
+
+
+def test_failed_cluster_remains_retryable_on_next_run(tmp_path, monkeypatch):
+    """B (issue #468): after a partial failure, the NEXT consolidation run
+    must actually discover and persist the previously failed work through the
+    MAX(end_time)-based eligibility boundary."""
+    db, now, ts = _seed_three_clusters(tmp_path)
+    _fake_three_cluster_embeddings(monkeypatch)
+
+    monkeypatch.setattr(
+        "termstory.reminder.generate_cluster_summary", _summary_stub(["docker"])
+    )
+    first_count = consolidate_sleep_contexts(db, force=True)
+    assert first_count == 1
+    assert _sleep_checkpoint(db) == ts["git"][1]
+
+    # Failed cluster's commands sit strictly above the checkpoint: they were
+    # not consumed by the failed/partial first run.
+    checkpoint = _sleep_checkpoint(db)
+    assert ts["docker"][0] > checkpoint
+    assert ts["npm"][1] > checkpoint
+
+    # Retry with all clusters succeeding.
+    monkeypatch.setattr(
+        "termstory.reminder.generate_cluster_summary", _summary_stub([])
+    )
+    second_count = consolidate_sleep_contexts(db, force=True)
+    assert second_count == 1
+
+    contexts = db.get_consolidated_contexts()
+    assert len(contexts) == 2
+    retried = [c for c in contexts if c["start_time"] == ts["docker"][0]]
+    assert len(retried) == 1
+    retried_ctx = retried[0]
+    assert retried_ctx["start_time"] == ts["docker"][0]
+    assert retried_ctx["end_time"] == ts["npm"][1]
+    assert set(retried_ctx["commands"]) == {
+        "docker beta-one", "docker beta-two", "npm gamma-one", "npm gamma-two",
+    }
+    assert "SUMMARY-docker" in retried_ctx["summary"]
+    assert "SUMMARY-npm" in retried_ctx["summary"]
+
+    # Every command is covered by exactly two ordered, non-overlapping
+    # windows: run 1's safe prefix plus run 2's recovery window.
+    windows = sorted((c["start_time"], c["end_time"]) for c in contexts)
+    assert windows == [
+        (ts["git"][0], ts["git"][1]),
+        (ts["docker"][0], ts["npm"][1]),
+    ]
+
+
+def test_retry_is_idempotent_and_never_duplicates_context(tmp_path, monkeypatch):
+    """C (issue #468): a retry after recovery must not duplicate already-
+    persisted context, despite rem_sleep_consolidation having no uniqueness
+    constraint on (start_time, end_time)."""
+    db, now, ts = _seed_three_clusters(tmp_path)
+    _fake_three_cluster_embeddings(monkeypatch)
+
+    # Run 1: docker fails; only git's window persists.
+    monkeypatch.setattr(
+        "termstory.reminder.generate_cluster_summary", _summary_stub(["docker"])
+    )
+    consolidate_sleep_contexts(db, force=True)
+
+    # Run 2: recovery — previously failed work is consolidated.
+    monkeypatch.setattr(
+        "termstory.reminder.generate_cluster_summary", _summary_stub([])
+    )
+    consolidate_sleep_contexts(db, force=True)
+    contexts_after_recovery = db.get_consolidated_contexts()
+    rows_after_recovery = len(contexts_after_recovery)
+    checkpoint_after_recovery = _sleep_checkpoint(db)
+
+    # Run 3: a further forced consolidation finds nothing new and must not
+    # rewrite or re-insert anything.
+    third_count = consolidate_sleep_contexts(db, force=True)
+    assert third_count == 0
+
+    contexts_final = db.get_consolidated_contexts()
+    assert len(contexts_final) == rows_after_recovery
+    assert sorted((c["start_time"], c["end_time"]) for c in contexts_final) == \
+        sorted((c["start_time"], c["end_time"]) for c in contexts_after_recovery)
+    assert _sleep_checkpoint(db) == checkpoint_after_recovery == ts["npm"][1]
+
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM rem_sleep_consolidation")
+        assert cursor.fetchone()[0] == rows_after_recovery
+    finally:
+        conn.close()
+
+
+def test_llm_provider_timeout_is_isolated_to_one_cluster(tmp_path, monkeypatch):
+    """D (issue #468): through the real config->provider->_send_llm_request
+    path, a realistic timeout exception raised for one cluster's request is
+    isolated: sibling clusters' requests still go out, their LLM responses
+    persist, and the timed-out cluster's commands stay retryable."""
+    db, now, ts = _seed_three_clusters(tmp_path)
+    _fake_three_cluster_embeddings(monkeypatch)
+
+    # Provider enabled; requests flow through termstory.ai._send_llm_request.
+    monkeypatch.setattr(
+        "termstory.config.load_config",
+        lambda: {
+            "active_provider": "groq",
+            "providers": {
+                "groq": {
+                    "api_key": "test-key",
+                    "api_base_url": "http://localhost:9/v1",
+                    "model_name": "test-model",
+                }
+            },
+        },
+    )
+
+    llm_calls = []
+
+    def fake_send_llm_request(prompt, *args, **kwargs):
+        llm_calls.append(prompt)
+        if "docker beta-one" in prompt:
+            # Realistic provider-side hard failure (what urllib surfaces when
+            # a socket read aborts mid-request).
+            raise TimeoutError("The read operation timed out")
+        return "llm-summary-" + prompt.split("- ")[1].split()[0]
+
+    monkeypatch.setattr(
+        "termstory.ai._send_llm_request", fake_send_llm_request
+    )
+
+    count = consolidate_sleep_contexts(db, force=True)
+
+    # All three clusters were attempted despite the middle one timing out.
+    assert len(llm_calls) == 3
+    assert sum(1 for p in llm_calls if "docker beta-one" in p) == 1
+
+    # The leading successful cluster persisted; the failed one did not.
+    assert count == 1
+    contexts = db.get_consolidated_contexts()
+    assert len(contexts) == 1
+    ctx = contexts[0]
+    assert ctx["end_time"] == ts["git"][1]
+    assert ctx["commands"] == ["git alpha-one", "git alpha-two"]
+    assert "llm-summary-git" in ctx["summary"]
+    assert _sleep_checkpoint(db) == ts["git"][1]
+
+
+def test_consolidate_all_success_persists_exactly_once(tmp_path, monkeypatch):
+    """F (issue #468): with every cluster succeeding, the chunk is persisted
+    exactly once through the original single-write path: one row spanning the
+    full window, all summaries joined, checkpoint at the true end, and a
+    further forced run adds nothing (no duplicate persistence)."""
+    db, now, ts = _seed_three_clusters(tmp_path)
+    _fake_three_cluster_embeddings(monkeypatch)
+    # Exercise the real config -> provider -> LLM path for every cluster.
+    monkeypatch.setattr(
+        "termstory.config.load_config",
+        lambda: {
+            "active_provider": "groq",
+            "providers": {
+                "groq": {
+                    "api_key": "test-key",
+                    "api_base_url": "http://localhost:9/v1",
+                    "model_name": "test-model",
+                }
+            },
+        },
+    )
+    llm_calls = []
+
+    def fake_send_llm_request(prompt, *args, **kwargs):
+        llm_calls.append(prompt)
+        return "llm-summary-" + prompt.split("- ")[1].split()[0]
+
+    monkeypatch.setattr(
+        "termstory.ai._send_llm_request", fake_send_llm_request
+    )
+
+    count = consolidate_sleep_contexts(db, force=True)
+
+    assert count == 1  # single persisted chunk, unchanged meaning
+    assert len(llm_calls) == 3
+    contexts = db.get_consolidated_contexts()
+    assert len(contexts) == 1
+    ctx = contexts[0]
+    assert ctx["start_time"] == ts["git"][0]
+    assert ctx["end_time"] == ts["npm"][1]
+    assert ctx["commands"] == [
+        "git alpha-one", "git alpha-two",
+        "docker beta-one", "docker beta-two",
+        "npm gamma-one", "npm gamma-two",
+    ]
+    assert (
+        "llm-summary-git" in ctx["summary"]
+        and "llm-summary-docker" in ctx["summary"]
+        and "llm-summary-npm" in ctx["summary"]
+    )
+    assert _sleep_checkpoint(db) == ts["npm"][1]
+
+    # An additional forced run must not re-insert or rewrite anything.
+    assert consolidate_sleep_contexts(db, force=True) == 0
+    assert len(db.get_consolidated_contexts()) == 1
+
+
+def test_generate_cluster_summary_disabled_provider_empty_cluster(monkeypatch):
+    """G (issue #468): an empty cluster under the disabled provider keeps the
+    existing 'Idle session' fallback instead of turning into a failure."""
+    monkeypatch.setattr(
+        "termstory.config.load_config",
+        lambda: {"active_provider": "disabled"},
+    )
+    assert generate_cluster_summary([]) == "Idle session"
