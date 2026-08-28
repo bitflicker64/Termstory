@@ -450,6 +450,7 @@ def language_detection(db: Database) -> Dict[str, float]:
     
     cmd_classifications = {
         "python": "Python", "python3": "Python", "pip": "Python", "pip3": "Python", "pytest": "Python", "poetry": "Python",
+        "uv": "Python", "uvx": "Python",
         "npm": "JavaScript/TypeScript", "yarn": "JavaScript/TypeScript", "pnpm": "JavaScript/TypeScript",
         "node": "JavaScript/TypeScript", "npx": "JavaScript/TypeScript", "tsc": "JavaScript/TypeScript",
         "cargo": "Rust", "rustc": "Rust",
