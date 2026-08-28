@@ -622,3 +622,311 @@ def test_get_projects_by_ids_query_count_is_constant(tmp_path):
     assert len(large_logs) < len(all_ids)  # bounded: not 1 + N
     assert len(large_logs) <= 2  # 1 SELECT + optional version-dependent PRAGMA
 
+# ── Issue #469: interrupted-recording session recovery ──────────────────────
+#
+# create_sessions() always sets a concrete integer end_time and
+# duration_seconds, and save_data() persists them verbatim (and commits a
+# session together with its commands in one atomic transaction). So a session
+# that HAS persisted commands yet whose end_time/duration_seconds is NULL
+# means finalization never completed — the unambiguous interrupted-recording
+# signal. Recovery fills those missing values from MAX(commands.timestamp).
+# It deliberately does NOT rewrite a non-NULL end_time that merely extends
+# past the last command timestamp, since that is a legitimate authored window
+# produced by save_data (e.g. test_backup's single-command T..T+100 session).
+
+_RECOVERY_BASE_TS = 1_750_000_000  # fixed epoch: recovery must not use wall-clock time
+
+
+def _fetch_session_rows(db):
+    """Return (id, start_time, end_time, duration_seconds) rows ordered by id."""
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, start_time, end_time, duration_seconds FROM sessions ORDER BY id ASC")
+        return cursor.fetchall()
+    finally:
+        conn.close()
+
+
+def _fetch_command_rows(db):
+    """Return (id, timestamp, command, session_id) rows ordered by id."""
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, timestamp, command, session_id FROM commands ORDER BY id ASC")
+        return cursor.fetchall()
+    finally:
+        conn.close()
+
+
+def _seed_session_with_commands(db, s_id, start_time, command_offsets, end_time, duration_seconds, project_id=None):
+    """Insert a session row and its commands via direct SQL.
+
+    Direct SQL (instead of save_data) lets tests construct the exact
+    half-written state a process crash mid-recording would leave behind:
+    commands committed, session finalization metadata stale/missing.
+    """
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO sessions (id, start_time, end_time, duration_seconds, project_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (s_id, start_time, end_time, duration_seconds, project_id),
+        )
+        for offset in command_offsets:
+            cursor.execute(
+                "INSERT INTO commands (command, timestamp, session_id, project_id) "
+                "VALUES (?, ?, ?, ?)",
+                (f"cmd-{start_time + offset}", start_time + offset, s_id, project_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_recovery_leaves_commandless_session_untouched(tmp_path):
+    """Interruption BEFORE any command is persisted.
+
+    The current lifecycle never writes a session row before its commands are
+    committed (both happen in save_data's single transaction), so a session
+    with zero commands carries no authoritative data to recover from. It must
+    be left exactly as-is, not finalized against invented/wall-clock values.
+    """
+    db_file = tmp_path / "test_recovery_no_commands.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    # The only state a commandless session can be found in: a raw row whose
+    # finalization never happened (NULL end_time) — e.g. legacy residue.
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO sessions (id, start_time, end_time, duration_seconds, project_id) "
+        "VALUES (1, ?, NULL, NULL, NULL)",
+        (_RECOVERY_BASE_TS,),
+    )
+    conn.commit()
+    conn.close()
+
+    # Recovery runs as part of startup initialization.
+    db.init_db()
+
+    rows = _fetch_session_rows(db)
+    assert rows == [(1, _RECOVERY_BASE_TS, None, None)], (
+        "a commandless session has nothing authoritative to recover from and "
+        "must remain untouched"
+    )
+    assert _fetch_command_rows(db) == []
+
+
+def test_recovery_finalizes_session_from_persisted_commands(tmp_path):
+    """Interruption AFTER commands were persisted.
+
+    Stale AND missing finalization metadata must both be re-derived from
+    MAX(commands.timestamp) using the create_sessions() formula, without
+    touching the commands or creating any new session.
+    """
+    db_file = tmp_path / "test_recovery_stale.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    # Session 1: finalization partially written — duration present but the
+    # end_time never landed (crash partway through the finalization UPDATE).
+    # Session 2: nothing final yet — both end_time and duration_seconds NULL.
+    _seed_session_with_commands(
+        db, s_id=1, start_time=_RECOVERY_BASE_TS,
+        command_offsets=[0, 100, 200],
+        end_time=None, duration_seconds=200,
+    )
+    _seed_session_with_commands(
+        db, s_id=2, start_time=_RECOVERY_BASE_TS + 10_000,
+        command_offsets=[0, 500],
+        end_time=None, duration_seconds=None,
+    )
+    commands_before = _fetch_command_rows(db)
+    sessions_before = _fetch_session_rows(db)
+    assert sessions_before == [
+        (1, _RECOVERY_BASE_TS, None, 200),
+        (2, _RECOVERY_BASE_TS + 10_000, None, None),
+    ]
+
+    db.init_db()  # startup recovery pass
+
+    # Both sessions finalized from MAX(commands.timestamp).
+    sessions_after = _fetch_session_rows(db)
+    assert sessions_after == [
+        # 1: end = base+200 (last command); the authored duration 200 is kept.
+        (1, _RECOVERY_BASE_TS, _RECOVERY_BASE_TS + 200, 200),
+        # 2: end = base+10500, duration = 500
+        (2, _RECOVERY_BASE_TS + 10_000, _RECOVERY_BASE_TS + 10_500, 500),
+    ], "missing end_time/duration_seconds must be filled from the persisted commands"
+
+    # Commands preserved exactly once: same count, same ids, same rows.
+    assert _fetch_command_rows(db) == commands_before
+
+    # No replacement session was created; session ids are unchanged.
+    assert [r[0] for r in sessions_after] == [1, 2]
+
+    # Recovered rows stay readable through the existing session API.
+    sessions = db.get_sessions_by_ids([1, 2])
+    by_id = {s.id: s for s in sessions}
+    assert by_id[1].end_time == _RECOVERY_BASE_TS + 200
+    assert by_id[1].duration_seconds == 200
+    assert by_id[2].end_time == _RECOVERY_BASE_TS + 10_500
+    assert by_id[2].duration_seconds == 500
+    assert len(by_id[1].commands) == 3
+    assert len(by_id[2].commands) == 2
+
+
+def test_recovery_is_idempotent(tmp_path):
+    """A second recovery pass must produce no additional logical changes."""
+    db_file = tmp_path / "test_recovery_idempotent.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    _seed_session_with_commands(
+        db, s_id=1, start_time=_RECOVERY_BASE_TS,
+        command_offsets=[0, 300],
+        end_time=None, duration_seconds=None,
+    )
+
+    db.init_db()  # first recovery pass
+    sessions_after_first = _fetch_session_rows(db)
+    commands_after_first = _fetch_command_rows(db)
+    assert sessions_after_first == [
+        (1, _RECOVERY_BASE_TS, _RECOVERY_BASE_TS + 300, 300),
+    ]
+
+    db.init_db()  # second recovery pass
+    assert _fetch_session_rows(db) == sessions_after_first, (
+        "re-running recovery must not change session state"
+    )
+    assert _fetch_command_rows(db) == commands_after_first
+
+
+def test_recovery_preserves_already_correct_session(tmp_path):
+    """A genuinely completed session (end_time == MAX(cmd.ts), duration ==
+    end - start) must not be modified by recovery."""
+    db_file = tmp_path / "test_recovery_correct.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    _seed_session_with_commands(
+        db, s_id=1, start_time=_RECOVERY_BASE_TS,
+        command_offsets=[0, 100],
+        end_time=_RECOVERY_BASE_TS + 100, duration_seconds=100,
+    )
+    sessions_before = _fetch_session_rows(db)
+    commands_before = _fetch_command_rows(db)
+    assert sessions_before == [(1, _RECOVERY_BASE_TS, _RECOVERY_BASE_TS + 100, 100)]
+
+    db.init_db()
+
+    assert _fetch_session_rows(db) == sessions_before
+    assert _fetch_command_rows(db) == commands_before
+
+
+def test_recovery_preserves_authored_window_beyond_last_command(tmp_path):
+    """A session whose non-NULL end_time extends past the last command's
+    timestamp is a legitimately authored window (produced by save_data, cf.
+    test_backup), not an interruption. Recovery must not rewrite it."""
+    db_file = tmp_path / "test_recovery_authored_window.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    # Single command at time T, session windowed T..T+100 — end_time/duration
+    # disagree with MAX(commands.timestamp)=T but are both non-NULL.
+    _seed_session_with_commands(
+        db, s_id=1, start_time=_RECOVERY_BASE_TS,
+        command_offsets=[0],
+        end_time=_RECOVERY_BASE_TS + 100, duration_seconds=100,
+    )
+    sessions_before = _fetch_session_rows(db)
+    commands_before = _fetch_command_rows(db)
+
+    db.init_db()
+
+    assert _fetch_session_rows(db) == sessions_before
+    assert _fetch_command_rows(db) == commands_before
+
+
+def test_recovery_only_touches_inconsistent_sessions(tmp_path):
+    """Batch recovery must repair only the inconsistent session, leaving
+    already-correct sessions and commandless sessions untouched."""
+    db_file = tmp_path / "test_recovery_batch.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    # Incomplete: end_time never finalized (NULL) while commands exist.
+    _seed_session_with_commands(
+        db, s_id=1, start_time=_RECOVERY_BASE_TS,
+        command_offsets=[0, 100, 200],
+        end_time=None, duration_seconds=None,
+    )
+    # Already complete: authored window beyond the last command timestamp
+    # (single command at start, windowed T..T+400) — must be left untouched.
+    _seed_session_with_commands(
+        db, s_id=2, start_time=_RECOVERY_BASE_TS + 10_000,
+        command_offsets=[0, 400],
+        end_time=_RECOVERY_BASE_TS + 10_400, duration_seconds=400,
+    )
+    # Unrelated commandless session (legacy residue) — must stay untouched.
+    conn = db.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO sessions (id, start_time, end_time, duration_seconds, project_id) "
+        "VALUES (3, ?, NULL, NULL, NULL)",
+        (_RECOVERY_BASE_TS + 20_000,),
+    )
+    conn.commit()
+    conn.close()
+
+    db.init_db()
+
+    rows = {r[0]: r for r in _fetch_session_rows(db)}
+    # Only the incomplete session was finalized.
+    assert rows[1] == (1, _RECOVERY_BASE_TS, _RECOVERY_BASE_TS + 200, 200)
+    assert rows[2] == (2, _RECOVERY_BASE_TS + 10_000, _RECOVERY_BASE_TS + 10_400, 400)
+    assert rows[3] == (3, _RECOVERY_BASE_TS + 20_000, None, None)
+    # Exactly the three seeded sessions, no duplicates created.
+    assert sorted(rows) == [1, 2, 3]
+
+
+def test_recovery_preserves_command_and_session_identity(tmp_path):
+    """Session/command consistency: recovery must not duplicate or reassign
+    commands, must not duplicate sessions, and must keep all ids stable."""
+    db_file = tmp_path / "test_recovery_identity.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    _seed_session_with_commands(
+        db, s_id=1, start_time=_RECOVERY_BASE_TS,
+        command_offsets=[0, 100, 200, 300],
+        end_time=None, duration_seconds=None,
+    )
+    _seed_session_with_commands(
+        db, s_id=2, start_time=_RECOVERY_BASE_TS + 10_000,
+        command_offsets=[0],
+        end_time=None, duration_seconds=100,
+    )
+    sessions_before = _fetch_session_rows(db)
+    commands_before = _fetch_command_rows(db)
+
+    db.init_db()
+    db.init_db()  # twice: identity must survive repeated recovery
+
+    sessions_after = _fetch_session_rows(db)
+    commands_after = _fetch_command_rows(db)
+
+    # Same session ids, no duplicate session rows.
+    assert [r[0] for r in sessions_after] == [r[0] for r in sessions_before]
+    assert len(sessions_after) == 2
+
+    # Same command ids, same count, unchanged rows — exactly once each.
+    assert [r[0] for r in commands_after] == [r[0] for r in commands_before]
+    assert len(commands_after) == len(commands_before) == 5
+    assert commands_after == commands_before
+
+    # Session→command relationships are intact.
+    assert {r[3] for r in commands_after} == {1, 2}
