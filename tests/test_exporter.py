@@ -876,7 +876,6 @@ def test_parse_until_preserves_explicit_time():
     assert parse_until("2026-06-10T00:00:00") == int(datetime(2026, 6, 10, 0, 0, 0).timestamp())
 
 
-
 def _make_attribution_db(path, projects, sessions, commands):
     """Create an initialised DB seeded with the given projects/sessions/commands.
 
@@ -1155,3 +1154,118 @@ def test_project_filter_mixed_session_matches_named_and_other(tmp_path):
     assert len(fetch_export_data(db, project_filter="no project")) == 1
     # Unrelated project excluded.
     assert len(fetch_export_data(db, project_filter="gamma")) == 0
+
+
+# ---------------------------------------------------------------------------
+# Issue #483: date-filter boundary consistency across export paths
+# ---------------------------------------------------------------------------
+
+def _session_ids_from_json(text):
+    data = json.loads(text)
+    return sorted(d["session_id"] for d in data)
+
+
+def _session_ids_from_csv(text):
+    rows = list(csv.DictReader(text.splitlines()))
+    return sorted({int(r["session_id"]) for r in rows})
+
+
+def _session_ids_from_markdown(text):
+    ids = []
+    for line in text.splitlines():
+        if line.startswith("## Session #"):
+            # Heading is "## Session #<id> — <project>".
+            ids.append(int(line.split("## Session #", 1)[1].split(" ", 1)[0]))
+    return sorted(ids)
+
+
+def test_cross_format_same_session_set(tmp_path, capsys):
+    """All three export formats must serialize the SAME filtered session set.
+
+    We call ``fetch_export_data`` ONCE and feed that exact list to the JSON,
+    CSV, and Markdown serializers. Each serializer must emit the same session
+    IDs — proving none of them independently re-interprets the date filters.
+    """
+    # A/B/C inside [2026-06-10 00:00:00, 2026-06-10 23:59:59]; D/E outside.
+    db = _build_session_db(tmp_path / "xfmt.db", [
+        (datetime(2026, 6, 9, 23, 59).timestamp(), None),        # D: just before
+        (datetime(2026, 6, 10, 0, 0).timestamp(), None),         # A: exact lower
+        (datetime(2026, 6, 10, 12, 0).timestamp(), None),        # B: strictly inside
+        (datetime(2026, 6, 10, 23, 59, 59).timestamp(), None),   # C: exact upper
+        (datetime(2026, 6, 11, 0, 0).timestamp(), None),         # E: just after
+    ])
+
+    # Single choke-point: the one filtered session list every format consumes.
+    sessions = fetch_export_data(db, since_str="2026-06-10", until_str="2026-06-10")
+    expected = {2, 3, 4}  # A, B, C
+
+    export_json(sessions, db, output_file=None)
+    json_ids = set(_session_ids_from_json(capsys.readouterr().out))
+
+    export_csv(sessions, db, output_file=None)
+    csv_ids = set(_session_ids_from_csv(capsys.readouterr().out))
+
+    export_markdown(sessions, db, output_file=None)
+    md_ids = set(_session_ids_from_markdown(capsys.readouterr().out))
+
+    assert json_ids == expected
+    assert csv_ids == expected
+    assert md_ids == expected
+    # Records are identical across every format.
+    assert json_ids == csv_ids == md_ids
+
+
+def test_narrowest_interval_since_equals_until(tmp_path):
+    """since == until must still include a session starting exactly there."""
+    ts = datetime(2026, 6, 10, 12, 0, 0)
+    db = _build_session_db(tmp_path / "narrow.db", [
+        (ts.timestamp(), None),                                  # exact -> included
+        ((ts - timedelta(seconds=1)).timestamp(), None),         # before -> excluded
+        ((ts + timedelta(seconds=1)).timestamp(), None),         # after -> excluded
+    ])
+    sessions = fetch_export_data(
+        db, since_str="2026-06-10T12:00:00", until_str="2026-06-10T12:00:00"
+    )
+    assert [s.id for s in sessions] == [1]
+
+
+def test_fetch_export_data_explicit_time_since(tmp_path):
+    """--since with an explicit time preserves that time (inclusive lower)."""
+    db = _build_session_db(tmp_path / "explicit_since.db", [
+        (datetime(2026, 6, 10, 11, 59, 59).timestamp(), None),  # before -> excluded
+        (datetime(2026, 6, 10, 12, 0, 0).timestamp(), None),    # exact  -> included
+        (datetime(2026, 6, 10, 12, 0, 1).timestamp(), None),    # after  -> included
+    ])
+    sessions = fetch_export_data(db, since_str="2026-06-10T12:00:00")
+    assert [s.id for s in sessions] == [2, 3]
+    # Parse-level: explicit time preserved, date-only stays start-of-day.
+    assert parse_since("2026-06-10T12:00:00") == int(datetime(2026, 6, 10, 12, 0, 0).timestamp())
+    assert parse_since("2026-06-10") == int(datetime(2026, 6, 10, 0, 0, 0).timestamp())
+
+
+def test_fetch_export_data_explicit_time_until(tmp_path):
+    """--until with an explicit time must NOT expand to end-of-day."""
+    db = _build_session_db(tmp_path / "explicit_until.db", [
+        (datetime(2026, 6, 10, 12, 0, 0).timestamp(), None),  # exact  -> included
+        (datetime(2026, 6, 10, 12, 0, 1).timestamp(), None),  # after  -> excluded
+        (datetime(2026, 6, 10, 12, 0, 2).timestamp(), None),  # after  -> excluded
+    ])
+    sessions = fetch_export_data(db, until_str="2026-06-10T12:00:00")
+    assert [s.id for s in sessions] == [1]
+
+
+def test_date_only_range_equals_explicit_range(tmp_path):
+    """Date-only --since/--until and the equivalent explicit timestamps must
+    select the identical sessions across the whole day's boundaries."""
+    db = _build_session_db(tmp_path / "equiv.db", [
+        (datetime(2026, 6, 9, 23, 59, 59).timestamp(), None),  # just before -> excluded
+        (datetime(2026, 6, 10, 0, 0, 0).timestamp(), None),    # start of day
+        (datetime(2026, 6, 10, 12, 0, 0).timestamp(), None),   # midday
+        (datetime(2026, 6, 10, 23, 59, 59).timestamp(), None), # end-of-day boundary
+        (datetime(2026, 6, 11, 0, 0, 0).timestamp(), None),    # just after -> excluded
+    ])
+    date_only = fetch_export_data(db, since_str="2026-06-10", until_str="2026-06-10")
+    explicit = fetch_export_data(
+        db, since_str="2026-06-10T00:00:00", until_str="2026-06-10T23:59:59"
+    )
+    assert [s.id for s in date_only] == [s.id for s in explicit] == [2, 3, 4]
