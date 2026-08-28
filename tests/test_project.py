@@ -405,6 +405,71 @@ def test_find_project_root_cache_serves_cached_result_within_ttl(tmp_path, monke
     assert calls["n"] == 1
 
 
+def test_find_project_root_cache_normalized_key_shared(tmp_path, monkeypatch):
+    """#484: equivalent path spellings share one cache entry and one result.
+
+    ``repo/child/../child`` and ``repo/child`` refer to the same directory and
+    must resolve to the same project root without spawning an extra
+    ``_find_project_root_impl`` walk (which would otherwise create competing
+    identities in the cache).
+    """
+    import termstory.project as project_module
+    from termstory.project import find_project_root, _PROJECT_ROOT_CACHE
+
+    monkeypatch.setattr("os.path.expanduser", lambda path: str(tmp_path) if path == "~" else path)
+    monkeypatch.setattr(project_module, "_PROJECT_ROOT_CACHE_TTL", 60)
+    _PROJECT_ROOT_CACHE.clear()
+
+    calls = {"n": 0}
+    real_impl = project_module._find_project_root_impl
+
+    def counting_impl(path):
+        calls["n"] += 1
+        return real_impl(path)
+
+    monkeypatch.setattr(project_module, "_find_project_root_impl", counting_impl)
+
+    proj_dir = tmp_path / "Projects" / "cache-repo"
+    child = proj_dir / "child"
+    child.mkdir(parents=True)
+    (proj_dir / ".git").mkdir()
+
+    plain = find_project_root(str(child))
+    dotdot = find_project_root(str(child / ".." / "child"))
+
+    assert plain == str(proj_dir)
+    assert dotdot == plain
+    # Both spellings share the same cache entry, so only ONE impl walk runs.
+    assert calls["n"] == 1
+
+
+def test_find_project_root_cache_nested_not_poisoned(tmp_path, monkeypatch):
+    """#484: an outer repo's cached root must not poison nested detection.
+
+    Cache entries are keyed per cwd, so resolving an outer directory and a
+    nested repo must yield distinct roots (inner wins for the nested cwd).
+    """
+    import termstory.project as project_module
+    from termstory.project import find_project_root, _PROJECT_ROOT_CACHE
+
+    monkeypatch.setattr("os.path.expanduser", lambda path: str(tmp_path) if path == "~" else path)
+    monkeypatch.setattr(project_module, "_PROJECT_ROOT_CACHE_TTL", 60)
+    _PROJECT_ROOT_CACHE.clear()
+
+    outer = tmp_path / "Projects" / "outer-repo"
+    nested_repo = outer / "nested"
+    src = nested_repo / "src"
+    src.mkdir(parents=True)
+    (outer / ".git").mkdir()
+    (nested_repo / ".git").mkdir()
+
+    outer_root = find_project_root(str(outer))
+    nested_root = find_project_root(str(src))
+
+    assert outer_root == str(outer)
+    assert nested_root == str(nested_repo)  # inner repo wins, not outer
+
+
 def test_get_project_root_cache_ttl_reads_config(tmp_path, monkeypatch):
     """#417: project_root_cache_ttl config is respected by _get_project_root_cache_ttl."""
     import json

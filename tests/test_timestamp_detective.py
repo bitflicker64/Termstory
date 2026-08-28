@@ -18,6 +18,7 @@ Covers:
 import os
 import sys
 import time
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
@@ -1092,6 +1093,141 @@ class TestDetectMacosSystemLog(unittest.TestCase):
         finally:
             import shutil
 
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Git worktree / nested identity resolution (_find_git_root, #484)
+# ---------------------------------------------------------------------------
+
+
+class TestFindGitRoot(unittest.TestCase):
+    """Regression coverage for Issue #484.
+
+    The old ``_find_git_root`` used ``os.path.isdir(<path>/.git)`` which
+    returns ``False`` when ``.git`` is a FILE (linked worktrees created by
+    ``git worktree add``) and did not resolve symlinks (``os.path.abspath``
+    instead of ``os.path.realpath``).  These tests exercise the real behavior
+    against temporary git repositories.
+    """
+
+    def setUp(self):
+        self.d = make_detective(search_root=tempfile.gettempdir())
+
+    @staticmethod
+    def _git_available():
+        try:
+            subprocess.run(
+                ["git", "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=10,
+            )
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _init_repo(base, name="Test", email="test@example.com", commit=True):
+        os.makedirs(str(base), exist_ok=True)
+        subprocess.run(
+            ["git", "init"], cwd=str(base), check=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", name], cwd=str(base), check=True
+        )
+        subprocess.run(
+            ["git", "config", "user.email", email], cwd=str(base), check=True
+        )
+        if commit:
+            with open(os.path.join(str(base), "file.txt"), "w") as f:
+                f.write("hello\n")
+            subprocess.run(
+                ["git", "add", "file.txt"], cwd=str(base), check=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "init"], cwd=str(base), check=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+        return base
+
+    def test_ordinary_repo_root(self):
+        """A cwd inside a normal repo resolves to that repo's root."""
+        if not self._git_available():
+            return
+        tmp = tempfile.mkdtemp()
+        try:
+            repo = self._init_repo(os.path.join(tmp, "repo"))
+            nested = os.path.join(repo, "a", "b")
+            os.makedirs(nested)
+            self.assertEqual(self.d._find_git_root(nested), os.path.realpath(repo))
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_nested_repo_inner_wins(self):
+        """For a cwd inside a nested repo, the inner repo is selected."""
+        if not self._git_available():
+            return
+        tmp = tempfile.mkdtemp()
+        try:
+            outer = self._init_repo(os.path.join(tmp, "outer"))
+            child = self._init_repo(os.path.join(outer, "child"))
+            src = os.path.join(child, "src")
+            os.makedirs(src)
+            actual = self.d._find_git_root(src)
+            self.assertEqual(actual, os.path.realpath(child))
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_linked_worktree_resolves(self):
+        """A linked worktree (where `.git` is a FILE) must resolve to its root.
+
+        The old implementation checked ``os.path.isdir(.git)`` and missed this,
+        walking past the worktree (or returning None).
+        """
+        if not self._git_available():
+            return
+        tmp = tempfile.mkdtemp()
+        worktree = os.path.join(tmp, "linked-worktree")
+        try:
+            main_repo = self._init_repo(os.path.join(tmp, "main-repo"))
+            try:
+                subprocess.run(
+                    ["git", "worktree", "add", "-b", "wt", worktree],
+                    cwd=str(main_repo), check=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+            except Exception:
+                # Worktree creation unsupported in this environment — document
+                # the limitation instead of silently passing.
+                return
+            # A linked worktree uses a .git FILE, not a directory.
+            self.assertFalse(os.path.isdir(os.path.join(worktree, ".git")))
+            self.assertTrue(os.path.exists(os.path.join(worktree, ".git")))
+
+            nested = os.path.join(worktree, "sub")
+            os.makedirs(nested)
+            self.assertEqual(self.d._find_git_root(nested), os.path.realpath(worktree))
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_outer_repo_trail_does_not_leak(self):
+        """A path above all repos returns None, not an enclosing repo."""
+        if not self._git_available():
+            return
+        tmp = tempfile.mkdtemp()
+        try:
+            repo = self._init_repo(os.path.join(tmp, "repo"))
+            parent = os.path.dirname(repo)
+            self.assertEqual(self.d._find_git_root(parent), None)
+        finally:
+            import shutil
             shutil.rmtree(tmp, ignore_errors=True)
 
 

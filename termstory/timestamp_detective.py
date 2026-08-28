@@ -194,20 +194,50 @@ class TimestampDetective:
 
     def _find_git_root(self, path: str) -> Optional[str]:
         """
-        Walk upward from `path` until a `.git` directory is found, then return
-        that directory as the repository root.  Stops after 10 levels to avoid
-        climbing to the filesystem root on misconfigured machines.
-        Returns None if no git root is found.
+        Find the Git repository/worktree root for *path*.
+
+        A two-stage strategy is used:
+
+        1. Fast filesystem heuristic — walk upward from the resolved path
+           (symlinks collapsed via ``os.path.realpath``) looking for a ``.git``
+           entry.  ``os.path.exists`` is used so that **both** forms are
+           recognised:
+
+           * ``.git`` **directory**  — ordinary repository
+           * ``.git`` **file**       — linked worktree (created by
+             ``git worktree add``)
+
+        2. Authoritative Git fallback — when the heuristic fails (e.g. the
+           ``.git`` marker lives more than 10 levels up, or git is configured
+           via ``GIT_DIR``), delegate to
+           ``git -C <path> rev-parse --show-toplevel``.
+
+        Stops after 10 levels to avoid climbing to the filesystem root on
+        misconfigured machines.  Returns ``None`` if no git root is found.
         """
-        current = os.path.abspath(os.path.expanduser(path))
+        current = os.path.realpath(os.path.expanduser(path))
         for _ in range(10):
-            if os.path.isdir(os.path.join(current, ".git")):
+            git_path = os.path.join(current, ".git")
+            # os.path.exists matches both a .git directory (normal repo) and
+            # a .git file (linked worktree) — os.path.isdir alone misses the
+            # latter (#484).
+            if os.path.exists(git_path):
                 return current
             parent = os.path.dirname(current)
             if parent == current:
                 break  # reached filesystem root
             current = parent
-        return None
+
+        # Fallback: ask Git itself for the authoritative worktree root.
+        # This handles linked worktrees, submodules, and non-standard .git
+        # locations that the filesystem walk may miss.  find_git_root already
+        # returns None gracefully for missing git/timeouts, so this guard only
+        # needs to protect the import from a missing git_integration module.
+        try:
+            from termstory.git_integration import find_git_root
+        except (ImportError, OSError):
+            return None
+        return find_git_root(path)
 
     def _load_git_log(self, repo_path: str) -> List[Dict]:
         """

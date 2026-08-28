@@ -163,21 +163,30 @@ _PROJECT_ROOT_CACHE_TTL: float = _get_project_root_cache_ttl()
 def _find_project_root_cached(path: str) -> str:
     """TTL-bounded cached wrapper around _find_project_root_impl (Issue #417)."""
     now = time.monotonic()
+    # Normalise the cache key so equivalent spellings of the same directory
+    # (`a/child/../child` vs `a/child`, or a symlinked path vs its target)
+    # share one entry instead of producing distinct, competing identities
+    # (#484).  os.path.realpath resolves `..` components and symlinks and is
+    # safe for nonexistent paths (it resolves only the existing prefix).  The
+    # raw `path` is still passed to _find_project_root_impl so the network-mount
+    # and UNC checks see exactly what the caller supplied.
+    abs_path = os.path.abspath(os.path.expanduser(path))
+    cache_key = os.path.realpath(abs_path)
     with _project_root_cache_lock:
-        cached = _PROJECT_ROOT_CACHE.get(path)
+        cached = _PROJECT_ROOT_CACHE.get(cache_key)
         if cached is not None and now - cached[0] < _PROJECT_ROOT_CACHE_TTL:
             # Refresh LRU position (move to most-recently-used end)
-            _PROJECT_ROOT_CACHE.pop(path, None)
-            _PROJECT_ROOT_CACHE[path] = cached
+            _PROJECT_ROOT_CACHE.pop(cache_key, None)
+            _PROJECT_ROOT_CACHE[cache_key] = cached
             return cached[1]
 
     result = _find_project_root_impl(path)
 
     with _project_root_cache_lock:
-        if path not in _PROJECT_ROOT_CACHE and len(_PROJECT_ROOT_CACHE) >= _PROJECT_ROOT_CACHE_MAXSIZE:
+        if cache_key not in _PROJECT_ROOT_CACHE and len(_PROJECT_ROOT_CACHE) >= _PROJECT_ROOT_CACHE_MAXSIZE:
             # Evict least-recently-used entry (oldest insertion order)
             _PROJECT_ROOT_CACHE.pop(next(iter(_PROJECT_ROOT_CACHE)))
-        _PROJECT_ROOT_CACHE[path] = (time.monotonic(), result)
+        _PROJECT_ROOT_CACHE[cache_key] = (time.monotonic(), result)
     return result
 
 def find_project_root(path: str) -> str:
