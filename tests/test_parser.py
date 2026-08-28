@@ -290,6 +290,16 @@ def test_parse_powershell_history(tmp_path):
     assert commands[0].command == "git status"
     assert commands[1].command == "docker ps ` -a"
 
+
+def test_parse_powershell_history_replaces_invalid_utf8(tmp_path):
+    """Issue #451: PowerShell path must keep U+FFFD for invalid UTF-8 (same as fish)."""
+    temp_file = tmp_path / "consolehost_history_bad_utf8.txt"
+    temp_file.write_bytes(b"echo hello\xffworld\n")
+    commands = parse_powershell_history(str(temp_file))
+    assert len(commands) == 1
+    assert commands[0].command == "echo hello\ufffdworld"
+
+
 def test_parser_multiplexer_boundary_resets(tmp_path):
     # Zsh multiline interrupted by kitty +kitten
     zsh_file = tmp_path / "zsh_multiplexer"
