@@ -163,15 +163,21 @@ _PROJECT_ROOT_CACHE_TTL: float = _get_project_root_cache_ttl()
 def _find_project_root_cached(path: str) -> str:
     """TTL-bounded cached wrapper around _find_project_root_impl (Issue #417)."""
     now = time.monotonic()
-    # Normalise the cache key so equivalent spellings of the same directory
-    # (`a/child/../child` vs `a/child`, or a symlinked path vs its target)
-    # share one entry instead of producing distinct, competing identities
-    # (#484).  os.path.realpath resolves `..` components and symlinks and is
-    # safe for nonexistent paths (it resolves only the existing prefix).  The
-    # raw `path` is still passed to _find_project_root_impl so the network-mount
-    # and UNC checks see exactly what the caller supplied.
+    # Cache identity must reflect *exactly* the signals _find_project_root_impl
+    # uses to branch between distinct behaviours.  Its UNC/network guard inspects
+    # the RAW path prefix (`\\` or `//`) before any normalisation, so two raw
+    # spellings that normalise to the same realpath can still behave differently
+    # (e.g. `///workspace` triggers the UNC short-circuit on some platforms while
+    # `/workspace` does not).  Keying only on realpath would alias those distinct
+    # lookups.  We therefore key on (raw_unc_flag, normalised realpath):
+    #   * raw_unc_flag == True  -> _find_project_root_impl returns home at once;
+    #   * raw_unc_flag == False -> normal filesystem resolution.
+    # This keeps genuinely-equivalent spellings (`a/child` vs `a/child/../child`,
+    # a symlinked path vs its target) sharing one entry while never making two
+    # semantically-distinct raw paths share a cached result (#484).
+    raw_unc = path.startswith(r"\\") or path.startswith(r"//")
     abs_path = os.path.abspath(os.path.expanduser(path))
-    cache_key = os.path.realpath(abs_path)
+    cache_key = (raw_unc, os.path.realpath(abs_path))
     with _project_root_cache_lock:
         cached = _PROJECT_ROOT_CACHE.get(cache_key)
         if cached is not None and now - cached[0] < _PROJECT_ROOT_CACHE_TTL:

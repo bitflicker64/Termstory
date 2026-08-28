@@ -1230,6 +1230,61 @@ class TestFindGitRoot(unittest.TestCase):
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_malformed_git_file_does_not_hide_enclosing_repo(self):
+        """P1 #2 — a bogus `.git` FILE must not become the root.
+
+        An arbitrary file literally named ``.git`` (not a ``gitdir:`` pointer)
+        inside a valid repository must NOT short-circuit resolution to that
+        directory; the real enclosing repository must still be found.
+        """
+        if not self._git_available():
+            return
+        tmp = tempfile.mkdtemp()
+        try:
+            repo = self._init_repo(os.path.join(tmp, "repo"))
+            inner = os.path.join(repo, "inner")
+            os.makedirs(inner)
+            # An intentionally invalid `.git` FILE that is not a gitdir pointer.
+            with open(os.path.join(inner, ".git"), "w") as f:
+                f.write("this is not a git worktree marker\n")
+            self.assertFalse(os.path.isdir(os.path.join(inner, ".git")))
+            self.assertTrue(os.path.isfile(os.path.join(inner, ".git")))
+
+            # Must resolve to the enclosing repo, not the bogus `inner` root.
+            self.assertEqual(
+                self.d._find_git_root(inner), os.path.realpath(repo)
+            )
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_stale_git_file_pointing_nowhere_does_not_hide_repo(self):
+        """P1 #2 — a `gitdir:` pointer whose target no longer exists is stale.
+
+        A stale linked-worktree marker (target removed) must not be accepted as
+        a root; the enclosing valid repository must still win.
+        """
+        if not self._git_available():
+            return
+        tmp = tempfile.mkdtemp()
+        try:
+            repo = self._init_repo(os.path.join(tmp, "repo"))
+            stale = os.path.join(repo, "stale-wt")
+            os.makedirs(stale)
+            # A `gitdir:` pointer to a non-existent target directory.
+            missing = os.path.join(tmp, "does-not-exist")
+            with open(os.path.join(stale, ".git"), "w") as f:
+                f.write("gitdir: %s\n" % missing.replace("\\", "/"))
+            self.assertTrue(os.path.isfile(os.path.join(stale, ".git")))
+            self.assertFalse(os.path.isdir(missing))
+
+            # The stale marker must not resolve to `stale`; the enclosing
+            # valid `repo` must be returned instead.
+            self.assertEqual(self.d._find_git_root(stale), os.path.realpath(repo))
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

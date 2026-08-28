@@ -199,18 +199,19 @@ class TimestampDetective:
         A two-stage strategy is used:
 
         1. Fast filesystem heuristic — walk upward from the resolved path
-           (symlinks collapsed via ``os.path.realpath``) looking for a ``.git``
-           entry.  ``os.path.exists`` is used so that **both** forms are
-           recognised:
+           (symlinks collapsed via ``os.path.realpath``).  A ``.git`` entry is
+           accepted as a repository root only when it is a genuine Git marker:
 
-           * ``.git`` **directory**  — ordinary repository
-           * ``.git`` **file**       — linked worktree (created by
-             ``git worktree add``)
+           * ``.git`` **directory**  — ordinary repository.
+           * ``.git`` **file**       — a valid linked-worktree marker (created
+             by ``git worktree add``).  The file must be a real ``gitdir:``
+             pointer whose target git directory exists; an arbitrary, malformed
+             or stale file named ``.git`` is NOT accepted, and the walk continues
+             upward so an enclosing repository can still be found.
 
         2. Authoritative Git fallback — when the heuristic fails (e.g. the
-           ``.git`` marker lives more than 10 levels up, or git is configured
-           via ``GIT_DIR``), delegate to
-           ``git -C <path> rev-parse --show-toplevel``.
+           marker lives more than 10 levels up, or git is configured via
+           ``GIT_DIR``), delegate to ``git -C <path> rev-parse --show-toplevel``.
 
         Stops after 10 levels to avoid climbing to the filesystem root on
         misconfigured machines.  Returns ``None`` if no git root is found.
@@ -218,10 +219,7 @@ class TimestampDetective:
         current = os.path.realpath(os.path.expanduser(path))
         for _ in range(10):
             git_path = os.path.join(current, ".git")
-            # os.path.exists matches both a .git directory (normal repo) and
-            # a .git file (linked worktree) — os.path.isdir alone misses the
-            # latter (#484).
-            if os.path.exists(git_path):
+            if self._is_git_marker(git_path):
                 return current
             parent = os.path.dirname(current)
             if parent == current:
@@ -238,6 +236,45 @@ class TimestampDetective:
         except (ImportError, OSError):
             return None
         return find_git_root(path)
+
+    def _is_git_marker(self, git_path: str) -> bool:
+        """
+        Return True if *git_path* is a genuine Git repository/worktree marker.
+
+        A ``.git`` DIRECTORY is a valid ordinary-repository marker.
+
+        A ``.git`` FILE is accepted only if it is a legitimate linked-worktree
+        marker: it must be a ``gitdir: <path>`` pointer (the format produced by
+        ``git worktree add``) whose target directory currently exists.  Any
+        other file named ``.git`` (malformed, stale after the worktree was
+        removed, or created by a tool) is rejected so it cannot hide a real
+        enclosing repository.  The check is bounded (reads at most one small
+        line) and does not invoke Git.
+        """
+        if os.path.isdir(git_path):
+            return True
+        if not os.path.isfile(git_path):
+            return False
+        try:
+            with open(git_path, "r", encoding="utf-8", errors="replace") as fh:
+                first_line = fh.readline()
+        except OSError:
+            return False  # unreadable marker -> treat as invalid
+        if not first_line.startswith("gitdir:"):
+            return False
+        target = first_line[len("gitdir:"):].strip()
+        target = first_line[len("gitdir:"):].strip()
+        if not target:
+            return False
+        if not os.path.isabs(target):
+            # Git writes absolute targets, but resolve a relative target the
+            # way Git does: relative to the directory holding the `.git` file.
+            target = os.path.join(os.path.dirname(git_path), target)
+        return os.path.isdir(target)
+
+        if not target:
+            return False
+        return os.path.isdir(target)
 
     def _load_git_log(self, repo_path: str) -> List[Dict]:
         """

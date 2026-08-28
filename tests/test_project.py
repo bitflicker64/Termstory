@@ -470,6 +470,55 @@ def test_find_project_root_cache_nested_not_poisoned(tmp_path, monkeypatch):
     assert nested_root == str(nested_repo)  # inner repo wins, not outer
 
 
+def test_find_project_root_cache_raw_unc_not_aliased(tmp_path, monkeypatch):
+    """P1 #1 (Greptile): raw paths with distinct UNC semantics must NOT alias.
+
+    ``_find_project_root_impl`` branches on the RAW path prefix: a path whose
+    raw spelling starts with ``\\\\`` or ``//`` hits the UNC/network
+    short-circuit (returns home), while the same directory spelled without that
+    prefix is resolved normally.  The cache key must therefore retain this
+    raw-prefix signal; otherwise ``///workspace`` and ``/workspace`` would
+    normalise to the same realpath and wrongly share one cached result while
+    ``_find_project_root_impl`` would have produced different answers.
+
+    This test drives semantically-distinct raw paths through the cache and
+    asserts each triggers its own ``_find_project_root_impl`` lookup (no alias),
+    and that the second result is not the first's cached value.  It does not
+    depend on host path-normalisation, only on the raw-prefix flag being part of
+    the cache identity, so it is deterministic across platforms.
+    """
+    import termstory.project as project_module
+    from termstory.project import find_project_root, _PROJECT_ROOT_CACHE
+
+    monkeypatch.setattr("os.path.expanduser", lambda path: str(tmp_path) if path == "~" else path)
+    monkeypatch.setattr(project_module, "_PROJECT_ROOT_CACHE_TTL", 60)
+    _PROJECT_ROOT_CACHE.clear()
+
+    seen = []
+
+    def recording_impl(path):
+        seen.append(path)
+        # Mirror _find_project_root_impl()'s raw-path UNC short-circuit exactly.
+        if path.startswith(r"\\") or path.startswith(r"//"):
+            return "HOME-UNC"
+        return "NORMAL:" + path
+
+    monkeypatch.setattr(project_module, "_find_project_root_impl", recording_impl)
+
+    normal = "/workspace"
+    unc = "//workspace"  # raw spelling triggers the UNC prefix branch
+
+    r1 = find_project_root(normal)
+    seen.clear()  # only inspect the lookups after the first is cached
+    r2 = find_project_root(unc)
+
+    # The UNC-spelled path must resolve via its OWN impl call with the UNC
+    # result, NOT the cached result of the normal spelling.
+    assert r2 == "HOME-UNC"
+    assert r2 != r1
+    assert seen == ["//workspace"]
+
+
 def test_get_project_root_cache_ttl_reads_config(tmp_path, monkeypatch):
     """#417: project_root_cache_ttl config is respected by _get_project_root_cache_ttl."""
     import json
