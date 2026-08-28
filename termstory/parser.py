@@ -599,10 +599,12 @@ def _assign_missing_timestamps_with_detective(
 
     detective_commands: List[Command] = []
     claimed: set = set()
+    # Shared across detective + fallback so repeated commands don't both take
+    # existing_lookup[cmd][0] and later collapse under exact deduplication.
+    consumed: Dict[str, int] = {}
 
     if legacy_items:
         enriched = _run_timestamp_detective(legacy_items, project_paths)
-        consumed: Dict[str, int] = {}
 
         def resolve_timestamp(cmd: str, fallback_ts: int) -> int:
             if existing_lookup and cmd in existing_lookup:
@@ -632,7 +634,9 @@ def _assign_missing_timestamps_with_detective(
 
     remaining = [(t, cmd) for i, (t, cmd) in enumerate(temp_commands) if i not in claimed]
     fallback_commands = (
-        _assign_missing_timestamps_fallback(remaining, mtime, existing_lookup)
+        _assign_missing_timestamps_fallback(
+            remaining, mtime, existing_lookup, consumed=consumed
+        )
         if remaining else []
     )
 
@@ -652,7 +656,8 @@ def _assign_missing_timestamps_with_detective(
 def _assign_missing_timestamps_fallback(
     temp_commands: List[tuple],
     mtime: int,
-    existing_lookup: Optional[Dict[str, List[int]]]
+    existing_lookup: Optional[Dict[str, List[int]]],
+    consumed: Optional[Dict[str, int]] = None,
 ) -> List[Command]:
     commands_to_return = []
     
@@ -673,7 +678,8 @@ def _assign_missing_timestamps_fallback(
     
     has_any_timestamps = any(t is not None for t, _ in temp_commands)
     
-    consumed = {}
+    if consumed is None:
+        consumed = {}
     def resolve_timestamp(cmd: str, fallback_ts: int) -> int:
         if existing_lookup and cmd in existing_lookup:
             ts_list = existing_lookup[cmd]
