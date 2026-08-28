@@ -253,10 +253,15 @@ class Database:
                         created_at INTEGER DEFAULT (strftime('%s', 'now'))
                     );
                 """)
-                # One-time migrations
+                # One-time migrations and consistency repairs
                 self._migrate_projects_unique_path(cursor)
                 self._migrate_deduplicate_sessions(cursor)
                 self._migrate_fts5(cursor)
+                # Recover sessions left inconsistent by an interrupted
+                # recording (#469). Runs after the schema/migration helpers so
+                # every column it touches is guaranteed to exist, and commits
+                # together with them in the single transaction below.
+                self._recover_incomplete_sessions(cursor)
                 conn.commit()
                 break
             except sqlite3.OperationalError as e:
@@ -448,6 +453,84 @@ class Database:
             cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_commands_ts_cmd_unique ON commands(timestamp, command);")
         except sqlite3.IntegrityError:
             pass
+
+    def _recover_incomplete_sessions(self, cursor) -> None:
+        """Repair session finalization metadata left incomplete by an
+        interrupted recording (issue #469).
+
+        Lifecycle reality that drives the rule below:
+
+        * ``create_sessions()`` always sets a concrete integer ``end_time``
+          and ``duration_seconds`` when it builds a session, and
+          ``save_data()`` writes those values verbatim (it never recomputes
+          them from commands). A completed session row therefore *always*
+          carries non-NULL finalization metadata.
+        * Hence a persisted session that still HAS commands — so its
+          mid-recording writes landed — yet whose ``end_time`` or
+          ``duration_seconds`` is NULL can only be residue of an interrupted
+          recording (or manual/legacy data): the finalization step never
+          completed. A recording that is genuinely still in progress has no
+          session row at all, because session state and its commands are
+          committed atomically together by ``save_data``.
+
+        So the recovery rule is deliberately narrow and safe: it only
+        finalizes sessions that have at least one persisted command AND where
+        ``end_time`` or ``duration_seconds`` is NULL — the unambiguous
+        "commands committed, finalization never written" signal.
+
+        It deliberately does NOT rewrite a non-NULL ``end_time`` that merely
+        disagrees with MAX(commands.timestamp): such values are the normal
+        authored output of the pipeline/tests (verify test_backup, where a
+        single command at time T sits in a session windowed ``T..T+100``).
+        Treating every such disagreement as interruption would corrupt
+        legitimate records.
+
+        Repairs (UPDATE-only; values derived exclusively from the persisted
+        commands, never from wall-clock time):
+
+        * end_time / duration_seconds set from MAX(commands.timestamp) using
+          the exact ``create_sessions()`` formula.
+        * NULL-able columns are replaced. Rows whose end_time and
+          duration_seconds are both already non-NULL are left untouched, as
+          are commandless sessions (no authoritative data) and malformed
+          non-integer timestamps.
+
+        Safe and idempotent: fixing the missing values means a second pass
+        finds nothing left to repair (all repaired rows now carry non-NULL,
+        command-derived values), and it inserts/deletes nothing.
+        """
+        cursor.execute("""
+            SELECT s.id, s.start_time, s.end_time, s.duration_seconds,
+                   MAX(c.timestamp) AS max_ts, COUNT(c.id) AS cmd_count
+            FROM sessions s
+            JOIN commands c ON c.session_id = s.id
+            GROUP BY s.id
+        """)
+        rows = cursor.fetchall()
+        for s_id, start_time, end_time, duration, max_ts, _cmd_count in rows:
+            # A row whose finalization already ran (both fields non-NULL) is
+            # not interrupted-era residue — leave it exactly as authored.
+            if end_time is not None and duration is not None:
+                continue
+            # start_time and MAX(timestamp) are declared NOT NULL; guard the
+            # arithmetic anyway against malformed legacy rows.
+            if start_time is None or max_ts is None:
+                continue
+            if not isinstance(start_time, int) or not isinstance(max_ts, int):
+                continue
+            correct_end = max_ts
+            correct_duration = max_ts - start_time
+            # Only rewrite the fields that are actually missing, so an
+            # authored non-NULL value is never disturbed.
+            new_end = end_time if end_time is not None else correct_end
+            new_duration = duration if duration is not None else correct_duration
+            if new_end == end_time and new_duration == duration:
+                continue
+            cursor.execute("""
+                UPDATE sessions
+                SET end_time = ?, duration_seconds = ?
+                WHERE id = ?
+            """, (new_end, new_duration, s_id))
 
     def save_data(self, projects: List[Project], sessions: List[Session], commands: List[Command]) -> None:
         """Optimized bulk insertion and updating of projects, sessions, and commands in a single transaction"""
