@@ -104,6 +104,38 @@ def test_language_detection(temp_db, tmp_path):
     assert langs["Rust"] == 50.0
     assert langs["Python"] == 50.0
 
+@pytest.mark.parametrize(
+    "command",
+    ["uv run pytest", "uv pip install", "uv sync", "uvx ruff check"],
+)
+def test_language_detection_uv_commands(temp_db, command):
+    # No project-file language available (path=None): classification must
+    # fall back to the command's first token, so uv/uvx count as Python.
+    now_ts = int(time.time())
+    p = Project(id=1, name="UvProj", path=None, first_seen=now_ts, last_seen=now_ts, session_count=1, total_time=0)
+    cmd = Command(timestamp=now_ts, command=command, exit_code=0, session_id=1, project_id=1)
+    s = Session(id=1, start_time=now_ts, end_time=now_ts, duration_seconds=0, project_id=1, commands=[cmd])
+
+    temp_db.save_data([p], [s], [cmd])
+
+    assert language_detection(temp_db) == {"Python": 100.0}
+
+def test_language_detection_uv_project_language_precedence(temp_db, tmp_path):
+    # A project with a detected project-file language keeps precedence over
+    # command-based classification, even when running uv commands.
+    proj_path = tmp_path / "my-node-project"
+    proj_path.mkdir()
+    (proj_path / "package.json").write_text("{}")
+
+    now_ts = int(time.time())
+    p = Project(id=1, name="NodeProj", path=str(proj_path), first_seen=now_ts, last_seen=now_ts, session_count=1, total_time=0)
+    cmd = Command(timestamp=now_ts, command="uv run pytest", exit_code=0, session_id=1, project_id=1)
+    s = Session(id=1, start_time=now_ts, end_time=now_ts, duration_seconds=0, project_id=1, commands=[cmd])
+
+    temp_db.save_data([p], [s], [cmd])
+
+    assert language_detection(temp_db) == {"JavaScript/TypeScript": 100.0}
+
 def test_peak_hours(temp_db):
     # Insert commands at specific hours
     # Hour 14:00 (2 PM) local time
