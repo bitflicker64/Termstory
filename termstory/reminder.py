@@ -563,7 +563,11 @@ def start_sleep_daemon(db_path: str):
             # is (or is about to become) the running daemon — defer to it.
             try:
                 with open(pid_file, "r") as f:
-                    pid = int(f.read().strip())
+                    content = f.read().strip()
+                if not content:
+                    # Winner created the file but has not written its PID yet.
+                    return
+                pid = int(content)
                 os.kill(pid, 0)
                 return  # Already running
             except (ValueError, OSError):
