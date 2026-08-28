@@ -100,6 +100,31 @@ def test_parse_bash_history_without_timestamps(tmp_path):
     assert commands[0].command == "git status"
     assert commands[1].command == "docker ps"
 
+
+def test_bash_history_timestamp_detective_recovers_file_anchor(tmp_path, monkeypatch):
+    """Issue #453: untimestamped bash commands use TimestampDetective like zsh."""
+    monkeypatch.delenv("TERMSTORY_MISSING_TIMESTAMPS", raising=False)
+    monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2026-06-14 12:00:00")
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    lock = project / "package-lock.json"
+    lock.write_text("{}\n")
+    known_ts = 1748851200
+    os.utime(str(lock), (known_ts, known_ts))
+
+    history = tmp_path / "bash_history"
+    history.write_text(f"cd {project}\nnpm install\n")
+    os.utime(str(history), (known_ts + 86400, known_ts + 86400))
+
+    commands = parse_bash_history(str(history), project_paths=[str(project)])
+    npm_cmds = [c for c in commands if c.command == "npm install"]
+    assert len(npm_cmds) == 1
+    assert npm_cmds[0].is_legacy is False
+    assert npm_cmds[0].recovery_source is not None
+    assert "npm" in npm_cmds[0].recovery_source
+
+
 def test_parse_zsh_history_legacy_fallback(tmp_path):
     temp_file = tmp_path / "zsh_legacy_test"
     temp_file.write_text(
