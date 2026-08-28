@@ -12,7 +12,8 @@ from termstory.mcp_snapshot import (
     capture_ide_state,
     capture_git_status,
     capture_mcp_snapshot,
-    capture_and_store_mcp_snapshot
+    capture_and_store_mcp_snapshot,
+    _scrub_cwd
 )
 from termstory.formatter import format_mcp_snapshots
 
@@ -324,6 +325,86 @@ def test_capture_mcp_snapshot_deleted_cwd():
         assert not snapshot["git"]["is_repo"]
 
 
+# ---------------------------------------------------------------------------
+# Issue #477 regressions: the persisted snapshot "cwd" must be scrubbed of
+# locally-identifying home/username path components. All identity inputs
+# (HOME / USERPROFILE / USERNAME / expanduser / getpass.getuser) are pinned in
+# every test so results never depend on the developer machine's real values.
+# ---------------------------------------------------------------------------
+
+_ALICE_UNIX_ENV = {
+    "HOME": "/home/alice",
+    "USERPROFILE": "/home/alice",
+    "USERNAME": "alice",
+    "USER": "alice",
+}
+
+_ALICE_WIN_ENV = {
+    "HOME": "C:\\Users\\alice",
+    "USERPROFILE": "C:\\Users\\alice",
+    "USERNAME": "alice",
+    "USER": "alice",
+}
+
+
+def test_scrub_cwd_none_preserved():
+    # A deleted cwd (os.getcwd() raising OSError) yields cwd=None upstream;
+    # the sanitizer must preserve None rather than crash or coerce it.
+    assert _scrub_cwd(None) is None
+
+
+def test_scrub_cwd_unix_home_and_username_components():
+    with patch.dict(os.environ, _ALICE_UNIX_ENV, clear=True), \
+         patch("termstory.mcp_snapshot.os.path.expanduser", return_value="/home/alice"), \
+         patch("termstory.mcp_snapshot.getpass.getuser", return_value="alice"):
+        # Home is redacted on component boundaries; trailing project context
+        # is preserved.
+        assert _scrub_cwd("/home/alice/projects/Termstory") == "<REDACTED_HOME>/projects/Termstory"
+        # The exact home path itself collapses to the placeholder.
+        assert _scrub_cwd("/home/alice") == "<REDACTED_HOME>"
+        # A username appearing as a nested (non-home-prefix) path component is
+        # still redacted...
+        assert _scrub_cwd("/srv/workspaces/alice/notes") == "/srv/workspaces/<REDACTED_USER>/notes"
+        # ...as is a macOS-style home not advertised via HOME.
+        assert _scrub_cwd("/Users/alice/termstory") == "/Users/<REDACTED_USER>/termstory"
+        # A component merely containing the username as a substring must NOT
+        # be corrupted.
+        assert _scrub_cwd("/srv/alicebackup/build") == "/srv/alicebackup/build"
+        # A path sharing a prefix with the home but forming a different
+        # component must be left intact.
+        assert _scrub_cwd("/home/alicee/data") == "/home/alicee/data"
+
+
+def test_scrub_cwd_windows_home_and_case_insensitive_username():
+    # Windows-style paths must be scrubbed regardless of the host OS the tests
+    # run on, and casing differences must not bypass redaction.
+    with patch.dict(os.environ, _ALICE_WIN_ENV, clear=True), \
+         patch("termstory.mcp_snapshot.os.path.expanduser", return_value="C:\\Users\\alice"), \
+         patch("termstory.mcp_snapshot.getpass.getuser", return_value="alice"):
+        # Windows home prefix is redacted; project context survives.
+        assert _scrub_cwd("C:\\Users\\alice\\Documents\\Termstory") == "<REDACTED_HOME>\\Documents\\Termstory"
+        # C:\\Users\\Alice (different case) must also be caught.
+        assert _scrub_cwd("C:\\Users\\Alice\\Documents\\Termstory") == "<REDACTED_HOME>\\Documents\\Termstory"
+        # A POSIX path is still scrubbed even when the advertised home is a
+        # Windows path (username component match is OS-independent).
+        assert _scrub_cwd("/home/alice/projects/Termstory") == "/home/<REDACTED_USER>/projects/Termstory"
+        # Username as a nested Windows path component.
+        assert _scrub_cwd("D:\\data\\alice\\repo") == "D:\\data\\<REDACTED_USER>\\repo"
+        # Longer components that merely contain the username stay intact.
+        assert _scrub_cwd("C:\\Users\\alicebackup\\Termstory") == "C:\\Users\\alicebackup\\Termstory"
+
+
+def test_scrub_cwd_preserves_paths_without_sensitive_components():
+    with patch.dict(os.environ, _ALICE_UNIX_ENV, clear=True), \
+         patch("termstory.mcp_snapshot.os.path.expanduser", return_value="/home/alice"), \
+         patch("termstory.mcp_snapshot.getpass.getuser", return_value="alice"):
+        # Paths with no home/username components must pass through untouched.
+        assert _scrub_cwd("/opt/apps/Termstory") == "/opt/apps/Termstory"
+        assert _scrub_cwd("C:\\dev\\tools\\Termstory") == "C:\\dev\\tools\\Termstory"
+        assert _scrub_cwd("relative/nested/path") == "relative/nested/path"
+        assert _scrub_cwd("") == ""
+
+
 def test_capture_git_status_subprocess_timeout():
     mock_run = MagicMock(side_effect=subprocess.TimeoutExpired(cmd="git", timeout=5))
     with patch("termstory.mcp_snapshot.os.path.exists", return_value=True), \
@@ -402,6 +483,79 @@ def test_capture_and_store_mcp_snapshot_db_error_does_not_raise(mock_git, mock_i
     # Must swallow the db failure and return normally. A snapshot
     # failure must never disrupt the core ingestion process.
     capture_and_store_mcp_snapshot(db)
+
+
+# ---------------------------------------------------------------------------
+# Issue #477: capture-level regressions. The REAL, unredacted cwd must still
+# reach capture_git_status() for repository detection, while only the value
+# persisted in (and displayed from) the snapshot is sanitized.
+# ---------------------------------------------------------------------------
+
+_GIT_INFO = {"is_repo": True, "branch": "main", "uncommitted_files": []}
+
+
+def test_capture_mcp_snapshot_scrubs_cwd_but_git_receives_real_cwd():
+    with patch.dict(os.environ, _ALICE_UNIX_ENV, clear=True), \
+         patch("termstory.mcp_snapshot.os.path.expanduser", return_value="/home/alice"), \
+         patch("termstory.mcp_snapshot.getpass.getuser", return_value="alice"), \
+         patch("termstory.mcp_snapshot.os.getcwd", return_value="/home/alice/projects/Termstory"), \
+         patch("termstory.mcp_snapshot.capture_git_status", return_value=dict(_GIT_INFO)) as mock_git:
+        snapshot = capture_mcp_snapshot()
+
+    cwd = snapshot["cwd"]
+    assert cwd is not None
+    assert "/home/alice" not in cwd
+    assert "alice" not in cwd
+    assert "Termstory" in cwd
+    # Git repository detection received the REAL, unredacted cwd.
+    mock_git.assert_called_once_with("/home/alice/projects/Termstory")
+    assert snapshot["git"] == _GIT_INFO
+
+
+def test_capture_mcp_snapshot_scrubs_windows_cwd_but_git_receives_real_cwd():
+    real_cwd = "C:\\Users\\Alice\\Documents\\Termstory"
+    with patch.dict(os.environ, _ALICE_WIN_ENV, clear=True), \
+         patch("termstory.mcp_snapshot.os.path.expanduser", return_value="C:\\Users\\alice"), \
+         patch("termstory.mcp_snapshot.getpass.getuser", return_value="alice"), \
+         patch("termstory.mcp_snapshot.os.getcwd", return_value=real_cwd), \
+         patch("termstory.mcp_snapshot.capture_git_status", return_value=dict(_GIT_INFO)) as mock_git:
+        snapshot = capture_mcp_snapshot()
+
+    cwd = snapshot["cwd"]
+    assert cwd is not None
+    assert "C:\\Users\\alice" not in cwd
+    assert "C:\\Users\\Alice" not in cwd
+    assert "alice" not in cwd.lower()
+    assert "Termstory" in cwd
+    # The REAL, unredacted path (with its original casing) reaches Git.
+    mock_git.assert_called_once_with(real_cwd)
+
+
+def test_capture_and_store_mcp_snapshot_persists_scrubbed_cwd():
+    db = MagicMock()
+    db.get_latest_session_id.return_value = 1
+    db.get_mcp_snapshots.return_value = []
+
+    with patch.dict(os.environ, _ALICE_UNIX_ENV, clear=True), \
+         patch("termstory.mcp_snapshot.os.path.expanduser", return_value="/home/alice"), \
+         patch("termstory.mcp_snapshot.getpass.getuser", return_value="alice"), \
+         patch("termstory.mcp_snapshot.os.getcwd", return_value="/home/alice/projects/Termstory"), \
+         patch("termstory.mcp_snapshot.capture_ide_state", return_value={"ide_name": "Unknown", "env_vars": {}}), \
+         patch("termstory.mcp_snapshot.capture_git_status", return_value=dict(_GIT_INFO)) as mock_git:
+        capture_and_store_mcp_snapshot(db)
+
+    assert db.save_mcp_snapshot.called
+    payload = db.save_mcp_snapshot.call_args.kwargs.get("payload")
+    if payload is None:
+        payload = db.save_mcp_snapshot.call_args.args[2]
+    # The persisted cwd is sanitized but keeps the project context.
+    assert payload["cwd"] == "<REDACTED_HOME>/projects/Termstory"
+    # Neither the home path nor the username may leak anywhere in the payload.
+    payload_text = json.dumps(payload)
+    assert "/home/alice" not in payload_text
+    assert "alice" not in payload_text
+    # Git detection still ran against the real directory.
+    mock_git.assert_called_once_with("/home/alice/projects/Termstory")
 
 
 @patch("termstory.mcp_snapshot.os.getcwd", return_value="/Users/developer/termstory")
