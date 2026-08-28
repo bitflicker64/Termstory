@@ -1376,7 +1376,7 @@ def restore_cmd(
 
     Use `--yes` (or `-y`) to skip the prompt in automation.
     """
-    from termstory.backup import restore_db
+    from termstory.backup import restore_db, BackupError
     from rich.markup import escape
     import os as _os
 
@@ -1426,6 +1426,12 @@ def restore_cmd(
         # restore_db re-checks file existence; preserve the existing
         # error-handling contract in case the file disappeared between
         # our preflight check and the actual restore call.
+        console.print(f"[bold red]Error: {escape(str(e))}[/]")
+        raise typer.Exit(code=1)
+    except BackupError as e:
+        # The backup file exists but failed validation (corrupt, wrong
+        # schema, failed integrity_check).  The active database has not
+        # been touched.  Surface a clean error rather than a traceback.
         console.print(f"[bold red]Error: {escape(str(e))}[/]")
         raise typer.Exit(code=1)
 

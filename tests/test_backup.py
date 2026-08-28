@@ -1,8 +1,9 @@
 import logging
 import os
+import glob
 import sqlite3
 import pytest
-from termstory.backup import backup_db, restore_db
+from termstory.backup import backup_db, restore_db, BackupError
 from termstory.database import Database
 from termstory.models import Project, Session, Command
 
@@ -226,7 +227,7 @@ def test_backup_consecutive_calls_unique(tmp_path, monkeypatch):
     assert os.path.isfile(backup_one), "first backup file was not created"
     assert os.path.isfile(backup_two), "second backup file was not created"
 
-    # Both backups must contain valid SQLite data.
+        # Both backups must contain valid SQLite data.
     for backup_path in (backup_one, backup_two):
         conn = sqlite3.connect(backup_path)
         try:
@@ -234,3 +235,222 @@ def test_backup_consecutive_calls_unique(tmp_path, monkeypatch):
             assert integrity[0] == "ok"
         finally:
             conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Helpers for Issue #479 restore-validation regression tests
+# ---------------------------------------------------------------------------
+
+def _patch_db_path(monkeypatch, db_path):
+    """Patch get_db_path in both config and backup modules to *db_path*."""
+    monkeypatch.setenv("DB_PATH", db_path)
+    monkeypatch.setattr("termstory.config.get_db_path", lambda: db_path)
+    monkeypatch.setattr("termstory.backup.get_db_path", lambda: db_path)
+
+
+def _seed_db(db_path, project_name="Test Project"):
+    """Initialize a TermStory DB and seed one project/session/command."""
+    db = Database(db_path)
+    db.init_db()
+    now = 1730000000
+    project = Project(
+        id=1, name=project_name, path="~/demo",
+        first_seen=now, last_seen=now,
+        session_count=1, total_time=100,
+    )
+    command = Command(timestamp=now, command="echo hello",
+                      session_id=1, project_id=1)
+    session = Session(
+        id=1, start_time=now, end_time=now + 100,
+        duration_seconds=100, project_id=1, commands=[command],
+    )
+    db.save_data([project], [session], [command])
+
+
+def _read_first_project_name(db_path):
+    """Return the name of the first project row, or None if no projects."""
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM projects ORDER BY id LIMIT 1")
+        row = cursor.fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def _count_rows(db_path, table):
+    """Return the row count of *table* in the database at *db_path*."""
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM {}".format(table))
+        return cursor.fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _make_corrupt_termstory_db(path):
+    """Create a valid TermStory DB (schema + bulk data) then corrupt a data
+    page so that PRAGMA integrity_check fails while the schema on page 1
+    remains readable."""
+    db = Database(path)
+    db.init_db()
+    now = 1730000000
+    conn = sqlite3.connect(path)
+    conn.executemany(
+        "INSERT INTO commands (timestamp, command, session_id, project_id) "
+        "VALUES (?, ?, ?, ?)",
+        [(now + i, "cmd{}".format(i), 1, 1) for i in range(5000)],
+    )
+    conn.commit()
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.commit()
+    conn.close()
+    page_size = 4096
+    with open(path, "r+b") as f:
+        f.seek(0, 2)
+        size = f.tell()
+        assert size > page_size * 3, "DB too small to corrupt: {} bytes".format(size)
+        f.seek(page_size * 2)
+        f.write(b"\xFF" * page_size)
+
+
+# ---------------------------------------------------------------------------
+# Issue #479 — restore validation and atomic replacement tests
+# ---------------------------------------------------------------------------
+
+def test_restore_valid_backup_succeeds(tmp_path, monkeypatch):
+    """A valid backup restores all data correctly."""
+    db_path = str(tmp_path / "live.db")
+    _patch_db_path(monkeypatch, db_path)
+
+    _seed_db(db_path, "Live Project")
+    backup_path = backup_db()
+    assert os.path.isfile(backup_path)
+
+    restore_db(backup_path)
+
+    assert os.path.isfile(db_path)
+    assert _read_first_project_name(db_path) == "Live Project"
+    assert _count_rows(db_path, "projects") == 1
+    assert _count_rows(db_path, "sessions") == 1
+    assert _count_rows(db_path, "commands") == 1
+
+
+def test_restore_rejects_non_sqlite_file(tmp_path, monkeypatch):
+    """A file that is not a SQLite database must be rejected and the
+    active DB must remain untouched."""
+    db_path = str(tmp_path / "live.db")
+    _patch_db_path(monkeypatch, db_path)
+    _seed_db(db_path, "Sentinel Project")
+
+    fake_backup = str(tmp_path / "not_sqlite.db")
+    with open(fake_backup, "w") as f:
+        f.write("This is definitely not a SQLite database file.")
+
+    with pytest.raises(BackupError):
+        restore_db(fake_backup)
+
+    assert _read_first_project_name(db_path) == "Sentinel Project"
+
+
+def test_restore_rejects_incomplete_schema(tmp_path, monkeypatch):
+    """A valid SQLite file missing required TermStory tables must be rejected."""
+    db_path = str(tmp_path / "live.db")
+    _patch_db_path(monkeypatch, db_path)
+    _seed_db(db_path, "Sentinel Project")
+
+    fake_backup = str(tmp_path / "incomplete.db")
+    conn = sqlite3.connect(fake_backup)
+    conn.execute(
+        "CREATE TABLE arbitrary_data (id INTEGER PRIMARY KEY, value TEXT)"
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(BackupError):
+        restore_db(fake_backup)
+
+    assert _read_first_project_name(db_path) == "Sentinel Project"
+
+
+def test_restore_rejects_corrupt_database(tmp_path, monkeypatch):
+    """A corrupted SQLite DB (failing integrity_check) must be rejected."""
+    db_path = str(tmp_path / "live.db")
+    _patch_db_path(monkeypatch, db_path)
+    _seed_db(db_path, "Sentinel Project")
+
+    corrupt_backup = str(tmp_path / "corrupt.db")
+    _make_corrupt_termstory_db(corrupt_backup)
+
+    with pytest.raises(BackupError):
+        restore_db(corrupt_backup)
+
+    assert _read_first_project_name(db_path) == "Sentinel Project"
+
+
+def test_restore_atomic_success_replaces_data(tmp_path, monkeypatch):
+    """A valid restore atomically replaces the active database data."""
+    db_path = str(tmp_path / "live.db")
+    _patch_db_path(monkeypatch, db_path)
+
+    _seed_db(db_path, "Old Project")
+
+    backup_db_path = str(tmp_path / "backup.db")
+    _seed_db(backup_db_path, "New Project")
+
+    restore_db(backup_db_path)
+
+    assert _read_first_project_name(db_path) == "New Project"
+
+
+def test_restore_idempotent(tmp_path, monkeypatch):
+    """Restoring the same valid backup twice must succeed both times."""
+    db_path = str(tmp_path / "live.db")
+    _patch_db_path(monkeypatch, db_path)
+
+    _seed_db(db_path, "Idempotent Project")
+    backup_path = backup_db()
+
+    restore_db(backup_path)
+    assert _read_first_project_name(db_path) == "Idempotent Project"
+
+    restore_db(backup_path)
+    assert _read_first_project_name(db_path) == "Idempotent Project"
+
+
+def test_restore_failed_no_temp_artifacts(tmp_path, monkeypatch):
+    """A failed restore must not leave temporary database files behind."""
+    db_path = str(tmp_path / "live.db")
+    _patch_db_path(monkeypatch, db_path)
+    _seed_db(db_path, "Sentinel Project")
+
+    fake_backup = str(tmp_path / "not_sqlite.db")
+    with open(fake_backup, "w") as f:
+        f.write("not a database")
+
+    with pytest.raises(BackupError):
+        restore_db(fake_backup)
+
+    leftover = glob.glob(os.path.join(str(tmp_path), ".termstory_restore_*"))
+    assert leftover == [], "Leftover temp files: {}".format(leftover)
+
+
+def test_restore_failed_preserves_all_active_data(tmp_path, monkeypatch):
+    """After a failed restore, every table in the active DB must be intact."""
+    db_path = str(tmp_path / "live.db")
+    _patch_db_path(monkeypatch, db_path)
+    _seed_db(db_path, "Preserve Me")
+
+    fake_backup = str(tmp_path / "not_sqlite.db")
+    with open(fake_backup, "w") as f:
+        f.write("corrupt")
+
+    with pytest.raises(BackupError):
+        restore_db(fake_backup)
+
+    assert _read_first_project_name(db_path) == "Preserve Me"
+    assert _count_rows(db_path, "projects") == 1
+    assert _count_rows(db_path, "sessions") == 1
+    assert _count_rows(db_path, "commands") == 1
