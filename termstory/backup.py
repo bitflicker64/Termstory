@@ -158,27 +158,39 @@ def _validate_backup(path: str) -> None:
 
 
 def _sidecar_glob(base: str) -> list:
-    """Return existing SQLite sidecar files (``-wal``, ``-shm``, ``-journal``)
-    associated with *base* (without following into other databases)."""
+    """Return the SQLite sidecar file paths (``-wal``, ``-shm``, ``-journal``)
+    that would be associated with the exact database at *base*.  No filesystem
+    glob is performed — the three paths are derived deterministically so that
+    only sidecars belonging to this exact database path are ever considered."""
     return [f"{base}{suffix}" for suffix in ("-wal", "-shm", "-journal")]
 
 
-def _remove_sidecars(base: str) -> None:
-    """Remove SQLite sidecar files (``-wal`` / ``-shm`` / ``-journal``) for
-    the database at *base* path.  Missing files are silently skipped; removal
-    failures are logged but never raised."""
+def _remove_orphaned_sidecars(base: str) -> None:
+    """Remove SQLite sidecar files for the database at *base* path.
+
+    This is only safe to call AFTER the replacement at *base* has succeeded,
+    at which point any ``-wal``/``-shm``/``-journal`` file still present belongs
+    to the *old* (now replaced) database and would otherwise be replayed against
+    the new main file, corrupting it.  The new database is a clean single file,
+    so it has no sidecars of its own to preserve.
+
+    Raises:
+        OSError: if a stale sidecar exists but cannot be removed.  A leftover
+            stale sidecar is a correctness hazard (it can corrupt the new DB on
+            the next open), so removal failure is surfaced rather than logged
+            and silently ignored.
+    """
     for sidecar in _sidecar_glob(base):
         if os.path.exists(sidecar):
-            try:
-                os.remove(sidecar)
-            except OSError:
-                logger.warning("Could not remove stale SQLite sidecar %s", sidecar)
+            os.remove(sidecar)
 
 
 def _cleanup_temp_db(temp_db_path: str) -> None:
     """Remove a temporary database file and any of its sidecar files.
 
-    Safe to call even if the files do not exist.  Never raises.
+    Safe to call even if the files do not exist.  Best-effort by design: a
+    temporary artifact that cannot be removed is logged, never raised, so that
+    the original restore error is preserved.  Never raises.
     """
     if not temp_db_path:
         return
@@ -190,11 +202,59 @@ def _cleanup_temp_db(temp_db_path: str) -> None:
                 logger.warning("Could not remove temporary file %s", path)
 
 
+class _RestoreLock:
+    """A cross-process advisory lock that serializes restore operations.
+
+    Uses the same atomic ``O_CREAT | O_EXCL`` claim as the sleep daemon PID
+    file, so concurrent restores (in the same process or across processes)
+    cannot run the filesystem replacement at the same time.  It does not gate
+    normal Termstory database operations — it only prevents two restores from
+    racing each other while swapping the active database pathname.
+    """
+
+    def __init__(self, db_path: str):
+        self._lock_path = f"{db_path}.restore.lock"
+        self._fd = None
+
+    def acquire(self) -> None:
+        if self._fd is not None:
+            return  # already held
+        try:
+            self._fd = os.open(
+                self._lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666
+            )
+        except FileExistsError as exc:
+            raise BackupError(
+                "Another database restore is already in progress."
+            ) from exc
+
+    def release(self) -> None:
+        if self._fd is not None:
+            try:
+                os.close(self._fd)
+            finally:
+                self._fd = None
+        try:
+            if os.path.exists(self._lock_path):
+                os.remove(self._lock_path)
+        except OSError:
+            logger.warning("Could not remove restore lock file %s", self._lock_path)
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc_info):
+        self.release()
+        return False
+
+
 def restore_db(backup_path: str) -> None:
     """Restore the TermStory database from a backup file.
 
     The restore is safe by construction.  The active database is **never**
-    touched until the backup has passed every validation step:
+    touched until the backup has passed every validation step, and it is only
+    replaced once the replacement is known to have succeeded:
 
     1. **Source validation** — *backup_path* is opened and verified to be a
        readable SQLite database.
@@ -203,24 +263,33 @@ def restore_db(backup_path: str) -> None:
     3. **Integrity check** — ``PRAGMA integrity_check`` succeeds.
     4. **Temporary restore** — the validated backup is copied into a
        temporary file in the same directory (and filesystem) as the active
-       database, so the final swap can use ``os.replace``.
-    5. **Validate the restored copy** — the temporary database is
-       re-checked (readability, schema, integrity) before it is allowed to
-       replace the active database.
-    6. **Atomic replace** — stale WAL/SHM/journal sidecars of the old active
-       database are removed and ``os.replace`` atomically swaps in the
-       validated copy.
+       database, then checkpointed so the copy is a self-contained single
+       file, so the final swap can use ``os.replace``.
+    5. **Validate the restored copy** — the temporary database is re-checked
+       (readability, schema, integrity) before it is allowed to replace the
+       active database.
+    6. **Coordination** — a cross-process advisory lock prevents concurrent
+       restores from racing, and any in-flight writer on the active database
+       is quiesced before the swap.
+    7. **Atomic replace** — ``os.replace`` atomically swaps the validated
+       temporary copy in for the active database.
+    8. **Post-replace cleanup** — only after the swap has succeeded are the
+       *old* database's now-orphaned ``-wal``/``-shm``/``-journal`` sidecars
+       removed, so the restored database cannot accidentally consume stale
+       state belonging to the previous database.
 
-    If *any* step fails, the active database is left completely untouched and
-    all temporary artifacts are cleaned up.
+    If *any* step before a successful ``os.replace`` fails, the active
+    database and its WAL/SHM state are left completely untouched and all
+    temporary artifacts are cleaned up.  A failed ``os.replace`` likewise
+    leaves the original database and its sidecars fully intact.
 
     Args:
         backup_path: Absolute path to the backup .db file.
 
     Raises:
         FileNotFoundError: If ``backup_path`` does not exist.
-        BackupError: If the backup fails any validation step or the restore
-            into the temporary database fails.
+        BackupError: If the backup fails any validation step, if coordination
+            cannot be obtained, or if any restore operation fails.
     """
     if not os.path.isfile(backup_path):
         raise FileNotFoundError(f"Backup file not found at {backup_path}")
@@ -233,31 +302,87 @@ def restore_db(backup_path: str) -> None:
     _validate_backup(backup_path)
 
     # --- Step 4: Restore into a temporary file in the same directory ---
-    fd, temp_db_path = tempfile.mkstemp(
-        prefix=".termstory_restore_", suffix=".db", dir=db_dir
-    )
+    try:
+        fd, temp_db_path = tempfile.mkstemp(
+            prefix=".termstory_restore_", suffix=".db", dir=db_dir
+        )
+    except OSError as exc:
+        raise BackupError(
+            f"Could not create a temporary restore file in {db_dir}: {exc}"
+        ) from exc
     os.close(fd)  # close the raw fd so SQLite can open the file by path
 
+    replaced = False
     try:
-        src_conn = sqlite3.connect(backup_path)
-        dst_conn = sqlite3.connect(temp_db_path)
         try:
-            src_conn.backup(dst_conn)
-        finally:
-            dst_conn.close()
-            src_conn.close()
+            src_conn = sqlite3.connect(backup_path)
+            dst_conn = sqlite3.connect(temp_db_path)
+            try:
+                src_conn.backup(dst_conn)
+            finally:
+                dst_conn.close()
+                src_conn.close()
+        except sqlite3.Error as exc:
+            raise BackupError(
+                f"Could not copy the backup into the temporary database: {exc}"
+            ) from exc
+
+        # Checkpoint the temporary copy so it is a self-contained single file
+        # (no WAL/SHM of its own) before it can become the active database.
+        try:
+            tmp_conn = sqlite3.connect(temp_db_path)
+            try:
+                tmp_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                tmp_conn.commit()
+            finally:
+                tmp_conn.close()
+        except sqlite3.Error as exc:
+            raise BackupError(
+                f"Could not finalize the temporary restore copy: {exc}"
+            ) from exc
 
         # --- Step 5: Validate the restored temporary database ---
         _validate_backup(temp_db_path)
 
-        # --- Step 6: Atomically replace the active database ---
-        # Remove stale WAL/SHM/journal sidecars from the old active DB so they
-        # cannot be replayed against the new database after the swap.
-        _remove_sidecars(db_path)
-        os.replace(temp_db_path, db_path)
+        # --- Step 6: Coordinate the replacement ---
+        with _RestoreLock(db_path):
+            # Quiesce any in-flight writer on the active database: briefly take
+            # and release a write lock so every concurrent writer commits before
+            # we swap the pathname.  The connection is closed before the
+            # replacement, so no transaction is held across the swap.
+            if os.path.exists(db_path):
+                try:
+                    quiesce_conn = sqlite3.connect(db_path, timeout=5.0)
+                    try:
+                        quiesce_conn.execute("BEGIN IMMEDIATE")
+                        quiesce_conn.commit()
+                    finally:
+                        quiesce_conn.close()
+                except sqlite3.OperationalError as exc:
+                    raise BackupError(
+                        "The database is in active use and could not be "
+                        "quiesced for restore."
+                    ) from exc
+
+            # --- Step 7: Atomically replace the active database ---
+            try:
+                os.replace(temp_db_path, db_path)
+            except OSError as exc:
+                raise BackupError(
+                    f"Could not replace the active database at {db_path}: {exc}"
+                ) from exc
+            replaced = True
+
+            # --- Step 8: Post-replace cleanup of the old database's sidecars ---
+            # Only after a successful swap may the old sidecars be removed;
+            # before this point they still described the live database and
+            # must be preserved so a failed replace leaves it intact.
+            _remove_orphaned_sidecars(db_path)
         # temp_db_path no longer exists — it is now db_path.
     except BaseException:
-        # On any failure: clean up temporary artifacts and re-raise.
-        # The active DB was never opened or modified, so it is untouched.
-        _cleanup_temp_db(temp_db_path)
+        # On any failure before the swap completed, clean up temporary
+        # artifacts.  The active DB and its sidecars were never deleted, so
+        # they are untouched.  If replacement succeeded, temp_db_path is gone.
+        if not replaced:
+            _cleanup_temp_db(temp_db_path)
         raise

@@ -408,3 +408,36 @@ def test_restore_cli_rejects_corrupt_backup_cleanly(tmp_path, monkeypatch):
     projects = restored.search_projects("")
     assert len(projects) == 1
     assert projects[0].name == "Live Project"
+
+
+def test_restore_cli_operational_failure_clean_no_traceback(tmp_path, monkeypatch):
+    """An operational failure (e.g. os.replace failing under simulated disk
+    error) must reach the clean CLI error path: exit 1, no traceback, active
+    DB untouched."""
+    live_db = _patch_paths(monkeypatch, tmp_path)
+    _seed_db(str(live_db), project_name="Live Project")
+
+    backup_db = tmp_path / "backup.db"
+    _seed_db(str(backup_db), project_name="Backup Project")
+
+    def boom_replace(src, dst):
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr("termstory.backup.os.replace", boom_replace)
+
+    _force_non_interactive(monkeypatch)
+    runner = CliRunner()
+    result = runner.invoke(app, ["restore", "--yes", str(backup_db)])
+
+    assert result.exit_code == 1, result.output
+    assert "error" in result.output.lower()
+    assert "Traceback" not in result.output
+    # Active DB must be unchanged.
+    restored = Database(str(live_db))
+    projects = restored.search_projects("")
+    assert len(projects) == 1
+    assert projects[0].name == "Live Project"
+    # No temp artifacts left behind.
+    import glob
+    leftover = glob.glob(os.path.join(str(tmp_path), ".termstory_restore_*"))
+    assert leftover == []

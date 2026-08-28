@@ -454,3 +454,222 @@ def test_restore_failed_preserves_all_active_data(tmp_path, monkeypatch):
     assert _count_rows(db_path, "projects") == 1
     assert _count_rows(db_path, "sessions") == 1
     assert _count_rows(db_path, "commands") == 1
+
+
+# ---------------------------------------------------------------------------
+# Issue #479 follow-up — WAL safety, concurrency, and error normalization
+# ---------------------------------------------------------------------------
+
+def _db_state(db_path):
+    """Capture a representative snapshot of active DB state for before/after
+    comparison: the first project name and row counts across all four core
+    tables."""
+    return {
+        "first_project": _read_first_project_name(db_path),
+        "projects": _count_rows(db_path, "projects"),
+        "sessions": _count_rows(db_path, "sessions"),
+        "commands": _count_rows(db_path, "commands"),
+        "commits": _count_rows(db_path, "commits"),
+    }
+
+
+def test_restore_replace_failure_preserves_wal_active_db(tmp_path, monkeypatch):
+    """If os.replace() fails while the active database has WAL sidecars, the
+    restore must raise, the active DB + sidecars must be untouched, temp
+    artifacts must be cleaned up, and no unrelated files touched."""
+    db_path = str(tmp_path / "live.db")
+    _patch_db_path(monkeypatch, db_path)
+
+    _seed_db(db_path, "Survive Me")
+    _seed_db(db_path, "Survive Me 2")  # extra project for richer state
+
+    # Plant sidecar files for the active DB (simulating an unclean WAL state
+    # that must never be deleted on the fallible replacement path).
+    sidecar_wal = db_path + "-wal"
+    sidecar_shm = db_path + "-shm"
+    with open(sidecar_wal, "wb") as f:
+        f.write(b"\x96\x35\x7f\x00" + b"fake-wal-data")
+    with open(sidecar_shm, "wb") as f:
+        f.write(b"fake-shm-data")
+
+    before = _db_state(db_path)
+    sidecars_before = {
+        "wal": os.path.exists(sidecar_wal),
+        "shm": os.path.exists(sidecar_shm),
+    }
+
+    backup_path = str(tmp_path / "backup.db")
+    _seed_db(backup_path, "Restored Project")
+
+    dir_before = set(os.listdir(str(tmp_path)))
+
+    def boom_replace(src, dst):
+        raise OSError("simulated disk failure on replace")
+
+    monkeypatch.setattr("termstory.backup.os.replace", boom_replace)
+
+    with pytest.raises(BackupError):
+        restore_db(backup_path)
+
+    # 1. Active DB contents unchanged.
+    assert _db_state(db_path) == before
+    # 2. Existing sidecars remain present (never deleted on the fallible path).
+    assert os.path.exists(sidecar_wal) == sidecars_before["wal"]
+    assert os.path.exists(sidecar_shm) == sidecars_before["shm"]
+    # 3. Temporary restore artifacts cleaned up.
+    leftover = glob.glob(os.path.join(str(tmp_path), ".termstory_restore_*"))
+    assert leftover == [], "Leftover temp files: {}".format(leftover)
+    # 4. No unrelated files touched.
+    dir_after = set(os.listdir(str(tmp_path)))
+    assert dir_after == dir_before, (
+        "Unrelated files changed: {} vs {}".format(dir_before, dir_after)
+    )
+
+
+def test_restore_replace_failure_leaves_original_db_usable(tmp_path, monkeypatch):
+    """A failed replacement must leave the original DB exactly usable: every
+    table intact and the DB valid."""
+    db_path = str(tmp_path / "live.db")
+    _patch_db_path(monkeypatch, db_path)
+    _seed_db(db_path, "Usable Project")
+
+    backup_path = str(tmp_path / "backup.db")
+    _seed_db(backup_path, "Restored Project")
+
+    before = _db_state(db_path)
+
+    def boom_replace(src, dst):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr("termstory.backup.os.replace", boom_replace)
+
+    with pytest.raises(BackupError):
+        restore_db(backup_path)
+
+    # State is unchanged and the DB is still openable/valid.
+    assert _db_state(db_path) == before
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    finally:
+        conn.close()
+
+
+def test_restore_concurrent_same_lock_fails_cleanly(tmp_path, monkeypatch):
+    """A second restore attempt while a restore lock is held must fail cleanly
+    with BackupError and not touch the active DB."""
+    db_path = str(tmp_path / "live.db")
+    _patch_db_path(monkeypatch, db_path)
+    _seed_db(db_path, "Keep Me")
+
+    backup_path = str(tmp_path / "backup.db")
+    _seed_db(backup_path, "Other Project")
+
+    # Take the restore lock first, simulating a concurrent restore in progress.
+    with open(db_path + ".restore.lock", "w") as f:
+        f.write("another-restore")
+
+    with pytest.raises(BackupError):
+        restore_db(backup_path)
+
+    assert _read_first_project_name(db_path) == "Keep Me"
+    leftover = glob.glob(os.path.join(str(tmp_path), ".termstory_restore_*"))
+    assert leftover == []
+
+
+def test_restore_copy_failure_is_normalized(tmp_path, monkeypatch):
+    """A failure while copying the backup raises a normalized BackupError, the
+    active DB is untouched, and temp artifacts are cleaned up."""
+    db_path = str(tmp_path / "live.db")
+    _patch_db_path(monkeypatch, db_path)
+    _seed_db(db_path, "Sentinel Project")
+
+    backup_path = str(tmp_path / "backup.db")
+    _seed_db(backup_path, "Restored Project")
+
+    before = _db_state(db_path)
+
+    # Simulate the SQLite backup-copy step failing.  We cannot set a method on
+    # the immutable sqlite3.Connection C type, so we wrap sqlite3.connect to
+    # return a thin proxy whose .backup() raises, while still delegating
+    # everything else (validation opens, close, execute) to the real file.
+    real_connect = sqlite3.connect
+
+    class FakeBackupConn:
+        def __init__(self, real):
+            self._real = real
+        def backup(self, dst):
+            raise sqlite3.OperationalError("disk I/O error during backup")
+        def close(self):
+            self._real.close()
+        def cursor(self):
+            return self._real.cursor()
+        def execute(self, *a, **k):
+            return self._real.execute(*a, **k)
+        def commit(self):
+            return self._real.commit()
+
+    def fake_connect(*args, **kwargs):
+        return FakeBackupConn(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr("termstory.backup.sqlite3.connect", fake_connect)
+
+    with pytest.raises(BackupError):
+        restore_db(backup_path)
+
+    assert _db_state(db_path) == before
+    leftover = glob.glob(os.path.join(str(tmp_path), ".termstory_restore_*"))
+    assert leftover == []
+
+
+
+def test_restore_temp_creation_failure_is_normalized(tmp_path, monkeypatch):
+    """A failure creating the temporary restore file raises a normalized
+    BackupError and the active DB is untouched."""
+    db_path = str(tmp_path / "live.db")
+    _patch_db_path(monkeypatch, db_path)
+    _seed_db(db_path, "Sentinel Project")
+
+    backup_path = str(tmp_path / "backup.db")
+    _seed_db(backup_path, "Restored Project")
+
+    before = _db_state(db_path)
+
+    def boom_mkstemp(*args, **kwargs):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr("termstory.backup.tempfile.mkstemp", boom_mkstemp)
+
+    with pytest.raises(BackupError):
+        restore_db(backup_path)
+
+    assert _db_state(db_path) == before
+
+
+def test_restore_success_cleans_stale_sidecars(tmp_path, monkeypatch):
+    """After a successful swap, stale orphaned sidecars from the OLD database
+    must be removed so the restored database cannot consume them."""
+    db_path = str(tmp_path / "live.db")
+    _patch_db_path(monkeypatch, db_path)
+    _seed_db(db_path, "Old Project")
+
+    # Plant stale sidecars for the OLD active DB that would otherwise be
+    # replayed against the newly-restored database.
+    sidecar_wal = db_path + "-wal"
+    sidecar_shm = db_path + "-shm"
+    with open(sidecar_wal, "wb") as f:
+        f.write(b"stale-old-wal")
+    with open(sidecar_shm, "wb") as f:
+        f.write(b"stale-old-shm")
+
+    backup_path = str(tmp_path / "backup.db")
+    _seed_db(backup_path, "New Project")
+
+    restore_db(backup_path)
+
+    assert _read_first_project_name(db_path) == "New Project"
+    # The old (orphaned) sidecars must be gone.
+    assert not os.path.exists(sidecar_wal)
+    assert not os.path.exists(sidecar_shm)
+    # The restore lock file is cleaned up too.
+    assert not os.path.exists(db_path + ".restore.lock")
