@@ -1,6 +1,13 @@
 import os
 import subprocess
-from termstory.git_integration import clean_commit_message, is_git_repo, get_project_commits
+from unittest.mock import patch
+
+from termstory.git_integration import (
+    clean_commit_message,
+    get_project_commits,
+    get_timeframe_git_stats,
+    is_git_repo,
+)
 
 def test_clean_commit_message():
     # Test conventional commit prefix stripping
@@ -83,7 +90,6 @@ def test_is_git_repo_worktree_vs_git_dir(tmp_path):
     # The .git directory is NOT a worktree (rev-parse exits 0 but prints "false")
     assert is_git_repo(str(repo_path / ".git")) is False
 
-from unittest.mock import patch
 def test_git_missing_or_failing(tmp_path):
     # Test subprocess.run raising an exception (e.g. git not found)
     with patch("termstory.git_integration.subprocess.run") as mock_run:
@@ -123,3 +129,30 @@ def test_git_missing_or_failing(tmp_path):
                 stdout = ""
             mock_run.return_value = MockResult()
             assert get_project_commits(str(tmp_path), since_ts=0) == []
+
+
+def test_merged_branches_preserves_first_seen_order():
+    """Issue #448: merged_branches must be deterministic and de-duplicated."""
+    merge_stdout = (
+        "Merge branch 'feature/login'\n"
+        "Merge branch 'bugfix/auth'\n"
+        "Merge branch 'feature/login'\n"
+        "Merge branch 'release/v2'\n"
+    )
+
+    def fake_run(cmd, **kwargs):
+        class MockResult:
+            returncode = 0
+            stdout = merge_stdout if "--merges" in cmd else ""
+        return MockResult()
+
+    with patch("termstory.git_integration.is_git_repo", return_value=True):
+        with patch("termstory.git_integration.subprocess.run", side_effect=fake_run):
+            # Two paths: duplicates across projects must still collapse.
+            stats = get_timeframe_git_stats(["/repo/a", "/repo/b"], 0, 9999999999)
+
+    assert stats["merged_branches"] == [
+        "feature/login",
+        "bugfix/auth",
+        "release/v2",
+    ]
