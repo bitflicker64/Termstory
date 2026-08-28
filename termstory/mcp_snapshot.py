@@ -5,7 +5,7 @@ import re
 import sqlite3
 import subprocess
 import time
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from termstory.sanitizer import redact_command
 
@@ -148,6 +148,87 @@ def _scrub_git_path(line: str) -> str:
     return redact_command(scrubbed)
 
 
+def _scrub_cwd(cwd: Optional[str]) -> Optional[str]:
+    """Sanitize a working-directory value before persisting it in an MCP snapshot.
+
+    The persisted snapshot must not leak the current user's home directory or
+    username (e.g. ``/home/alice/projects/Termstory`` or
+    ``C:\\Users\\alice\\Documents\\PrivateProject``). This mirrors the privacy
+    boundary already applied to git-status paths by ``_scrub_git_path``, but is
+    tailored to a single directory path rather than a shell command line.
+
+    Behavior:
+    * ``None`` is preserved unchanged (the cwd is ``None`` when the working
+      directory has been deleted and ``os.getcwd()`` raises ``OSError``).
+    * Known home directories (``HOME`` / ``USERPROFILE`` / ``expanduser``) are
+      redacted on path-component boundaries, preserving the trailing project
+      context and the path's own separators.
+    * Username path components are redacted case-insensitively so a Windows
+      ``C:\\Users\\Alice`` is caught even when the host advertises the user as
+      ``alice`` (and even when the scrubbing host is a different OS and the path
+      uses different separators).
+    * Matching is component/whole-word bounded, so unrelated path components are
+      not corrupted (e.g. ``alicebackup`` is left intact).
+
+    Unlike ``_scrub_git_path``, this does *not* run the value through
+    ``redact_command``: a working directory is a location string, not a shell
+    command, and the command-redaction pipeline can mangle legitimate
+    project/repository names that merely look host-shaped. Only the
+    home/username privacy boundary is sanitized here.
+
+    IMPORTANT: this must ONLY be applied to the value stored in (and later
+    displayed from) the snapshot. The real, unredacted cwd is still passed to
+    ``capture_git_status`` for Git repository detection and subprocess execution.
+    """
+    if cwd is None:
+        return None
+
+    scrubbed = cwd
+
+    # 1. Redact known home directories as a path-component prefix. The
+    #    separator class ``[\\/]`` makes matching work for Windows-style paths
+    #    even when the scrubbing host is POSIX (and vice-versa). ``re.IGNORECASE``
+    #    handles drive-letter / casing differences. Matching is anchored to the
+    #    start and bounded by a trailing separator or end of string, so a home
+    #    that is only a substring-prefix of a longer segment (e.g.
+    #    ``/home/alice`` vs ``/home/alicee``) is left intact rather than
+    #    corrupting it into ``<REDACTED_HOME>e``.
+    for home in _home_dirs():
+        if not home:
+            continue
+        parts = [p for p in re.split(r"[\\/]", home) if p != ""]
+        if not parts:
+            continue
+        core = r"(?:[\\/])".join(re.escape(p) for p in parts)
+        pattern = re.compile(
+            r"^(?:[\\/]{1,2})?" + core + r"(?=$|[\\/])",
+            re.IGNORECASE,
+        )
+        # count=1: only the leading (prefix) home component is replaced, which is
+        # where the cwd lives; trailing context is preserved as-is.
+        scrubbed = pattern.sub("<REDACTED_HOME>", scrubbed, count=1)
+
+    # 2. Redact username path components. Whole-component matching (bounded by
+    #    separators / string edges / non-word characters) ensures a username is
+    #    not redacted merely because it is a substring of a longer component
+    #    (e.g. ``alicebackup`` is preserved). Case-insensitive so casing
+    #    differences between the env-reported username and an observed path
+    #    cannot bypass redaction (e.g. ``C:\\Users\\Alice`` vs username
+    #    ``alice``). Skip trivial single-character names to avoid needlessly
+    #    corrupting ordinary single-letter path segments.
+    for name in _user_names():
+        if not name or len(name) < 2:
+            continue
+        scrubbed = re.sub(
+            r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])",
+            "<REDACTED_USER>",
+            scrubbed,
+            flags=re.IGNORECASE,
+        )
+
+    return scrubbed
+
+
 def capture_git_status(cwd: str) -> Dict[str, Any]:
     """Capture Git status (branch, uncommitted files) for the given directory"""
     result = {
@@ -246,9 +327,12 @@ def capture_mcp_snapshot() -> Dict[str, Any]:
         )
         cwd = None
     ide_info = capture_ide_state()
+    # Git repository detection and any `git -C <cwd>` subprocess execution must
+    # use the REAL, unredacted filesystem path. Only the value persisted in (and
+    # later displayed from) the snapshot is sanitized via `_scrub_cwd`.
     git_info = capture_git_status(cwd)
     return {
-        "cwd": cwd,
+        "cwd": _scrub_cwd(cwd),
         "ide": ide_info,
         "git": git_info
     }
