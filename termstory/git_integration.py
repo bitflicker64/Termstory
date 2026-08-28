@@ -200,6 +200,6 @@ def get_timeframe_git_stats(project_paths: List[str], since_ts: int, until_ts: i
     return {
         "additions": total_additions,
         "deletions": total_deletions,
-        "merged_branches": list(set(merged_branches))
+        "merged_branches": list(dict.fromkeys(merged_branches))
     }
 
