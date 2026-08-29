@@ -461,6 +461,65 @@ def test_start_sleep_daemon_reclaims_empty_claim_removed_concurrently(tmp_path, 
     assert pid_file.read_text().strip() == str(os.getpid())
 
 
+def test_start_sleep_daemon_reclaim_never_deletes_replacement_claim(tmp_path, monkeypatch):
+    """Regression: a stale claim whose file is reclaimed by another invocation
+    between our stale inspection and our removal attempt must never be deleted.
+
+    Without the compare-and-remove protocol the stale-reclaim path removed the
+    PID file blindly, so if a concurrent caller reacquired the stale file and
+    published its own live PID in the window between ``_claim_is_stale`` and
+    ``os.remove``, that replacement's live claim would be destroyed - allowing
+    a further caller to spawn a duplicate daemon.
+
+    This test is deterministic: it flips the PID file to a live replacement at
+    the exact moment ``_remove_claim_safely`` inspects it, and asserts the
+    replacement is not deleted and no extra daemon is spawned.
+    """
+    import subprocess
+    import termstory.reminder as reminder
+
+    monkeypatch.setattr(reminder, "get_app_dir", lambda name: str(tmp_path))
+    pid_file = tmp_path / "sleep_daemon.pid"
+
+    calls = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: calls.append(args))
+
+    # The loser's liveness probe reports the stale owner dead, so the stale
+    # claim is reclaimable, but reports the replacement live, so we defer to
+    # it once it owns the file.
+    def fake_kill(pid, sig):
+        if pid == 999999999:
+            raise ProcessLookupError(pid, "no such process")
+    monkeypatch.setattr(reminder.os, "kill", fake_kill)
+
+    # The initially claimed file holds a dead PID -> stale and reclaimable.
+    pid_file.write_text("999999999")
+
+    real_pid_from_file = reminder._pid_from_file
+    state = {"reads": 0, "created_replacement": False}
+
+    def fake_pid_from_file(path):
+        state["reads"] += 1
+        if state["reads"] == 3:
+            # The moment _remove_claim_safely re-reads the file, another
+            # invocation has reclaimed it and published its own live PID.
+            with open(path, "w") as f:
+                f.write(str(os.getpid()))
+            state["created_replacement"] = True
+        return real_pid_from_file(path)
+
+    monkeypatch.setattr(reminder, "_pid_from_file", fake_pid_from_file)
+
+    reminder.start_sleep_daemon("dummy.db")
+
+    # The replacement was created exactly during our removal attempt.
+    assert state["created_replacement"] is True
+    # We deferred to the replacement owner instead of deleting or spawning.
+    assert calls == []
+    # The replacement's live claim is intact.
+    assert pid_file.read_text().strip() == str(os.getpid())
+
+
 def test_add_reminder_explicit_days_prefix_suffix_stripping(tmp_path, monkeypatch):
     reminders_file = tmp_path / "reminders.json"
     monkeypatch.setattr("termstory.reminder.get_reminders_file_path", lambda: str(reminders_file))

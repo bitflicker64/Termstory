@@ -673,6 +673,7 @@ def start_sleep_daemon(db_path: str):
         try:
             fd = os.open(pid_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
         except FileExistsError:
+            observed = _pid_from_file(pid_file)
             if not _claim_is_stale(pid_file):
                 # A live daemon runs, or another caller is about to run it
                 # (including a fresh in-progress claim whose PID has not been
@@ -681,17 +682,16 @@ def start_sleep_daemon(db_path: str):
             # The existing claim is stale (a daemon died without cleaning up,
             # or an abandoned empty/unparseable claim past the stale threshold).
             # Reclaim it, then retry the atomic claim on the next iteration.
-            try:
-                os.remove(pid_file)
-            except FileNotFoundError:
-                # Another invocation removed it concurrently; just retry the
-                # atomic claim rather than assuming ownership incorrectly.
-                continue
-            except OSError:
-                logger.exception(
-                    "Failed to remove stale sleep daemon PID file %s", pid_file
-                )
-                return
+            #
+            # We never remove the file blindly: between our stale inspection
+            # and the removal, another invocation may have reclaimed the file
+            # and published its own live PID. ``_remove_claim_safely`` only
+            # deletes the file while it still carries the exact stale content
+            # we observed (a dead PID, or an empty/unparseable claim), so a
+            # concurrently-created replacement claim is left untouched. If the
+            # file disappeared in the meantime it is a no-op; either way we
+            # simply retry the atomic claim below.
+            _remove_claim_safely(pid_file, owner_pid=observed)
             continue
         else:
             # We own the claim. Publish our PID as a placeholder so concurrent
