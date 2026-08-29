@@ -1204,3 +1204,81 @@ def test_offsetting_missing_and_extra_ids_detected(tmp_path, monkeypatch):
     assert fts_calls == []
     assert std_calls == ["_search_standard"]
 
+
+def test_padded_query_discovered_on_standard_sql_fallback(tmp_path, monkeypatch):
+    """#493 / CodeRabbit: the standard-SQL fallback must normalize the query
+    *before* binding it to LIKE candidate predicates.
+
+    Previously the raw padded query was bound directly to the LIKE predicates
+    (e.g. command LIKE '%  deploy  %') while _exactness_tier trimmed internally.
+    A query like "  deploy  " therefore failed to discover command "deploy" at
+    all, so the exactness tier never had a candidate to rank.
+
+    This test drops every FTS backend, confirms _search_standard is the path
+    actually taken, and verifies the padded query discovers the exact-match
+    session and ranks it above a newer substring-only match on both
+    advanced_search and search_sessions.
+    """
+    db, now = _build_ranking_db(tmp_path, "ranking493_padded_fallback.db")
+    p1, p2 = _ranking_projects(now)
+
+    cmd1 = Command(timestamp=now, command="deploy", session_id=1, project_id=1)
+    s1 = Session(id=1, start_time=now, end_time=now + 100, duration_seconds=100,
+                 project_id=1, commands=[cmd1])
+    cmd2 = Command(timestamp=now + 100, command="git deploy config", session_id=2, project_id=2)
+    s2 = Session(id=2, start_time=now + 100, end_time=now + 200, duration_seconds=100,
+                 project_id=2, commands=[cmd2])
+    _save_sessions(db, [p1, p2], [(s1, [cmd1]), (s2, [cmd2])])
+
+    # Force the standard-SQL fallback by removing every FTS backend.
+    conn = db.get_connection()
+    try:
+        conn.execute("DROP TABLE IF EXISTS search_index")
+        conn.execute("DROP TABLE IF EXISTS commands_fts")
+        conn.commit()
+    finally:
+        conn.close()
+
+    from termstory.search import advanced_search
+
+    std_calls = _spy_backend(monkeypatch, "_search_standard")
+
+    padded = "  deploy  "
+
+    # advanced_search must route to _search_standard and still discover the
+    # exact-match session despite the surrounding whitespace.
+    results = advanced_search(db, query=padded, fts=True)
+    assert std_calls == ["_search_standard"], "must use the standard fallback path"
+    ids = [r["session_id"] for r in results]
+    assert len(ids) == 2, f"padded query should discover both sessions, got {ids}"
+    assert ids[0] == 1, (
+        f"exact command match must outrank the substring-only match, got {ids}"
+    )
+    # matching_commands should not carry padding noise.
+    exact = next(r for r in results if r["session_id"] == 1)
+    assert exact["matching_commands"] == ["deploy"]
+
+    # search_sessions must also discover the exact-match session on the SQL
+    # fallback (no FTS tables available in this DB).
+    results = db.search_sessions(padded)
+    ids = [r["session_id"] for r in results]
+    assert ids == [1, 2], (
+        f"search_sessions fallback must rank exact match first, got {ids}"
+    )
+
+    # Blank / whitespace-only query must be treated as blank — it must not
+    # accidentally become a broad LIKE query.  On the advanced_search fallback
+    # path this falls through to the match-all branch (WHERE 1=1) just as it
+    # does for a truly empty query.
+    results = advanced_search(db, query="   ")
+    assert len(results) == 2, (
+        "whitespace-only query should behave as blank (match all sessions)"
+    )
+
+    # search_sessions must treat a whitespace-only query as blank too (its
+    # normalization must not turn "   " into a broad LIKE '%   %' predicate).
+    results = db.search_sessions("   ")
+    assert len(results) == 2, (
+        "search_sessions whitespace-only query should behave as blank"
+    )
+

@@ -446,6 +446,15 @@ def _search_standard(
     cursor = conn.cursor()
     params = []
     
+    # #493: normalize the query once so padded queries like "  deploy  " are
+    # used consistently for BOTH candidate discovery (LIKE predicates below)
+    # and exactness ranking (_exactness_tier, which also trims internally).
+    # Without this, the raw padded query would fail to match in the fallback
+    # LIKE path while _exactness_tier trimmed to the bare token, so the
+    # candidate was never selected and the tier could not rank it as exact.
+    if query:
+        query = query.strip()
+
     if query:
         query_val = f"%{query}%"
         sql = """

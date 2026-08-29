@@ -1427,6 +1427,15 @@ class Database:
         try:
             cursor = conn.cursor()
             
+            # #493: normalize the query once so padded queries like "  deploy  "
+            # are used consistently for BOTH candidate discovery (LIKE below)
+            # and exactness ranking (_exactness_tier trims internally). Without
+            # this the raw padded query would fail to match in the fallback
+            # LIKE path while _exactness_tier trimmed to the bare token, so the
+            # candidate was never selected and the tier could not rank it.
+            if query:
+                query = query.strip()
+
             query_val = f"%{query}%"
             
             sql = """
