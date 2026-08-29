@@ -171,15 +171,22 @@ def _session_matches_project_filter(
       session (``command.project_id``) — e.g. a session that ``cd``-ed
       between projects mid-stream.
 
+    The no-project filter (``"other"`` / ``"general"`` / ``"no project"``)
+    matches a session when the session itself is unattributed (``project_id``
+    is ``None``) *or* when at least one command in the session is explicitly
+    unattributed (``command.project_id`` is ``None``), so a mixed-practice
+    session with a named final project and some unattributed commands is
+    still included in the no-project export.
+
     This mirrors the per-command project matching already used by
     :mod:`termstory.search` (see #339) and fixes #498, where the export
     path only considered the session's final project.
 
     ``project_map`` maps resolved project IDs to :class:`Project` entities
-    (name/path). Commands whose ``project_id`` is not present in the map are
-    treated as an unresolvable, real project and are *not* matched — this
-    prevents an unattributed/missing command from falsely matching the
-    "other" bucket.
+    (name/path). Only an actual ``None`` attribution counts as "no project";
+    a command whose ``project_id`` is not present in the map is treated as an
+    unresolvable, real project and is *not* matched — this prevents an
+    unknown/missing project ID from falsely matching the "other" bucket.
     """
     # Session-level attribution (the final/current project).
     session_proj = project_map.get(session.project_id) if session.project_id is not None else None
@@ -187,12 +194,17 @@ def _session_matches_project_filter(
         return True
     # Per-command attribution: a session matches if any of its commands was
     # attributed to the requested project, even when the session's final
-    # project differs.
+    # project differs. An explicitly unattributed command (project_id is
+    # None) matches the no-project bucket ("other" / "general" /
+    # "no project") so that a mixed session is included there.
     for cmd in session.commands:
-        if cmd.project_id is not None:
-            cmd_proj = project_map.get(cmd.project_id)
-            if cmd_proj is not None and _project_matches_filter(cmd_proj, filter_lower):
+        if cmd.project_id is None:
+            if _project_matches_filter(None, filter_lower):
                 return True
+            continue
+        cmd_proj = project_map.get(cmd.project_id)
+        if cmd_proj is not None and _project_matches_filter(cmd_proj, filter_lower):
+            return True
     return False
 
 
