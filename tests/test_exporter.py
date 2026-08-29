@@ -875,3 +875,178 @@ def test_parse_until_preserves_explicit_time():
     # Explicit midnight must NOT be expanded to end-of-day — the user asked for 00:00:00.
     assert parse_until("2026-06-10T00:00:00") == int(datetime(2026, 6, 10, 0, 0, 0).timestamp())
 
+
+
+def _make_attribution_db(path, projects, sessions, commands):
+    """Create an initialised DB seeded with the given projects/sessions/commands.
+
+    Projects are keyed by ``path`` in Database.save_data, so explicit ``id``
+    values are remapped and every session/command ``project_id`` is kept
+    consistent with the database-assigned IDs.
+    """
+    db = Database(str(path))
+    db.init_db()
+    db.save_data(projects, sessions, commands)
+    return db
+
+
+def _alpha_beta_projects():
+    """Two projects: Alpha (name+path) and Beta (name+path)."""
+    return [
+        Project(id=1, name="Alpha", path="~/src/alpha",
+                first_seen=1000, last_seen=5000, session_count=0, total_time=0),
+        Project(id=2, name="Beta", path="~/src/beta",
+                first_seen=1000, last_seen=5000, session_count=0, total_time=0),
+    ]
+
+
+def test_project_filter_final_project_matches(tmp_path):
+    """#498 scenario 1: the session-level (final) project matches - the session
+    is included (existing behaviour preserved)."""
+    db = _make_attribution_db(
+        tmp_path / "r1.db", _alpha_beta_projects(),
+        [Session(id=1, start_time=1000, end_time=1050, duration_seconds=50,
+                 project_id=1, commands=[Command(id=101, timestamp=1010,
+                 command="git status", exit_code=0, session_id=1, project_id=1)])],
+        [Command(id=101, timestamp=1010, command="git status", exit_code=0,
+                 session_id=1, project_id=1)],
+    )
+    assert len(fetch_export_data(db, project_filter="alpha")) == 1
+    # Filtering by the other project excludes it.
+    assert len(fetch_export_data(db, project_filter="beta")) == 0
+
+
+def test_project_filter_command_level_only_matches(tmp_path):
+    """#498 scenario 2: only a command-level project matches. The session's
+    final project is Beta, but a command ran in Alpha - the session must be
+    included when filtering by Alpha."""
+    cmd_alpha = Command(id=101, timestamp=1010, command="git status", exit_code=0,
+                        session_id=1, project_id=1)
+    cmd_beta = Command(id=102, timestamp=1030, command="git log", exit_code=0,
+                       session_id=1, project_id=2)
+    s1 = Session(id=1, start_time=1000, end_time=1050, duration_seconds=50,
+                 project_id=2, commands=[cmd_alpha, cmd_beta])
+    db = _make_attribution_db(tmp_path / "r2.db", _alpha_beta_projects(), [s1],
+                              [cmd_alpha, cmd_beta])
+    alpha_sessions = fetch_export_data(db, project_filter="alpha")
+    assert len(alpha_sessions) == 1
+    assert alpha_sessions[0].id == 1
+    # Beta still matches too (session-level + a command).
+    assert len(fetch_export_data(db, project_filter="beta")) == 1
+
+
+def test_project_filter_command_level_does_not_match(tmp_path):
+    """#498 scenario 3: neither the session nor any command is attributed to
+    the requested project - the session is excluded."""
+    projects = _alpha_beta_projects() + [
+        Project(id=3, name="Gamma", path="~/src/gamma",
+                first_seen=1000, last_seen=5000, session_count=0, total_time=0),
+    ]
+    cmd_beta = Command(id=101, timestamp=1010, command="git status", exit_code=0,
+                       session_id=1, project_id=2)
+    cmd_gamma = Command(id=102, timestamp=1030, command="npm test", exit_code=0,
+                        session_id=1, project_id=3)
+    s1 = Session(id=1, start_time=1000, end_time=1050, duration_seconds=50,
+                 project_id=2, commands=[cmd_beta, cmd_gamma])
+    db = _make_attribution_db(tmp_path / "r3.db", projects, [s1],
+                              [cmd_beta, cmd_gamma])
+    assert len(fetch_export_data(db, project_filter="alpha")) == 0
+    # Sanity: the session is still reachable via its actual projects.
+    assert len(fetch_export_data(db, project_filter="beta")) == 1
+def test_project_filter_mixed_project_session(tmp_path):
+    """#498 scenario 4: a session with commands attributed to both Alpha and
+    Beta, final project Beta - filtering by either project includes it."""
+    cmd_a1 = Command(id=101, timestamp=1010, command="cd ~/src/alpha", exit_code=0,
+                     session_id=1, project_id=1)
+    cmd_b1 = Command(id=102, timestamp=1030, command="cd ~/src/beta", exit_code=0,
+                     session_id=1, project_id=2)
+    cmd_a2 = Command(id=103, timestamp=1040, command="git commit", exit_code=0,
+                     session_id=1, project_id=1)
+    s1 = Session(id=1, start_time=1000, end_time=1050, duration_seconds=50,
+                 project_id=2, commands=[cmd_a1, cmd_b1, cmd_a2])
+    db = _make_attribution_db(tmp_path / "r4.db", _alpha_beta_projects(), [s1],
+                              [cmd_a1, cmd_b1, cmd_a2])
+    by_alpha = fetch_export_data(db, project_filter="alpha")
+    by_beta = fetch_export_data(db, project_filter="beta")
+    assert len(by_alpha) == 1 and by_alpha[0].id == 1
+    assert len(by_beta) == 1 and by_beta[0].id == 1
+
+
+def test_project_filter_single_project_unchanged(tmp_path):
+    """#498 scenario 5: single-project sessions behave exactly as before
+    (case-insensitive name AND path matching)."""
+    cmd_a = Command(id=101, timestamp=1010, command="git status", exit_code=0,
+                    session_id=1, project_id=1)
+    cmd_b = Command(id=102, timestamp=1110, command="ls", exit_code=0,
+                    session_id=2, project_id=2)
+    s1 = Session(id=1, start_time=1000, end_time=1050, duration_seconds=50,
+                 project_id=1, commands=[cmd_a])
+    s2 = Session(id=2, start_time=2000, end_time=2050, duration_seconds=50,
+                 project_id=2, commands=[cmd_b])
+    db = _make_attribution_db(tmp_path / "r5.db", _alpha_beta_projects(), [s1, s2],
+                              [cmd_a, cmd_b])
+    assert len(fetch_export_data(db, project_filter="ALPHA")) == 1
+    assert len(fetch_export_data(db, project_filter="src/alpha")) == 1
+    assert len(fetch_export_data(db, project_filter="src/beta")) == 1
+    assert len(fetch_export_data(db, project_filter="nonexistent")) == 0
+
+
+def test_project_filter_no_project_attribution(tmp_path):
+    """#498 scenario 6: a session with no project attribution (session-level
+    and per-command) is handled by the existing 'other' bucket."""
+    cmd = Command(id=101, timestamp=1010, command="ls -la", exit_code=0,
+                  session_id=1, project_id=None)
+    s1 = Session(id=1, start_time=1000, end_time=1050, duration_seconds=50,
+                 project_id=None, commands=[cmd])
+    db = _make_attribution_db(tmp_path / "r6.db", _alpha_beta_projects(), [s1], [cmd])
+    assert len(fetch_export_data(db, project_filter="other")) == 1
+    assert len(fetch_export_data(db, project_filter="general")) == 1
+    assert len(fetch_export_data(db, project_filter="no project")) == 1
+    assert len(fetch_export_data(db, project_filter="alpha")) == 0
+
+
+def test_project_filter_command_path_match(tmp_path):
+    """Command-level project can be matched by project path, not only name."""
+    cmd_alpha = Command(id=101, timestamp=1010, command="git status", exit_code=0,
+                        session_id=1, project_id=1)
+    s1 = Session(id=1, start_time=1000, end_time=1050, duration_seconds=50,
+                 project_id=2, commands=[cmd_alpha])
+    db = _make_attribution_db(tmp_path / "r7.db", _alpha_beta_projects(), [s1], [cmd_alpha])
+    sessions = fetch_export_data(db, project_filter="src/alpha")
+    assert len(sessions) == 1
+    assert sessions[0].id == 1
+
+
+def test_project_filter_command_text_does_not_cause_match(tmp_path):
+    """#498 Step 6: a session must NOT match merely because a command's text
+    contains the project name - only persisted project_id attribution counts."""
+    cmd = Command(id=101, timestamp=1010, command="git status in alpha repo",
+                  exit_code=0, session_id=1, project_id=None)
+    s1 = Session(id=1, start_time=1000, end_time=1050, duration_seconds=50,
+                 project_id=None, commands=[cmd])
+    db = _make_attribution_db(tmp_path / "r8.db", _alpha_beta_projects(), [s1], [cmd])
+    assert len(fetch_export_data(db, project_filter="alpha")) == 0
+    assert len(fetch_export_data(db, project_filter="other")) == 1
+
+
+def test_project_filter_command_path_in_text_does_not_cause_match(tmp_path):
+    """#498 Step 6: a command whose text contains a project path string must
+    not match unless its project_id is actually attributed."""
+    cmd = Command(id=101, timestamp=1010, command="cd ~/src/alpha", exit_code=0,
+                  session_id=1, project_id=None)
+    s1 = Session(id=1, start_time=1000, end_time=1050, duration_seconds=50,
+                 project_id=None, commands=[cmd])
+    db = _make_attribution_db(tmp_path / "r9.db", _alpha_beta_projects(), [s1], [cmd])
+    assert len(fetch_export_data(db, project_filter="src/alpha")) == 0
+    assert len(fetch_export_data(db, project_filter="other")) == 1
+
+
+def test_project_filter_unknown_project_name_excludes(tmp_path):
+    """#498: an unrelated project name with no attribution match excludes."""
+    cmd_beta = Command(id=101, timestamp=1010, command="git log", exit_code=0,
+                       session_id=1, project_id=2)
+    s1 = Session(id=1, start_time=1000, end_time=1050, duration_seconds=50,
+                 project_id=2, commands=[cmd_beta])
+    db = _make_attribution_db(tmp_path / "r10.db", _alpha_beta_projects(), [s1], [cmd_beta])
+    assert len(fetch_export_data(db, project_filter="alpha")) == 0
+    assert len(fetch_export_data(db, project_filter="gamma")) == 0
