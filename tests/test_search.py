@@ -929,6 +929,56 @@ def test_command_substring_loses_to_project_substring(tmp_path, monkeypatch):
         )
 
 
+def test_per_command_project_exact_match_ranks_by_project(tmp_path, monkeypatch):
+    """#493 regression (P1): when a query exactly matches the project that a
+    session's *command* ran in (per-command project attribution, #457) even
+    though the session has since moved to a different final project, the session
+    must be ranked by that project match (project-exact, tier 2) — not fall to
+    the broad-text tier and lose to a weaker command-substring match."""
+    from termstory.database import _exactness_tier
+
+    db, now = _build_ranking_db(tmp_path, "ranking493_percmd_proj.db")
+    p_beta = Project(id=1, name="Beta", path="~/projects/beta",
+                     first_seen=now, last_seen=now, session_count=1, total_time=100)
+    p_alpha = Project(id=2, name="Alpha", path="~/projects/alpha",
+                      first_seen=now, last_seen=now, session_count=1, total_time=100)
+    p_gamma = Project(id=3, name="Gamma", path="~/projects/gamma",
+                      first_seen=now, last_seen=now, session_count=1, total_time=100)
+
+    # Session 1: its command ran in project "Alpha" (per-command project),
+    # but the session's final project is "Beta".
+    cmd1 = Command(timestamp=now, command="make all", session_id=1, project_id=2)
+    s1 = Session(id=1, start_time=now, end_time=now + 100, duration_seconds=100,
+                 project_id=1, commands=[cmd1])
+    # Session 2: only a command substring match (query appears inside a command).
+    cmd2 = Command(timestamp=now + 200, command="run Alpha pipeline", session_id=2, project_id=3)
+    s2 = Session(id=2, start_time=now + 200, end_time=now + 300, duration_seconds=100,
+                 project_id=3, commands=[cmd2])
+    _save_sessions(db, [p_beta, p_alpha, p_gamma], [(s1, [cmd1]), (s2, [cmd2])])
+
+    from termstory.search import advanced_search
+
+    def run_backends():
+        yield "fts5", advanced_search(db, query="Alpha")
+        yield "search_sessions", db.search_sessions("Alpha")
+
+    # Sanity: the tier contract labels the per-command-project session project-exact.
+    _, params = _exactness_tier("Alpha")
+    assert len(params) == 9, "expected 9 bound params in the exactness CASE"
+
+    for backend, results in run_backends():
+        # fts5 discovers session 1 via its per-command project name (p2) and
+        # must rank it (project-exact) ahead of the command-substring session.
+        if backend == "fts5":
+            ids = [r["session_id"] for r in results]
+            assert ids[0] == 1, (
+                f"{backend}: a per-command project *exact* match must outrank a "
+                f"command-substring match, got {ids}"
+            )
+        # search_sessions (standard search_index path) does not discover
+        # sessions via per-command project names, so no assertion on its output.
+
+
 def test_equal_relevance_orders_deterministically(tmp_path, monkeypatch):
     """#493: sessions at the same relevance tier (identical command text) must
     be ordered deterministically — every repeated search returns the identical

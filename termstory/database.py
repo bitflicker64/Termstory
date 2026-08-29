@@ -105,14 +105,26 @@ def _exactness_tier(query: Optional[str]) -> Tuple[Optional[str], List]:
 
       0 – exact command match    (a command equals the query)
       1 – specific command match (a command starts with the query)
-      2 – exact project match    (session project name equals the query)
-      3 – project prefix match   (project name starts with the query)
-      4 – project substring hit  (project name contains the query)
+      2 – exact project match    (session project OR any per-command project
+                                  name equals the query)
+      3 – project prefix match   (session or per-command project name starts
+                                  with the query)
+      4 – project substring hit  (session or per-command project name contains
+                                  the query)
       5 – substring command hit  (query appears inside a command, not at start)
       6 – broader textual hit    (default; e.g. summary / commit hit only)
 
+    Project tiers consult BOTH the session's final project (``p.name``) and
+    the project attributed to each command in that session (via a correlated
+    ``commands`` -> ``projects`` lookup), because advanced_search can discover
+    a session through a per-command project name (``p2`` / #457 attribution)
+    even after its final project has moved — such a match must rank as a
+    project match, not fall to the broad-text tier (#493).
+
     The expression correlates to the ``s`` (sessions) and ``p`` (projects)
-    aliases present in every caller's FROM clause. All comparisons are
+    aliases present in every caller's FROM clause; the per-command project
+    tiers are self-contained correlated subqueries so they work regardless of
+    whether the caller joins the ``p2`` alias. All comparisons are
     case-insensitive and whitespace-trimmed via ``LOWER(TRIM(...))``.
     Callers must append ``params`` to their bind list in order — the CASE
     text is emitted last in each ORDER BY, after any other placeholders.
@@ -126,14 +138,20 @@ def _exactness_tier(query: Optional[str]) -> Tuple[Optional[str], List]:
         "AND LOWER(TRIM(c3.command)) = LOWER(TRIM(?))) THEN 0 "
         "WHEN EXISTS(SELECT 1 FROM commands c3 WHERE c3.session_id = s.id "
         "AND INSTR(LOWER(TRIM(c3.command)), LOWER(TRIM(?))) = 1) THEN 1 "
-        "WHEN LOWER(TRIM(COALESCE(p.name, ''))) = LOWER(TRIM(?)) THEN 2 "
-        "WHEN INSTR(LOWER(TRIM(COALESCE(p.name, ''))), LOWER(TRIM(?))) = 1 THEN 3 "
-        "WHEN INSTR(LOWER(TRIM(COALESCE(p.name, ''))), LOWER(TRIM(?))) > 0 THEN 4 "
+        "WHEN LOWER(TRIM(COALESCE(p.name, ''))) = LOWER(TRIM(?)) "
+        "OR EXISTS(SELECT 1 FROM commands c4 JOIN projects cp ON cp.id = c4.project_id "
+        "WHERE c4.session_id = s.id AND LOWER(TRIM(cp.name)) = LOWER(TRIM(?))) THEN 2 "
+        "WHEN INSTR(LOWER(TRIM(COALESCE(p.name, ''))), LOWER(TRIM(?))) = 1 "
+        "OR EXISTS(SELECT 1 FROM commands c4 JOIN projects cp ON cp.id = c4.project_id "
+        "WHERE c4.session_id = s.id AND INSTR(LOWER(TRIM(cp.name)), LOWER(TRIM(?))) = 1) THEN 3 "
+        "WHEN INSTR(LOWER(TRIM(COALESCE(p.name, ''))), LOWER(TRIM(?))) > 0 "
+        "OR EXISTS(SELECT 1 FROM commands c4 JOIN projects cp ON cp.id = c4.project_id "
+        "WHERE c4.session_id = s.id AND INSTR(LOWER(TRIM(cp.name)), LOWER(TRIM(?))) > 0) THEN 4 "
         "WHEN EXISTS(SELECT 1 FROM commands c3 WHERE c3.session_id = s.id "
         "AND INSTR(LOWER(TRIM(c3.command)), LOWER(TRIM(?))) > 0) THEN 5 "
         "ELSE 6 END"
     )
-    return expr, [q] * 6
+    return expr, [q] * 9
 
 
 class Database:
