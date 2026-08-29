@@ -1,9 +1,10 @@
 import logging
 import sqlite3
 from typing import List, Dict, Optional
-from termstory.database import Database
+from termstory.database import Database, _exactness_tier
 
 logger = logging.getLogger(__name__)
+
 
 def advanced_search(
     db: Database,
@@ -321,7 +322,9 @@ def _search_new_fts5(
             sql += " AND s.tags LIKE ?"
             params.append(f"%{tag}%")
 
-    sql += " GROUP BY s.id ORDER BY bm.min_match_type ASC, bm.min_rank ASC, s.start_time DESC"
+    _tier_expr, _tier_params = _exactness_tier(query)
+    params.extend(_tier_params)
+    sql += f" GROUP BY s.id ORDER BY {_tier_expr} ASC, bm.min_match_type ASC, bm.min_rank ASC, s.start_time DESC, s.id DESC"
     if limit is not None:
         sql += " LIMIT ?"
         params.append(limit)
@@ -418,7 +421,9 @@ def _search_fts5(
             sql += " AND s.tags LIKE ?"
             params.append(f"%{tag}%")
 
-    sql += " GROUP BY s.id ORDER BY CASE WHEN MIN(f.rank) IS NOT NULL THEN 0 ELSE 1 END, MIN(f.rank) ASC, s.start_time DESC"
+    _tier_expr, _tier_params = _exactness_tier(query)
+    params.extend(_tier_params)
+    sql += f" GROUP BY s.id ORDER BY {_tier_expr} ASC, CASE WHEN MIN(f.rank) IS NOT NULL THEN 0 ELSE 1 END, MIN(f.rank) ASC, s.start_time DESC, s.id DESC"
     if limit is not None:
         sql += " LIMIT ?"
         params.append(limit)
@@ -510,7 +515,12 @@ def _search_standard(
             sql += " AND s.tags LIKE ?"
             params.append(f"%{tag}%")
 
-    sql += " ORDER BY s.start_time DESC"
+    _tier_expr, _tier_params = _exactness_tier(query)
+    if _tier_expr is not None:
+        params.extend(_tier_params)
+        sql += f" ORDER BY {_tier_expr} ASC, s.start_time DESC, s.id DESC"
+    else:
+        sql += " ORDER BY s.start_time DESC, s.id DESC"
     if limit is not None:
         sql += " LIMIT ?"
         params.append(limit)

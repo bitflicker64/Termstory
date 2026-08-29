@@ -645,6 +645,408 @@ def test_stale_command_text_recovers_via_standard_sql(tmp_path, monkeypatch):
     assert std_calls == ["_search_standard"]
 
 
+# ---------------------------------------------------------------------------
+# Issue #493: exact matches must outrank broader textual matches, and equal
+# relevance must order deterministically across every search backend.
+# ---------------------------------------------------------------------------
+
+def _build_ranking_db(tmp_path, db_name="ranking493.db"):
+    """Fresh Database plus the canonical 'now' used by the #493 fixtures."""
+    from datetime import datetime
+
+    db_file = tmp_path / db_name
+    db = Database(str(db_file))
+    db.init_db()
+    now = int(datetime(2026, 6, 6, 12, 0, 0).timestamp())
+    return db, now
+
+
+def _ranking_projects(now):
+    """Two distinct projects: save_data dedups sessions on
+    (start_time, project_id), so same-start_time fixtures need them."""
+    return [
+        Project(id=1, name="Alpha", path="~/projects/alpha",
+                first_seen=now, last_seen=now, session_count=1, total_time=100),
+        Project(id=2, name="Beta", path="~/projects/beta",
+                first_seen=now, last_seen=now, session_count=1, total_time=100),
+    ]
+
+
+def _save_sessions(db, projects, sessions_commands):
+    """Persist (Project, [(Session, [Command, ...]), ...]) fixtures."""
+    sessions, commands = [], []
+    for session, session_commands in sessions_commands:
+        sessions.append(session)
+        commands.extend(session_commands)
+    db.save_data(list(projects), sessions, commands)
+
+
+def test_exact_command_match_beats_substring_match(tmp_path, monkeypatch):
+    """#493: a session whose command exactly equals the query must rank above
+    a session that merely contains the query inside a longer command, even
+    when the substring match is newer (the old recency-first ordering put the
+    broader match on top). Verified on every backend, including case- and
+    whitespace-normalized queries."""
+    db, now = _build_ranking_db(tmp_path)
+    p1, p2 = _ranking_projects(now)
+
+    cmd1 = Command(timestamp=now, command="deploy", session_id=1, project_id=1)
+    s1 = Session(id=1, start_time=now, end_time=now + 100, duration_seconds=100,
+                 project_id=1, commands=[cmd1])
+    # Newer session that only *contains* the query mid-command.
+    cmd2 = Command(timestamp=now + 100, command="git deploy config", session_id=2, project_id=2)
+    s2 = Session(id=2, start_time=now + 100, end_time=now + 200, duration_seconds=100,
+                 project_id=2, commands=[cmd2])
+    _save_sessions(db, [p1, p2], [(s1, [cmd1]), (s2, [cmd2])])
+
+    from termstory.search import advanced_search
+
+    def run_all_backends(query, **kwargs):
+        yield "new_fts5", advanced_search(db, query=query, fts=True, **kwargs)
+        yield "fts5", advanced_search(db, query=query, **kwargs)
+        yield "search_sessions", db.search_sessions(query)
+
+    for query in ("deploy", "  DEPLOY  "):
+        for backend, results in run_all_backends(query):
+            ids = [r["session_id"] for r in results]
+            assert len(ids) == 2, f"{backend} ({query!r}): expected both sessions"
+            assert ids[0] == 1, (
+                f"{backend} ({query!r}): exact command match must outrank the "
+                f"substring-only match, got order {ids}"
+            )
+
+
+def test_exact_command_match_beats_broader_textual_relevance(tmp_path, monkeypatch):
+    """#493: BM25/FTS relevance and recency must not promote a broader textual
+    hit above an exact command match. The summary session mentions the query
+    five times (high term frequency -> strong BM25) and is the newest session,
+    so the pre-#493 orderings (BM25 rank, then start_time DESC) favored it."""
+    db, now = _build_ranking_db(tmp_path, "ranking493_broad.db")
+    p1, p2 = _ranking_projects(now)
+
+    cmd1 = Command(timestamp=now, command="deploy", session_id=1, project_id=1)
+    s1 = Session(id=1, start_time=now, end_time=now + 100, duration_seconds=100,
+                 project_id=1, commands=[cmd1])
+    # Newest session: no matching command, only a summary rich in the query term.
+    cmd2 = Command(timestamp=now + 200, command="unrelated daily note", session_id=2, project_id=2)
+    s2 = Session(id=2, start_time=now + 200, end_time=now + 300, duration_seconds=100,
+                 project_id=2, commands=[cmd2],
+                 ai_summary="deploy deploy deploy deploy deploy notes")
+    _save_sessions(db, [p1, p2], [(s1, [cmd1]), (s2, [cmd2])])
+
+    from termstory.search import advanced_search
+
+    # The summary-only session is only discoverable by backends that consult
+    # the sessions.ai_summary column. _search_new_fts5's candidate discovery
+    # surfaces a summary hit only when it lands in ai_summaries_fts via a
+    # macro_summaries ('daily') row, which this fixture does not create, so
+    # fts=True yields no session-2 candidate here by design (mirroring the
+    # project-name test, which likewise excludes fts=True).
+    def run_broader_backends():
+        yield "fts5", advanced_search(db, query="deploy")
+        yield "search_sessions", db.search_sessions("deploy")
+
+    for backend, results in run_broader_backends():
+        ids = [r["session_id"] for r in results]
+        assert len(ids) == 2, f"{backend}: expected both sessions"
+        assert ids[0] == 1, (
+            f"{backend}: exact command match must outrank the broader textual "
+            f"(summary) hit despite its stronger BM25/recency, got order {ids}"
+        )
+
+
+def test_command_specificity_ordering(tmp_path, monkeypatch):
+    """#493: exact > specific (prefix) > substring for command matches, on
+    every backend, regardless of insertion/recency order."""
+    db, now = _build_ranking_db(tmp_path, "ranking493_specific.db")
+    p1 = Project(id=1, name="Alpha", path="~/projects/alpha",
+                 first_seen=now, last_seen=now, session_count=1, total_time=100)
+    p2 = Project(id=2, name="Beta", path="~/projects/beta",
+                 first_seen=now, last_seen=now, session_count=1, total_time=100)
+
+    # Exact (oldest), specific/prefix, and substring-only (newest) sessions.
+    cmd1 = Command(timestamp=now, command="build", session_id=1, project_id=1)
+    s1 = Session(id=1, start_time=now, end_time=now + 10, duration_seconds=10,
+                 project_id=1, commands=[cmd1])
+    cmd2 = Command(timestamp=now + 50, command="build --release", session_id=2, project_id=2)
+    s2 = Session(id=2, start_time=now + 50, end_time=now + 60, duration_seconds=10,
+                 project_id=2, commands=[cmd2])
+    cmd3 = Command(timestamp=now + 100, command="run build all", session_id=3, project_id=1)
+    s3 = Session(id=3, start_time=now + 100, end_time=now + 110, duration_seconds=10,
+                 project_id=1, commands=[cmd3])
+    _save_sessions(db, [p1, p2],
+                   [(s1, [cmd1]), (s2, [cmd2]), (s3, [cmd3])])
+
+    from termstory.search import advanced_search
+
+    def run_all_backends(query, **kwargs):
+        yield "new_fts5", advanced_search(db, query=query, fts=True, **kwargs)
+        yield "fts5", advanced_search(db, query=query, **kwargs)
+        yield "search_sessions", db.search_sessions(query)
+
+    for backend, results in run_all_backends("build"):
+        ids = [r["session_id"] for r in results]
+        assert ids == [1, 2, 3], (
+            f"{backend}: expected exact > specific > substring ordering, got {ids}"
+        )
+
+
+def test_exact_project_name_beats_partial_project_match(tmp_path, monkeypatch):
+    """#493: a session whose project name exactly equals the query outranks a
+    session whose project name merely contains it (mirroring the exact >
+    prefix > substring semantics of Database.search_projects' sort_key), and
+    the matching is case-insensitive. Project-name matching only participates
+    in backends that consult the projects table (search_index FTS and the
+    standard path); commands_fts candidate discovery does not see project
+    names, so fts=True yields no candidates here by design."""
+    db, now = _build_ranking_db(tmp_path, "ranking493_project.db")
+    p_exact = Project(id=1, name="Alpha", path="~/projects/alpha",
+                      first_seen=now, last_seen=now, session_count=1, total_time=100)
+    p_partial = Project(id=2, name="Alphatool", path="~/projects/alphatool",
+                        first_seen=now, last_seen=now, session_count=1, total_time=100)
+
+    # Neither command mentions the query: the match comes from the project name.
+    cmd1 = Command(timestamp=now, command="unrelated work one", session_id=1, project_id=1)
+    s1 = Session(id=1, start_time=now, end_time=now + 100, duration_seconds=100,
+                 project_id=1, commands=[cmd1])
+    cmd2 = Command(timestamp=now + 100, command="unrelated work two", session_id=2, project_id=2)
+    s2 = Session(id=2, start_time=now + 100, end_time=now + 200, duration_seconds=100,
+                 project_id=2, commands=[cmd2])
+    _save_sessions(db, [p_exact, p_partial], [(s1, [cmd1]), (s2, [cmd2])])
+
+    from termstory.search import advanced_search
+
+    def run_project_backends(query):
+        yield "fts5", advanced_search(db, query=query)
+        yield "search_sessions", db.search_sessions(query)
+
+    for query in ("alpha", "ALPHA"):
+        for backend, results in run_project_backends(query):
+            ids = [r["session_id"] for r in results]
+            assert len(ids) == 2, f"{backend} ({query!r}): expected both sessions"
+            assert ids[0] == 1, (
+                f"{backend} ({query!r}): exact project name must outrank the "
+                f"partial project-name match, got order {ids}"
+            )
+
+
+def test_command_prefix_beats_project_exact(tmp_path, monkeypatch):
+    """#493 boundary: a command that *starts with* the query (command prefix,
+    tier 1: "more specific command match") outranks a session whose project
+    name exactly equals the query (tier 2), because the issue ranks specific
+    command matches above project matches."""
+    db, now = _build_ranking_db(tmp_path, "ranking493_prefix_vs_projexact.db")
+    p_cmd = Project(id=1, name="ProjOne", path="~/projects/one",
+                    first_seen=now, last_seen=now, session_count=1, total_time=100)
+    p_proj = Project(id=2, name="dep", path="~/projects/dep",
+                     first_seen=now, last_seen=now, session_count=1, total_time=100)
+    cmd_prefix = Command(timestamp=now + 100, command="deploy x",
+                         session_id=1, project_id=1)  # command prefix -> tier 1
+    s1 = Session(id=1, start_time=now + 100, end_time=now + 200, duration_seconds=100,
+                 project_id=1, commands=[cmd_prefix])
+    cmd_other = Command(timestamp=now, command="unrelated a", session_id=2, project_id=2)
+    s2 = Session(id=2, start_time=now, end_time=now + 100, duration_seconds=100,
+                 project_id=2, commands=[cmd_other])  # project exact "dep" -> tier 2
+    _save_sessions(db, [p_cmd, p_proj], [(s1, [cmd_prefix]), (s2, [cmd_other])])
+
+    from termstory.search import advanced_search
+
+    def run_backends():
+        yield "fts5", advanced_search(db, query="dep")
+        yield "search_sessions", db.search_sessions("dep")
+
+    for backend, results in run_backends():
+        ids = [r["session_id"] for r in results]
+        assert ids == [1, 2], (
+            f"{backend}: command prefix must outrank project-exact match, got {ids}"
+        )
+
+
+def test_command_substring_loses_to_project_exact(tmp_path, monkeypatch):
+    """#493 boundary: a weak command-substring hit (tier 5: query only appears
+    inside a longer command) must rank below a session whose project name
+    *exactly* equals the query (tier 2: a project match that directly
+    corresponds)."""
+    db, now = _build_ranking_db(tmp_path, "ranking493_ss_vs_projexact.db")
+    p_cmd = Project(id=1, name="ProjOne", path="~/projects/one",
+                    first_seen=now, last_seen=now, session_count=1, total_time=100)
+    p_proj = Project(id=2, name="deploy", path="~/projects/deploy",
+                     first_seen=now, last_seen=now, session_count=1, total_time=100)
+    cmd_ss = Command(timestamp=now + 100, command="run deploy script",
+                     session_id=1, project_id=1)  # command substring -> tier 5
+    s1 = Session(id=1, start_time=now + 100, end_time=now + 200, duration_seconds=100,
+                 project_id=1, commands=[cmd_ss])
+    cmd_other = Command(timestamp=now, command="unrelated a", session_id=2, project_id=2)
+    s2 = Session(id=2, start_time=now, end_time=now + 100, duration_seconds=100,
+                 project_id=2, commands=[cmd_other])  # project exact "deploy" -> tier 2
+    _save_sessions(db, [p_cmd, p_proj], [(s1, [cmd_ss]), (s2, [cmd_other])])
+
+    from termstory.search import advanced_search
+
+    def run_backends():
+        yield "fts5", advanced_search(db, query="deploy")
+        yield "search_sessions", db.search_sessions("deploy")
+
+    for backend, results in run_backends():
+        ids = [r["session_id"] for r in results]
+        assert ids == [2, 1], (
+            f"{backend}: project-exact match must outrank command substring, got {ids}"
+        )
+
+
+def test_command_substring_loses_to_project_substring(tmp_path, monkeypatch):
+    """#493 boundary: a session whose *project name* merely contains the query
+    (tier 4: project substring) must still outrank a session that only has the
+    query *inside a command* (tier 5: command substring). A project-name
+    substring associates the query with a specific project context, and is the
+    weaker-but-project tier that sits above the weaker command tier — matching
+    the exact > prefix > substring ladder of Database.search_projects."""
+    db, now = _build_ranking_db(tmp_path, "ranking493_ss_vs_projss.db")
+    p_cmd = Project(id=1, name="ProjOne", path="~/projects/one",
+                    first_seen=now, last_seen=now, session_count=1, total_time=100)
+    p_proj = Project(id=2, name="My deploy tool", path="~/projects/deploy",
+                     first_seen=now, last_seen=now, session_count=1, total_time=100)
+    cmd_ss = Command(timestamp=now + 100, command="run deploy script",
+                     session_id=1, project_id=1)  # command substring -> tier 5
+    s1 = Session(id=1, start_time=now + 100, end_time=now + 200, duration_seconds=100,
+                 project_id=1, commands=[cmd_ss])
+    cmd_other = Command(timestamp=now, command="run watch build", session_id=2, project_id=2)
+    s2 = Session(id=2, start_time=now, end_time=now + 100, duration_seconds=100,
+                 project_id=2, commands=[cmd_other])  # project substring -> tier 4
+    _save_sessions(db, [p_cmd, p_proj], [(s1, [cmd_ss]), (s2, [cmd_other])])
+
+    from termstory.search import advanced_search
+
+    def run_backends():
+        yield "fts5", advanced_search(db, query="deploy")
+        yield "search_sessions", db.search_sessions("deploy")
+
+    for backend, results in run_backends():
+        ids = [r["session_id"] for r in results]
+        assert ids == [2, 1], (
+            f"{backend}: project-substring match must outrank command "
+            f"substring, got {ids}"
+        )
+
+
+def test_equal_relevance_orders_deterministically(tmp_path, monkeypatch):
+    """#493: sessions at the same relevance tier (identical command text) must
+    be ordered deterministically — every repeated search returns the identical
+    session sequence, resolved by the stable recency (start_time DESC) then
+    session-id (id DESC) key rather than by accidental scan/insertion order.
+
+    start_times are deliberately given in a different order than session ids to
+    prove the order follows the deterministic key. The sessions have distinct
+    start_times because the commands(timestamp, command) unique index would
+    collapse identical-timestamp identical-text commands into one row (and the
+    orphan-session prune would then drop the rest), so no fixture can represent
+    a same-start_time, same-command tie through the public API. For genuinely
+    equal start_times (same time, different project_id — which the schema
+    allows), the production ORDER BY's trailing s.id DESC is the total-order
+    tiebreak; that is covered by code, while this test pins the recency+id
+    determinism each backend actually relies on."""
+    db, now = _build_ranking_db(tmp_path, "ranking493_ties.db")
+    projects = [
+        Project(id=1, name="Alpha", path="~/projects/alpha",
+                first_seen=now, last_seen=now, session_count=1, total_time=100),
+        Project(id=2, name="Beta", path="~/projects/beta",
+                first_seen=now, last_seen=now, session_count=1, total_time=100),
+        Project(id=3, name="Gamma", path="~/projects/gamma",
+                first_seen=now, last_seen=now, session_count=1, total_time=100),
+    ]
+    # Session ids ascend {1, 2, 3} but start_times do NOT — the newest session
+    # is id 1, the oldest id 2 — so a deterministic order is recency-first
+    # [1, 3, 2], emphatically not id-sorted or scan-sorted.
+    start_times = {1: now + 200, 2: now, 3: now + 100}
+    fixture = []
+    for i in range(3):
+        session_id = i + 1
+        cmd = Command(timestamp=start_times[session_id], command="identical task",
+                      session_id=session_id, project_id=session_id)
+        # Identical command text -> identical relevance tier.
+        session = Session(id=session_id, start_time=start_times[session_id],
+                          end_time=start_times[session_id] + 100,
+                          duration_seconds=100, project_id=session_id, commands=[cmd])
+        fixture.append((session, [cmd]))
+    _save_sessions(db, projects, fixture)
+
+    from termstory.search import advanced_search
+
+    expected = [1, 3, 2]  # start_time DESC: now+200 > now+100 > now
+
+    def assert_deterministic(run_once, backend):
+        orders = [run_once() for _ in range(3)]
+        ids = orders[0]
+        assert len(ids) == 3, f"{backend}: expected all three sessions"
+        assert all(order == ids for order in orders), (
+            f"{backend}: ordering changed between repeated identical searches: {orders}"
+        )
+        assert ids == expected, (
+            f"{backend}: equivalent-relevance results must order deterministically "
+            f"by recency, got {ids}, expected {expected}"
+        )
+
+    assert_deterministic(
+        lambda: [r["session_id"] for r in advanced_search(db, query="identical", fts=True)],
+        "new_fts5",
+    )
+    assert_deterministic(
+        lambda: [r["session_id"] for r in advanced_search(db, query="identical")],
+        "fts5",
+    )
+    assert_deterministic(
+        lambda: [r["session_id"] for r in db.search_sessions("identical")],
+        "search_sessions",
+    )
+
+
+def test_exact_command_match_ranking_without_fts5(tmp_path, monkeypatch):
+    """#493: the exactness contract cannot depend on FTS5 being available.
+    With every FTS index dropped, advanced_search routes to the authoritative
+    standard SQL path and an exact command still outranks a newer substring
+    match deterministically."""
+    db, now = _build_ranking_db(tmp_path, "ranking493_nofts.db")
+    p1, p2 = _ranking_projects(now)
+
+    cmd1 = Command(timestamp=now, command="deploy", session_id=1, project_id=1)
+    s1 = Session(id=1, start_time=now, end_time=now + 100, duration_seconds=100,
+                 project_id=1, commands=[cmd1])
+    cmd2 = Command(timestamp=now + 100, command="git deploy config", session_id=2, project_id=2)
+    s2 = Session(id=2, start_time=now + 100, end_time=now + 200, duration_seconds=100,
+                 project_id=2, commands=[cmd2])
+    _save_sessions(db, [p1, p2], [(s1, [cmd1]), (s2, [cmd2])])
+
+    conn = db.get_connection()
+    try:
+        conn.execute("DROP TABLE IF EXISTS search_index")
+        conn.execute("DROP TABLE IF EXISTS commands_fts")
+        conn.commit()
+    finally:
+        conn.close()
+
+    from termstory.search import advanced_search
+    import termstory.search as search_mod
+
+    std_calls = []
+    original_standard = search_mod._search_standard
+
+    def standard_spy(*args, **kwargs):
+        std_calls.append("_search_standard")
+        return original_standard(*args, **kwargs)
+
+    monkeypatch.setattr(search_mod, "_search_standard", standard_spy)
+
+    results = advanced_search(db, query="deploy", fts=True)
+    assert [r["session_id"] for r in results] == [1, 2]
+    assert std_calls == ["_search_standard"], "expected the standard fallback path"
+
+    results = advanced_search(db, query="deploy")
+    assert [r["session_id"] for r in results] == [1, 2]
+
+    results = db.search_sessions("deploy")
+    assert [r["session_id"] for r in results] == [1, 2]
+
+
 def test_offsetting_missing_and_extra_ids_detected(tmp_path, monkeypatch):
     """#471 case: same COUNT and same MAX(id) but different ID members.
 
