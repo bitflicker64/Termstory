@@ -1,7 +1,7 @@
 import sqlite3
 import json
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from termstory.models import Command, Session, Project
 from termstory.config import get_config_value, load_config
 from termstory.date_utils import get_current_time
@@ -84,6 +84,75 @@ class SafeConnection(sqlite3.Connection):
 
     def execute(self, sql, *args, **kwargs):
         return safe_execute(self, sql, *args, **kwargs)
+
+
+# ── Exactness-tier helper (shared ranking contract, issue #493) ──────────────
+
+def _exactness_tier(query: Optional[str]) -> Tuple[Optional[str], List]:
+    """Return ``(sql_expr, params)`` for a CASE expression that classifies each
+    session into an *exactness ranking tier* (lower = higher priority).
+
+    This is the single ranking contract shared by every search backend
+    (``advanced_search``'s three strategies and ``search_sessions`` /
+    ``search_fts5``), so an exact command match can never lose to a broader
+    substring / BM25 result merely because the latter scores better on
+    recency or full-text relevance (issue #493).
+
+    Tiers (evaluated top-to-bottom; first match wins) — command exactness
+    dominates, then project-name quality (mirroring the exact > prefix >
+    substring semantics of ``Database.search_projects``'s ``sort_key``),
+    then substring command matches, then broader textual hits:
+
+      0 – exact command match    (a command equals the query)
+      1 – specific command match (a command starts with the query)
+      2 – exact project match    (session project OR any per-command project
+                                  name equals the query)
+      3 – project prefix match   (session or per-command project name starts
+                                  with the query)
+      4 – project substring hit  (session or per-command project name contains
+                                  the query)
+      5 – substring command hit  (query appears inside a command, not at start)
+      6 – broader textual hit    (default; e.g. summary / commit hit only)
+
+    Project tiers consult BOTH the session's final project (``p.name``) and
+    the project attributed to each command in that session (via a correlated
+    ``commands`` -> ``projects`` lookup), because advanced_search can discover
+    a session through a per-command project name (``p2`` / #457 attribution)
+    even after its final project has moved — such a match must rank as a
+    project match, not fall to the broad-text tier (#493).
+
+    The expression correlates to the ``s`` (sessions) and ``p`` (projects)
+    aliases present in every caller's FROM clause; the per-command project
+    tiers are self-contained correlated subqueries so they work regardless of
+    whether the caller joins the ``p2`` alias. All comparisons are
+    case-insensitive and whitespace-trimmed via ``LOWER(TRIM(...))``.
+    Callers must append ``params`` to their bind list in order — the CASE
+    text is emitted last in each ORDER BY, after any other placeholders.
+    """
+    if not query or not query.strip():
+        return None, []
+    q = query.strip()
+    expr = (
+        "CASE "
+        "WHEN EXISTS(SELECT 1 FROM commands c3 WHERE c3.session_id = s.id "
+        "AND LOWER(TRIM(c3.command)) = LOWER(TRIM(?))) THEN 0 "
+        "WHEN EXISTS(SELECT 1 FROM commands c3 WHERE c3.session_id = s.id "
+        "AND INSTR(LOWER(TRIM(c3.command)), LOWER(TRIM(?))) = 1) THEN 1 "
+        "WHEN LOWER(TRIM(COALESCE(p.name, ''))) = LOWER(TRIM(?)) "
+        "OR EXISTS(SELECT 1 FROM commands c4 JOIN projects cp ON cp.id = c4.project_id "
+        "WHERE c4.session_id = s.id AND LOWER(TRIM(cp.name)) = LOWER(TRIM(?))) THEN 2 "
+        "WHEN INSTR(LOWER(TRIM(COALESCE(p.name, ''))), LOWER(TRIM(?))) = 1 "
+        "OR EXISTS(SELECT 1 FROM commands c4 JOIN projects cp ON cp.id = c4.project_id "
+        "WHERE c4.session_id = s.id AND INSTR(LOWER(TRIM(cp.name)), LOWER(TRIM(?))) = 1) THEN 3 "
+        "WHEN INSTR(LOWER(TRIM(COALESCE(p.name, ''))), LOWER(TRIM(?))) > 0 "
+        "OR EXISTS(SELECT 1 FROM commands c4 JOIN projects cp ON cp.id = c4.project_id "
+        "WHERE c4.session_id = s.id AND INSTR(LOWER(TRIM(cp.name)), LOWER(TRIM(?))) > 0) THEN 4 "
+        "WHEN EXISTS(SELECT 1 FROM commands c3 WHERE c3.session_id = s.id "
+        "AND INSTR(LOWER(TRIM(c3.command)), LOWER(TRIM(?))) > 0) THEN 5 "
+        "ELSE 6 END"
+    )
+    return expr, [q] * 9
+
 
 class Database:
     MAX_QUERY_LOG = 10000
@@ -1358,6 +1427,15 @@ class Database:
         try:
             cursor = conn.cursor()
             
+            # #493: normalize the query once so padded queries like "  deploy  "
+            # are used consistently for BOTH candidate discovery (LIKE below)
+            # and exactness ranking (_exactness_tier trims internally). Without
+            # this the raw padded query would fail to match in the fallback
+            # LIKE path while _exactness_tier trimmed to the bare token, so the
+            # candidate was never selected and the tier could not rank it.
+            if query:
+                query = query.strip()
+
             query_val = f"%{query}%"
             
             sql = """
@@ -1385,9 +1463,18 @@ class Database:
             if since_ts:
                 sql += " AND s.start_time >= ?"
                 params.append(since_ts)
-                
-            sql += " ORDER BY s.start_time DESC"
-            
+
+            # #493: same exactness-first ranking contract as advanced_search,
+            # so an exact command match cannot lose to a broader substring hit.
+            # _exactness_tier returns a NULL expr for blank queries, in which
+            # case ordering falls back to deterministic recency.
+            _tier_expr, _tier_params = _exactness_tier(query)
+            if _tier_expr is not None:
+                params.extend(_tier_params)
+                sql += f" ORDER BY {_tier_expr} ASC, s.start_time DESC, s.id DESC"
+            else:
+                sql += " ORDER BY s.start_time DESC, s.id DESC"
+
             cursor.execute(sql, params)
             rows = cursor.fetchall()
             
@@ -1684,9 +1771,14 @@ class Database:
             if since_ts:
                 sql += " AND s.start_time >= ?"
                 params.append(since_ts)
-                
-            sql += " GROUP BY s.id ORDER BY CASE WHEN MIN(f.rank) IS NOT NULL THEN 0 ELSE 1 END, MIN(f.rank) ASC, s.start_time DESC"
-            
+
+            # #493: exactness tier leads the ordering (mirrors advanced_search);
+            # query is non-empty here because whitespace-only input already
+            # returned [] above. s.id DESC makes ties fully deterministic.
+            _tier_expr, _tier_params = _exactness_tier(query)
+            params.extend(_tier_params)
+            sql += f" GROUP BY s.id ORDER BY {_tier_expr} ASC, CASE WHEN MIN(f.rank) IS NOT NULL THEN 0 ELSE 1 END, MIN(f.rank) ASC, s.start_time DESC, s.id DESC"
+
             cursor.execute(sql, params)
             rows = cursor.fetchall()
             
