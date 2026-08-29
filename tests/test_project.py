@@ -492,6 +492,25 @@ def test_find_project_root_cache_raw_unc_not_aliased(tmp_path, monkeypatch):
 
     monkeypatch.setattr("os.path.expanduser", lambda path: str(tmp_path) if path == "~" else path)
     monkeypatch.setattr(project_module, "_PROJECT_ROOT_CACHE_TTL", 60)
+
+    # `/workspace` and `//workspace` normalise to the same canonical path only
+    # on SOME platforms (POSIX preserves the leading `//`, Windows maps it to
+    # a UNC root).  Force both spellings onto one canonical value BEFORE the
+    # first lookup so the cache-key collision scenario is genuinely exercised
+    # deterministically everywhere; the RAW path still reaches the
+    # implementation untouched.
+    real_realpath = project_module.os.path.realpath
+
+    def fake_realpath(p):
+        p = str(p).rstrip("/\\")
+        # Basename match covers both raw spellings on every platform layout.
+        basename = p.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        if basename == "workspace":
+            return "/workspace"
+        return real_realpath(p)
+
+    monkeypatch.setattr(project_module.os.path, "realpath", fake_realpath)
+
     _PROJECT_ROOT_CACHE.clear()
 
     seen = []
@@ -513,9 +532,16 @@ def test_find_project_root_cache_raw_unc_not_aliased(tmp_path, monkeypatch):
     r2 = find_project_root(unc)
 
     # The UNC-spelled path must resolve via its OWN impl call with the UNC
-    # result, NOT the cached result of the normal spelling.
+    # result, NOT the cached result of the normal spelling — even though both
+    # spellings now share one normalised cache-key path component.
     assert r2 == "HOME-UNC"
     assert r2 != r1
+    assert seen == ["//workspace"]  # raw UNC path reached the impl untouched
+
+    # The normal spelling keeps its own cache entry: a repeat lookup is served
+    # from the cache with the original result and without another impl call.
+    r3 = find_project_root(normal)
+    assert r3 == r1
     assert seen == ["//workspace"]
 
 

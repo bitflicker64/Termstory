@@ -1117,14 +1117,14 @@ class TestFindGitRoot(unittest.TestCase):
     @staticmethod
     def _git_available():
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["git", "--version"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=False,
                 timeout=10,
             )
-            return True
+            return result.returncode == 0
         except Exception:
             return False
 
@@ -1158,31 +1158,23 @@ class TestFindGitRoot(unittest.TestCase):
         """A cwd inside a normal repo resolves to that repo's root."""
         if not self._git_available():
             return
-        tmp = tempfile.mkdtemp()
-        try:
+        with tempfile.TemporaryDirectory() as tmp:
             repo = self._init_repo(os.path.join(tmp, "repo"))
             nested = os.path.join(repo, "a", "b")
             os.makedirs(nested)
             self.assertEqual(self.d._find_git_root(nested), os.path.realpath(repo))
-        finally:
-            import shutil
-            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_nested_repo_inner_wins(self):
         """For a cwd inside a nested repo, the inner repo is selected."""
         if not self._git_available():
             return
-        tmp = tempfile.mkdtemp()
-        try:
+        with tempfile.TemporaryDirectory() as tmp:
             outer = self._init_repo(os.path.join(tmp, "outer"))
             child = self._init_repo(os.path.join(outer, "child"))
             src = os.path.join(child, "src")
             os.makedirs(src)
             actual = self.d._find_git_root(src)
             self.assertEqual(actual, os.path.realpath(child))
-        finally:
-            import shutil
-            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_linked_worktree_resolves(self):
         """A linked worktree (where `.git` is a FILE) must resolve to its root.
@@ -1192,9 +1184,8 @@ class TestFindGitRoot(unittest.TestCase):
         """
         if not self._git_available():
             return
-        tmp = tempfile.mkdtemp()
-        worktree = os.path.join(tmp, "linked-worktree")
-        try:
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = os.path.join(tmp, "linked-worktree")
             main_repo = self._init_repo(os.path.join(tmp, "main-repo"))
             try:
                 subprocess.run(
@@ -1213,22 +1204,15 @@ class TestFindGitRoot(unittest.TestCase):
             nested = os.path.join(worktree, "sub")
             os.makedirs(nested)
             self.assertEqual(self.d._find_git_root(nested), os.path.realpath(worktree))
-        finally:
-            import shutil
-            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_outer_repo_trail_does_not_leak(self):
         """A path above all repos returns None, not an enclosing repo."""
         if not self._git_available():
             return
-        tmp = tempfile.mkdtemp()
-        try:
+        with tempfile.TemporaryDirectory() as tmp:
             repo = self._init_repo(os.path.join(tmp, "repo"))
             parent = os.path.dirname(repo)
             self.assertEqual(self.d._find_git_root(parent), None)
-        finally:
-            import shutil
-            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_malformed_git_file_does_not_hide_enclosing_repo(self):
         """P1 #2 — a bogus `.git` FILE must not become the root.
@@ -1239,8 +1223,7 @@ class TestFindGitRoot(unittest.TestCase):
         """
         if not self._git_available():
             return
-        tmp = tempfile.mkdtemp()
-        try:
+        with tempfile.TemporaryDirectory() as tmp:
             repo = self._init_repo(os.path.join(tmp, "repo"))
             inner = os.path.join(repo, "inner")
             os.makedirs(inner)
@@ -1254,9 +1237,6 @@ class TestFindGitRoot(unittest.TestCase):
             self.assertEqual(
                 self.d._find_git_root(inner), os.path.realpath(repo)
             )
-        finally:
-            import shutil
-            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_stale_git_file_pointing_nowhere_does_not_hide_repo(self):
         """P1 #2 — a `gitdir:` pointer whose target no longer exists is stale.
@@ -1266,8 +1246,7 @@ class TestFindGitRoot(unittest.TestCase):
         """
         if not self._git_available():
             return
-        tmp = tempfile.mkdtemp()
-        try:
+        with tempfile.TemporaryDirectory() as tmp:
             repo = self._init_repo(os.path.join(tmp, "repo"))
             stale = os.path.join(repo, "stale-wt")
             os.makedirs(stale)
@@ -1281,9 +1260,6 @@ class TestFindGitRoot(unittest.TestCase):
             # The stale marker must not resolve to `stale`; the enclosing
             # valid `repo` must be returned instead.
             self.assertEqual(self.d._find_git_root(stale), os.path.realpath(repo))
-        finally:
-            import shutil
-            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_empty_nested_git_dir_does_not_hide_enclosing_repo(self):
         """P1 — an empty nested ``.git`` directory must not become the root.

@@ -168,18 +168,64 @@ def test_merged_branches_preserves_first_seen_order():
 
 
 def _git_available() -> bool:
-    """Return True if a usable `git` executable is on PATH."""
+    """Return True only if a usable `git` executable is on PATH *and* responds.
+
+    ``git --version`` can launch (the binary is present) yet still exit non-zero
+    in hostile or sandboxed environments, so we inspect the return code rather
+    than treating a successful launch as proof of a working git.
+    """
     try:
-        subprocess.run(
+        result = subprocess.run(
             ["git", "--version"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
             timeout=10,
         )
-        return True
+        return result.returncode == 0
     except Exception:
         return False
+
+
+def test_git_available_returns_false_when_git_version_nonzero(monkeypatch):
+    """`_git_available` must inspect the `git --version` return code.
+
+    Regression for the review finding that the helper returned True on any
+    non-exceptional launch, even when `git --version` exited non-zero (e.g. a
+    broken or sandbox-denied git install).  ``subprocess.run`` is mocked so the
+    helper only sees a non-zero exit code and must report unavailability.
+    """
+
+    class _BadVersion:
+        returncode = 128
+        stdout = b""
+        stderr = b"git: not found\n"
+
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: _BadVersion())
+    assert _git_available() is False
+
+
+def test_git_dependent_tests_skip_when_git_unavailable(monkeypatch, tmp_path):
+    """Git-dependent `find_git_root` tests must skip cleanly when git is absent.
+
+    This verifies the `if not _git_available(): return` guards actually
+    short-circuit, so a non-zero `git --version` (handled by the fix above)
+    causes the repository tests to skip instead of invoking git commands.  The
+    functions return ``None`` when they bail out early.
+    """
+
+    class _BadVersion:
+        returncode = 128
+        stdout = b""
+        stderr = b"git: not found\n"
+
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: _BadVersion())
+    assert _git_available() is False
+
+    # Each guard short-circuits to an early `return` (None) before touching git.
+    assert test_find_git_root_ordinary_repo(tmp_path) is None
+    assert test_find_git_root_linked_worktree(tmp_path) is None
+    assert test_find_git_root_path_normalization(tmp_path) is None
 
 
 def _init_repo(path, name="Test", email="test@example.com", commit=True):
