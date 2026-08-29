@@ -407,13 +407,12 @@ class TestDetectInlineDate(unittest.TestCase):
 
 class TestDetectFileStat(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = self._tmpdir.name
         self.d = make_detective(search_root=self.tmp)
 
     def tearDown(self):
-        import shutil
-
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        self._tmpdir.cleanup()
 
     def test_touch_existing_file(self):
         """touch <file> should return that file's mtime."""
@@ -497,13 +496,12 @@ class TestDetectFileStat(unittest.TestCase):
 
 class TestDetectPackageManager(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = self._tmpdir.name
         self.d = make_detective(search_root=self.tmp)
 
     def tearDown(self):
-        import shutil
-
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        self._tmpdir.cleanup()
 
     def test_npm_local_install_package_lock(self):
         """npm install should find package-lock.json in virtual_cwd."""
@@ -625,13 +623,12 @@ class TestDetectDocker(unittest.TestCase):
 
 class TestDetectVenvLockfile(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = self._tmpdir.name
         self.d = make_detective(search_root=self.tmp)
 
     def tearDown(self):
-        import shutil
-
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        self._tmpdir.cleanup()
 
     def test_bundle_install_gemfile_lock(self):
         gemfile_lock = os.path.join(self.tmp, "Gemfile.lock")
@@ -799,13 +796,12 @@ class TestInterpolation(unittest.TestCase):
 
 class TestResolveAll(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = self._tmpdir.name
         self.d = make_detective(search_root=self.tmp)
 
     def tearDown(self):
-        import shutil
-
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        self._tmpdir.cleanup()
 
     def test_empty_list(self):
         self.assertEqual(self.d.resolve_all([]), [])
@@ -1003,8 +999,7 @@ class TestDetectMacosSystemLog(unittest.TestCase):
         TimestampDetective at an alternate log file without monkey-patching
         os.path.exists or builtins.open.
         """
-        tmp = tempfile.mkdtemp()
-        try:
+        with tempfile.TemporaryDirectory() as tmp:
             log_path = os.path.join(tmp, "custom_install.log")
             dt = datetime.fromtimestamp(FOUR_YEARS_AGO, tz=timezone.utc)
             stamp = dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -1020,10 +1015,6 @@ class TestDetectMacosSystemLog(unittest.TestCase):
             self.assertEqual(ts, int(dt.timestamp()))
             # Default value preserved for callers that don't pass the kwarg.
             self.assertEqual(d.macos_install_log, log_path)
-        finally:
-            import shutil
-
-            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_detect_macos_syslog_default_path_when_unset(self):
         """Constructor default for macos_install_log matches the previously hardcoded path."""
@@ -1035,8 +1026,7 @@ class TestDetectMacosSystemLog(unittest.TestCase):
         self.assertIsNone(self.d.detect_macos_syslog("jq"))
 
     def test_detect_macos_syslog_parses_install_line(self):
-        tmp = tempfile.mkdtemp()
-        try:
+        with tempfile.TemporaryDirectory() as tmp:
             log_path = os.path.join(tmp, "install.log")
             dt = datetime.fromtimestamp(FOUR_YEARS_AGO, tz=timezone.utc)
             stamp = dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -1049,14 +1039,9 @@ class TestDetectMacosSystemLog(unittest.TestCase):
                 ts = self.d.detect_macos_syslog("jq")
             self.assertIsNotNone(ts)
             self.assertEqual(ts, int(dt.timestamp()))
-        finally:
-            import shutil
-
-            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_detect_macos_syslog_timezone_offsets(self):
-        tmp = tempfile.mkdtemp()
-        try:
+        with tempfile.TemporaryDirectory() as tmp:
             log_path = os.path.join(tmp, "install.log")
             # 2026-04-01 04:22:04-07:00 is 1775042524
             with open(log_path, "w") as f:
@@ -1070,15 +1055,10 @@ class TestDetectMacosSystemLog(unittest.TestCase):
                 ts = self.d.detect_macos_syslog("jq")
             self.assertIsNotNone(ts)
             self.assertEqual(ts, 1775042524)
-        finally:
-            import shutil
-
-            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_detect_macos_syslog_package_filter_strict(self):
         """Should not match unrelated packages containing 'brew' if target package isn't present."""
-        tmp = tempfile.mkdtemp()
-        try:
+        with tempfile.TemporaryDirectory() as tmp:
             log_path = os.path.join(tmp, "install.log")
             with open(log_path, "w") as f:
                 f.write(
@@ -1090,10 +1070,6 @@ class TestDetectMacosSystemLog(unittest.TestCase):
             ):
                 ts = self.d.detect_macos_syslog("jq")
             self.assertIsNone(ts)
-        finally:
-            import shutil
-
-            shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
