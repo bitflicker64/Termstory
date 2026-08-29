@@ -237,22 +237,43 @@ class TimestampDetective:
             return None
         return find_git_root(path)
 
+    @staticmethod
+    def _valid_git_metadata_dir(target: str) -> bool:
+        """
+        Return True if *target* is a directory holding genuine Git metadata.
+
+        A valid Git metadata directory must contain a ``HEAD`` file and either
+        an ``objects`` directory (ordinary repo / worktree) or a ``commondir``
+        file (linked worktree whose common dir lives elsewhere).  This rejects
+        empty, corrupt, or tool-created ``.git`` directories that lack the
+        minimal structure Git itself requires.
+        """
+        if not os.path.isdir(target):
+            return False
+        if not os.path.isfile(os.path.join(target, "HEAD")):
+            return False
+        return os.path.isdir(os.path.join(target, "objects")) or os.path.isfile(
+            os.path.join(target, "commondir")
+        )
+
     def _is_git_marker(self, git_path: str) -> bool:
         """
         Return True if *git_path* is a genuine Git repository/worktree marker.
 
-        A ``.git`` DIRECTORY is a valid ordinary-repository marker.
+        A ``.git`` DIRECTORY is accepted only when it holds valid Git metadata
+        (a ``HEAD`` file and either an ``objects`` directory or a ``commondir``
+        file).  An empty, corrupt, or tool-created ``.git`` directory is
+        rejected so it cannot hide a real enclosing repository.
 
         A ``.git`` FILE is accepted only if it is a legitimate linked-worktree
         marker: it must be a ``gitdir: <path>`` pointer (the format produced by
-        ``git worktree add``) whose target directory currently exists.  Any
-        other file named ``.git`` (malformed, stale after the worktree was
-        removed, or created by a tool) is rejected so it cannot hide a real
-        enclosing repository.  The check is bounded (reads at most one small
-        line) and does not invoke Git.
+        ``git worktree add``) whose target directory holds valid Git metadata.
+        Any other file named ``.git`` (malformed, stale after the worktree was
+        removed, or pointing at an unrelated directory) is rejected.  The check
+        is bounded (reads at most one small line) and does not invoke Git.
         """
         if os.path.isdir(git_path):
-            return True
+            return self._valid_git_metadata_dir(git_path)
         if not os.path.isfile(git_path):
             return False
         try:
@@ -263,18 +284,13 @@ class TimestampDetective:
         if not first_line.startswith("gitdir:"):
             return False
         target = first_line[len("gitdir:"):].strip()
-        target = first_line[len("gitdir:"):].strip()
         if not target:
             return False
         if not os.path.isabs(target):
             # Git writes absolute targets, but resolve a relative target the
             # way Git does: relative to the directory holding the `.git` file.
             target = os.path.join(os.path.dirname(git_path), target)
-        return os.path.isdir(target)
-
-        if not target:
-            return False
-        return os.path.isdir(target)
+        return self._valid_git_metadata_dir(target)
 
     def _load_git_log(self, repo_path: str) -> List[Dict]:
         """

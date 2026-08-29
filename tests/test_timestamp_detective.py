@@ -1285,6 +1285,85 @@ class TestFindGitRoot(unittest.TestCase):
             import shutil
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_empty_nested_git_dir_does_not_hide_enclosing_repo(self):
+        """P1 — an empty nested ``.git`` directory must not become the root.
+
+        A nested directory may contain an empty ``.git`` directory (created by a
+        tool, a corrupt checkout, or ``git submodule`` that was never
+        initialized).  Such a marker lacks genuine Git metadata and must NOT
+        short-circuit the upward search; the enclosing valid repository must
+        still win.
+        """
+        if not self._git_available():
+            return
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._init_repo(os.path.join(tmp, "repo"))
+            child = os.path.join(repo, "child")
+            # Create an empty `.git` subdirectory — no HEAD, no objects.
+            os.makedirs(os.path.join(child, ".git"))
+            self.assertTrue(os.path.isdir(os.path.join(child, ".git")))
+
+            # The empty `.git` dir must not resolve to `child`; the enclosing
+            # valid `repo` must be returned instead.
+            self.assertEqual(self.d._find_git_root(child), os.path.realpath(repo))
+
+    def test_git_file_pointing_at_unrelated_dir_does_not_hide_repo(self):
+        """P1 — a ``gitdir:`` pointer at an unrelated existing directory is invalid.
+
+        Merely checking that the target directory exists is insufficient: the
+        target must hold genuine Git metadata.  Otherwise a stray ``.git`` file
+        pointing at some unrelated existing directory would hide the real
+        enclosing repository.
+        """
+        if not self._git_available():
+            return
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._init_repo(os.path.join(tmp, "repo"))
+            child = os.path.join(repo, "child")
+            os.makedirs(child)
+
+            # An existing directory that is NOT valid Git metadata.
+            unrelated = os.path.join(tmp, "unrelated-existing-dir")
+            os.makedirs(unrelated)
+            self.assertTrue(os.path.isdir(unrelated))
+            self.assertFalse(os.path.exists(os.path.join(unrelated, "HEAD")))
+
+            with open(os.path.join(child, ".git"), "w") as f:
+                f.write("gitdir: %s\n" % unrelated.replace("\\", "/"))
+            self.assertTrue(os.path.isfile(os.path.join(child, ".git")))
+
+            # The bogus `gitdir:` target must not resolve to `child`; the
+            # enclosing valid `repo` must be returned instead.
+            self.assertEqual(self.d._find_git_root(child), os.path.realpath(repo))
+
+    def test_valid_git_metadata_is_recognized(self):
+        """Valid Git metadata directories are recognized as genuine markers.
+
+        Confirms the validation distinguishes: empty dir (invalid), unrelated
+        dir (invalid), real repo metadata (valid), and real linked-worktree
+        metadata (valid).
+        """
+        if not self._git_available():
+            return
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._init_repo(os.path.join(tmp, "repo"))
+            repo_git = os.path.join(repo, ".git")
+
+            # Empty `.git` directory -> invalid.
+            empty = os.path.join(tmp, "empty")
+            os.makedirs(os.path.join(empty, ".git"))
+            self.assertFalse(
+                self.d._valid_git_metadata_dir(os.path.join(empty, ".git"))
+            )
+
+            # Unrelated existing directory -> invalid.
+            unrelated = os.path.join(tmp, "unrelated")
+            os.makedirs(unrelated)
+            self.assertFalse(self.d._valid_git_metadata_dir(unrelated))
+
+            # Real repo metadata -> valid.
+            self.assertTrue(self.d._valid_git_metadata_dir(repo_git))
+
 
 if __name__ == "__main__":
     unittest.main()
