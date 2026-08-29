@@ -538,6 +538,110 @@ def consolidate_sleep_contexts(db, force: bool = False) -> int:
     return consolidated_count
 
 
+# Bounded stale threshold, in seconds, after which an empty/unparseable
+# sleep-daemon PID file is considered abandoned and safe to reclaim.
+#
+# When a caller wins the atomic ``O_CREAT | O_EXCL`` claim it creates the PID
+# file and then publishes its PID. Concurrent callers that observe the file
+# before that PID is written must NOT delete it merely because it does not yet
+# parse: doing so would mistake a freshly-claimed, in-progress claim for a
+# stale one and let a second caller reclaim it, spawning two daemons. A
+# recently-created empty/unparseable claim is therefore treated as an active
+# in-progress claim; only once this threshold has elapsed without a parseable
+# PID appearing is it safe to reclaim as abandoned.
+_SLEEP_DAEMON_CLAIM_STALE_SECONDS = 2.0
+
+
+def _pid_from_file(pid_file: str) -> Optional[int]:
+    """Return the PID stored in the sleep-daemon PID file, or None.
+
+    Returns None when the file cannot be read or does not hold a parseable,
+    positive integer PID - e.g. it is empty because the claiming caller has not
+    published its PID yet, or it is malformed.
+    """
+    try:
+        with open(pid_file, "r") as f:
+            raw = f.read().strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    try:
+        pid = int(raw)
+    except ValueError:
+        return None
+    if pid <= 0:
+        return None
+    return pid
+
+
+def _claim_is_stale(pid_file: str) -> bool:
+    """Return True when an existing sleep-daemon claim is safe to reclaim.
+
+    A claim is stale (and therefore reclaimable) only in two situations:
+
+      * it holds a valid PID whose process is no longer alive (a daemon that
+        died without cleaning up), or
+      * it is empty/unparseable *and* older than the bounded stale threshold
+        ``_SLEEP_DAEMON_CLAIM_STALE_SECONDS``, i.e. a genuinely abandoned claim
+        whose creator never published a PID.
+
+    Every other state - a live daemon, or a fresh in-progress claim whose PID
+    has not been published yet - is treated as active and NOT reclaimable. This
+    is what prevents the race where a freshly created-but-unpopulated PID file
+    is mistaken for a stale one and deleted, allowing a second claimant to
+    spawn a duplicate daemon.
+    """
+    pid = _pid_from_file(pid_file)
+    if pid is not None:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True  # daemon process has gone away
+        except (PermissionError, OSError):
+            # Cannot confirm the process is dead; conservatively defer rather
+            # than race over a possibly-live claim.
+            return False
+        return False  # process is alive; defer
+
+    # Empty or unparseable PID file. Use its modification time (which for a
+    # freshly created, not-yet-populated claim reflects its creation) to tell
+    # an in-progress claim apart from an abandoned one.
+    try:
+        age = time.time() - os.path.getmtime(pid_file)
+    except OSError:
+        # The file disappeared or is unreadable; it no longer represents a
+        # valid claim, so retrying the atomic claim is harmless.
+        return True
+    if age < _SLEEP_DAEMON_CLAIM_STALE_SECONDS:
+        return False  # in-progress claim; defer, do not delete
+    return True  # abandoned empty/unparseable claim; reclaim
+
+
+def _remove_claim_safely(pid_file: str, owner_pid: Optional[int]) -> None:
+    """Remove a claim we created, without removing a replacement claim.
+
+    Between claiming the file and cleaning it up (e.g. on a failure), another
+    caller may have reclaimed the file and re-populated it with its own PID. To
+    avoid deleting that replacement's claim we only remove the file while it
+    still carries our content: ``owner_pid`` if we published one, or an empty
+    file if we had not published yet.
+    """
+    current = _pid_from_file(pid_file)
+    if owner_pid is not None:
+        if current != owner_pid:
+            return  # someone else owns the claim now; leave it alone
+    else:
+        if current is not None:
+            return  # a replacement published a PID; leave it alone
+    try:
+        os.remove(pid_file)
+    except FileNotFoundError:
+        pass  # already gone; that is fine
+    except OSError:
+        logger.exception("Failed to remove sleep daemon PID file %s", pid_file)
+
+
 def start_sleep_daemon(db_path: str):
     """Spawns the sleep daemon in the background if it's not already running.
 
@@ -546,8 +650,17 @@ def start_sleep_daemon(db_path: str):
     exactly one wins the race and goes on to spawn the daemon. Every other
     invocation finds the file already exists and defers to the running (or
     just-started) daemon, which later overwrites the placeholder PID with its
-    own. A stale PID file (a daemon that died without cleaning up) is reclaimed
-    so the daemon can be restarted.
+    own.
+
+    The protocol distinguishes four states of an existing PID file:
+
+      * a valid PID belonging to a live process -> defer (daemon running),
+      * a valid PID belonging to a dead process -> reclaim as stale,
+      * a fresh empty/unparseable file -> defer (the owner created the claim
+        but has not published its PID yet; never deleted just because parsing
+        fails),
+      * an empty/unparseable file older than the bounded stale threshold
+        ``_SLEEP_DAEMON_CLAIM_STALE_SECONDS`` -> reclaim as abandoned.
     """
     import sys
     import subprocess
@@ -555,44 +668,51 @@ def start_sleep_daemon(db_path: str):
     pid_file = os.path.join(get_app_dir("data"), "sleep_daemon.pid")
     os.makedirs(os.path.dirname(pid_file), exist_ok=True)
 
-    for attempt in range(2):
+    our_pid = os.getpid()
+    for _attempt in range(2):
         try:
             fd = os.open(pid_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
         except FileExistsError:
-            # Another invocation already owns the daemon. If its PID is alive it
-            # is (or is about to become) the running daemon — defer to it.
+            if not _claim_is_stale(pid_file):
+                # A live daemon runs, or another caller is about to run it
+                # (including a fresh in-progress claim whose PID has not been
+                # published yet). Defer and leave the PID file untouched.
+                return
+            # The existing claim is stale (a daemon died without cleaning up,
+            # or an abandoned empty/unparseable claim past the stale threshold).
+            # Reclaim it, then retry the atomic claim on the next iteration.
             try:
-                with open(pid_file, "r") as f:
-                    pid = int(f.read().strip())
-                os.kill(pid, 0)
-                return  # Already running
-            except (ValueError, OSError):
-                if attempt == 0:
-                    # Stale PID file (a daemon died without cleaning up).
-                    # Reclaim ownership on the next attempt.
-                    try:
-                        os.remove(pid_file)
-                    except OSError:
-                        logger.exception("Failed to remove stale sleep daemon PID file %s", pid_file)
-                    continue
-            # Someone else just claimed ownership; defer to them.
-            return
+                os.remove(pid_file)
+            except FileNotFoundError:
+                # Another invocation removed it concurrently; just retry the
+                # atomic claim rather than assuming ownership incorrectly.
+                continue
+            except OSError:
+                logger.exception(
+                    "Failed to remove stale sleep daemon PID file %s", pid_file
+                )
+                return
+            continue
         else:
-            # We own the daemon. Record our PID as a placeholder so concurrent
-            # invocations can recognise the claim as held by a live owner.
+            # We own the claim. Publish our PID as a placeholder so concurrent
+            # invocations can recognise it as a claim held by a live owner.
+            published = True
             try:
-                os.write(fd, str(os.getpid()).encode("ascii"))
+                os.write(fd, str(our_pid).encode("ascii"))
             except OSError:
                 logger.exception("Failed to write sleep daemon PID file %s", pid_file)
-                try:
-                    os.remove(pid_file)
-                except OSError:
-                    pass
-                return
+                published = False
             finally:
                 os.close(fd)
+            if not published:
+                # We could not publish a PID for our claim. Clean it up, but
+                # never remove a replacement claim that another process may
+                # have created in the meantime.
+                _remove_claim_safely(pid_file, owner_pid=None)
+                return
             break
     else:
+        # Exhausted the bounded reclaim attempts without acquiring the claim.
         return
 
     # Inherit and configure the python path
@@ -614,11 +734,10 @@ def start_sleep_daemon(db_path: str):
     except OSError:
         logger.exception("Failed to start sleep daemon")
         # We claimed ownership but failed to spawn; release the claim so a
-        # later invocation can start the daemon.
-        try:
-            os.remove(pid_file)
-        except OSError:
-            logger.exception("Failed to remove sleep daemon PID file %s", pid_file)
+        # later invocation can start the daemon. Only remove the file while it
+        # still carries our placeholder PID, so we never delete a replacement
+        # claim created by another process.
+        _remove_claim_safely(pid_file, owner_pid=our_pid)
 
 
 def run_sleep_daemon(db_path: str):

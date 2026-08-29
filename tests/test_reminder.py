@@ -365,6 +365,102 @@ def test_start_sleep_daemon_concurrent_invocations_spawn_once(tmp_path, monkeypa
     assert len(calls) == 1
 
 
+def test_start_sleep_daemon_creator_fails_before_pid_publication(tmp_path, monkeypatch):
+    """Regression: a caller that wins the PID-file claim but fails before
+    publishing its PID must not let a concurrent invocation delete/reclaim the
+    now-empty claim while it is still fresh.
+
+    If the empty claim were treated as stale, it would be deleted and a second
+    caller could acquire it and spawn a duplicate daemon (the
+    ``ValueError -> os.remove() -> second claimant`` race). The empty claim may
+    only be reclaimed after it has sat stale beyond the bounded threshold.
+
+    This test is fully deterministic: it drives ``time.time`` and
+    ``os.path.getmtime`` directly rather than depending on real process
+    scheduling.
+    """
+    import subprocess
+    import termstory.reminder as reminder
+
+    monkeypatch.setattr(reminder, "get_app_dir", lambda name: str(tmp_path))
+    pid_file = tmp_path / "sleep_daemon.pid"
+
+    # A published PID is treated as pointing at a live daemon (our own process).
+    monkeypatch.setattr(reminder.os, "kill", lambda pid, sig: None)
+
+    calls = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: calls.append(args))
+
+    # Deterministic clock: we control both "now" and the PID file's mtime.
+    held_now = [100.0]
+    held_mtime = [99.0]
+    monkeypatch.setattr(reminder.time, "time", lambda: held_now[0])
+    monkeypatch.setattr(reminder.os.path, "getmtime", lambda path: held_mtime[0])
+
+    # 1) A creator atomically creates the PID-file claim but fails before
+    #    publishing a PID (simulated by creating an empty claim directly).
+    fd = os.open(str(pid_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+    os.close(fd)
+    assert pid_file.read_text().strip() == ""
+
+    # 2) A concurrent invocation sees the fresh empty claim (age 1s, below the
+    #    stale threshold). It must defer - NOT spawn and NOT delete the claim.
+    reminder.start_sleep_daemon("dummy.db")
+    assert calls == []
+    assert pid_file.exists()  # the in-progress claim is left intact
+
+    # 3) Time passes beyond the bounded stale threshold; the empty claim is now
+    #    genuinely abandoned.
+    held_now[0] = held_mtime[0] + reminder._SLEEP_DAEMON_CLAIM_STALE_SECONDS + 1.0
+
+    # 4) A replacement claimant reclaims the abandoned empty claim and spawns
+    #    exactly one daemon.
+    reminder.start_sleep_daemon("dummy.db")
+    assert len(calls) == 1
+    # The reclaimed claim now points at the replacement owner (our PID).
+    assert pid_file.read_text().strip() == str(os.getpid())
+
+
+def test_start_sleep_daemon_reclaims_empty_claim_removed_concurrently(tmp_path, monkeypatch):
+    """A stale empty claim whose file disappears during reclaim handling must
+    not error or terminate the claim; it simply retries the atomic claim."""
+    import subprocess
+    import termstory.reminder as reminder
+
+    monkeypatch.setattr(reminder, "get_app_dir", lambda name: str(tmp_path))
+    pid_file = tmp_path / "sleep_daemon.pid"
+
+    calls = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: calls.append(args))
+
+    # The claim is deemed stale (dead PID).
+    def dead_process(pid, sig):
+        raise ProcessLookupError(pid, "no such process")
+    monkeypatch.setattr(reminder.os, "kill", dead_process)
+
+    pid_file.write_text("999999999")
+
+    # While reclaiming, another invocation removes the file between our stale
+    # inspection and os.remove() - i.e. os.remove raises FileNotFoundError and
+    # the file is genuinely gone. The claim must not error or claim ownership
+    # incorrectly; the retry atomically re-acquires the (now absent) file.
+    real_remove = reminder.os.remove
+    attempts = {"count": 0}
+    def flaky_remove(path):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            # The other invocation already deleted the file.
+            real_remove(path)
+            raise FileNotFoundError()
+        return real_remove(path)
+    monkeypatch.setattr(reminder.os, "remove", flaky_remove)
+
+    reminder.start_sleep_daemon("dummy.db")
+
+    assert len(calls) == 1
+    assert pid_file.read_text().strip() == str(os.getpid())
+
+
 def test_add_reminder_explicit_days_prefix_suffix_stripping(tmp_path, monkeypatch):
     reminders_file = tmp_path / "reminders.json"
     monkeypatch.setattr("termstory.reminder.get_reminders_file_path", lambda: str(reminders_file))
