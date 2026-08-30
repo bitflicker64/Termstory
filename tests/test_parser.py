@@ -100,6 +100,66 @@ def test_parse_bash_history_without_timestamps(tmp_path):
     assert commands[0].command == "git status"
     assert commands[1].command == "docker ps"
 
+
+def test_bash_history_timestamp_detective_recovers_file_anchor(tmp_path, monkeypatch):
+    """Issue #453: untimestamped bash commands use TimestampDetective like zsh."""
+    monkeypatch.delenv("TERMSTORY_MISSING_TIMESTAMPS", raising=False)
+    monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2026-06-14 12:00:00")
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    lock = project / "package-lock.json"
+    lock.write_text("{}\n")
+    known_ts = 1748851200
+    os.utime(str(lock), (known_ts, known_ts))
+
+    history = tmp_path / "bash_history"
+    history.write_text(f"cd {project}\nnpm install\n")
+    os.utime(str(history), (known_ts + 86400, known_ts + 86400))
+
+    commands = parse_bash_history(str(history), project_paths=[str(project)])
+    npm_cmds = [c for c in commands if c.command == "npm install"]
+    assert len(npm_cmds) == 1
+    assert npm_cmds[0].is_legacy is False
+    assert npm_cmds[0].recovery_source is not None
+    assert "npm" in npm_cmds[0].recovery_source
+
+
+def test_fish_history_shares_timestamp_locks_across_detective_and_fallback(tmp_path, monkeypatch):
+    """Repeated commands must not both consume existing_lookup[cmd][0]."""
+    monkeypatch.delenv("TERMSTORY_MISSING_TIMESTAMPS", raising=False)
+    monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2026-06-14 12:00:00")
+
+    class MockTimestampDetective:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def resolve_all(self, items):
+            return [
+                {
+                    "command": item["command"],
+                    "is_legacy_still": False,
+                    "detected_ts": 1748851300,
+                    "detected_source": "Mock",
+                }
+                for item in items
+            ]
+
+    monkeypatch.setattr("termstory.parser.TimestampDetective", MockTimestampDetective)
+
+    temp_file = tmp_path / "fish_history_lock"
+    temp_file.write_text(
+        "- cmd: git status\n"
+        "  when: 1748851200\n"
+        "- cmd: git status\n"
+    )
+    existing_lookup = {"git status": [1748851000, 1748851100]}
+    commands = parse_fish_history(str(temp_file), existing_lookup=existing_lookup)
+    status_cmds = [c for c in commands if c.command == "git status"]
+    assert len(status_cmds) == 2
+    assert sorted(c.timestamp for c in status_cmds) == [1748851000, 1748851100]
+
+
 def test_parse_zsh_history_legacy_fallback(tmp_path):
     temp_file = tmp_path / "zsh_legacy_test"
     temp_file.write_text(

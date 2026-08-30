@@ -551,12 +551,113 @@ def parse_bash_history(
             if cmd_cleaned:
                 temp_commands.append((None, cmd_cleaned))
                 
-    return _assign_missing_timestamps_fallback(temp_commands, mtime, existing_lookup)
+    return _assign_missing_timestamps_with_detective(
+        temp_commands, mtime, existing_lookup, project_paths
+    )
+
+
+def _run_timestamp_detective(
+    legacy_items: List[dict],
+    project_paths: Optional[Union[List[str], Callable[[], List[str]]]] = None,
+) -> List[dict]:
+    """Run TimestampDetective on untimestamped items (shared by bash/fish/powershell)."""
+    resolved_paths: List[str] = []
+    if project_paths:
+        try:
+            resolved_paths = project_paths() if callable(project_paths) else list(project_paths)
+        except Exception:
+            logger.exception(
+                "TimestampDetective: project_paths callback raised; "
+                "continuing without project-path enrichment."
+            )
+    from termstory.config import load_config
+    _td_config = load_config()
+    detective = TimestampDetective(
+        search_root=os.path.expanduser("~"),
+        project_paths=resolved_paths or [],
+        macos_install_log=_td_config.get("macos_install_log", "/private/var/log/install.log"),
+    )
+    return detective.resolve_all(legacy_items)
+
+
+def _assign_missing_timestamps_with_detective(
+    temp_commands: List[tuple],
+    mtime: int,
+    existing_lookup: Optional[Dict[str, List[int]]],
+    project_paths: Optional[Union[List[str], Callable[[], List[str]]]] = None,
+) -> List[Command]:
+    """Resolve missing timestamps via TimestampDetective, then fall back for the rest."""
+    legacy_items = []
+    legacy_indices = []
+    for i, (t, cmd) in enumerate(temp_commands):
+        if t is None:
+            legacy_items.append({"timestamp": None, "duration": None, "command": cmd})
+            legacy_indices.append(i)
+
+    if legacy_items:
+        os.environ["TERMSTORY_MISSING_TIMESTAMPS"] = "1"
+
+    detective_commands: List[Command] = []
+    claimed: set = set()
+    # Shared across detective + fallback so repeated commands don't both take
+    # existing_lookup[cmd][0] and later collapse under exact deduplication.
+    consumed: Dict[str, int] = {}
+
+    if legacy_items:
+        enriched = _run_timestamp_detective(legacy_items, project_paths)
+
+        def resolve_timestamp(cmd: str, fallback_ts: int) -> int:
+            if existing_lookup and cmd in existing_lookup:
+                ts_list = existing_lookup[cmd]
+                idx = consumed.get(cmd, 0)
+                if idx < len(ts_list):
+                    consumed[cmd] = idx + 1
+                    return ts_list[idx]
+            return fallback_ts
+
+        for map_i, item in enumerate(enriched):
+            orig_i = legacy_indices[map_i]
+            detected_ts = item.get("detected_ts")
+            if detected_ts is None:
+                continue
+            resolved_ts = resolve_timestamp(item["command"], detected_ts)
+            is_real = not item.get("is_legacy_still", True)
+            detective_commands.append(Command(
+                timestamp=resolved_ts,
+                command=item["command"],
+                exit_code=0,
+                duration=None,
+                is_legacy=not is_real,
+                recovery_source=item.get("detected_source"),
+            ))
+            claimed.add(orig_i)
+
+    remaining = [(t, cmd) for i, (t, cmd) in enumerate(temp_commands) if i not in claimed]
+    fallback_commands = (
+        _assign_missing_timestamps_fallback(
+            remaining, mtime, existing_lookup, consumed=consumed
+        )
+        if remaining else []
+    )
+
+    combined = detective_commands + fallback_commands
+    now = int(get_current_time().timestamp())
+    from termstory.config import load_config
+    max_history_age = load_config().get("max_history_age", 5)
+    five_years_ago = now - (max_history_age * 365 * 24 * 60 * 60)
+    filtered = [
+        c for c in combined
+        if five_years_ago <= c.timestamp <= now
+    ]
+    filtered.sort(key=lambda x: x.timestamp)
+    return filtered
+
 
 def _assign_missing_timestamps_fallback(
     temp_commands: List[tuple],
     mtime: int,
-    existing_lookup: Optional[Dict[str, List[int]]]
+    existing_lookup: Optional[Dict[str, List[int]]],
+    consumed: Optional[Dict[str, int]] = None,
 ) -> List[Command]:
     commands_to_return = []
     
@@ -577,7 +678,8 @@ def _assign_missing_timestamps_fallback(
     
     has_any_timestamps = any(t is not None for t, _ in temp_commands)
     
-    consumed = {}
+    if consumed is None:
+        consumed = {}
     def resolve_timestamp(cmd: str, fallback_ts: int) -> int:
         if existing_lookup and cmd in existing_lookup:
             ts_list = existing_lookup[cmd]
@@ -802,7 +904,9 @@ def parse_fish_history(
             if cleaned:
                 temp_commands.append((current_when, cleaned))
                 
-    return _assign_missing_timestamps_fallback(temp_commands, mtime, existing_lookup)
+    return _assign_missing_timestamps_with_detective(
+        temp_commands, mtime, existing_lookup, project_paths
+    )
 
 def parse_powershell_history(
     filepath: str,
@@ -851,7 +955,9 @@ def parse_powershell_history(
         if cmd_cleaned:
             temp_commands.append((None, cmd_cleaned))
             
-    return _assign_missing_timestamps_fallback(temp_commands, mtime, existing_lookup)
+    return _assign_missing_timestamps_with_detective(
+        temp_commands, mtime, existing_lookup, project_paths
+    )
 
 def parse_all_histories(
     filepaths: List[str],
