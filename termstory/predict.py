@@ -134,7 +134,11 @@ class Predictor:
                 if cmd_rows and all(bool(r[1]) for r in cmd_rows):
                     continue
 
-                cmds = [r[0] for r in cmd_rows if not _is_noise_command(r[0])]
+                non_legacy_cmds = [r[0] for r in cmd_rows if not bool(r[1])]
+                if not non_legacy_cmds:
+                    continue
+
+                cmds = [cmd for cmd in non_legacy_cmds if not _is_noise_command(cmd)]
                 project_name = p_name if p_name and p_name not in ("General / No Project", "") else "Other"
 
                 sessions.append({
