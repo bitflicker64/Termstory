@@ -21,6 +21,22 @@ from termstory.reminder import (
     consolidate_sleep_contexts
 )
 
+
+def _run_sleep_daemon_for_sigterm_test(data_dir: str) -> None:
+    import threading
+    from unittest.mock import patch
+    import termstory.reminder as reminder
+
+    def fake_sleep(_):
+        threading.Event().wait()
+
+    with patch.object(reminder, "get_app_dir", lambda name: data_dir):
+        with patch("termstory.reminder.time.sleep", fake_sleep):
+            with patch("termstory.database.Database.__init__", lambda self, path: None):
+                with patch("termstory.reminder.consolidate_sleep_contexts", return_value=None):
+                    reminder.run_sleep_daemon("dummy_path")
+
+
 def test_parse_reminder_text():
     # Success cases
     assert parse_reminder_text("remind me about fixing the bug in 3 days") == ("fixing the bug", 3)
@@ -260,6 +276,31 @@ def test_run_sleep_daemon_cleanup_on_initialization_failure(tmp_path, monkeypatc
             termstory.reminder.run_sleep_daemon("dummy_path")
             
     # The PID file should have been cleaned up and not exist on disk
+    assert not pid_file.exists()
+
+
+def test_run_sleep_daemon_sigterm_removes_pid_file(tmp_path):
+    """Issue #427: SIGTERM must remove sleep_daemon.pid before exiting."""
+    import multiprocessing
+    import signal
+
+    data_dir = str(tmp_path)
+    pid_file = tmp_path / "sleep_daemon.pid"
+
+    ctx = multiprocessing.get_context("fork")
+    proc = ctx.Process(target=_run_sleep_daemon_for_sigterm_test, args=(data_dir,))
+    proc.start()
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if pid_file.exists():
+            break
+        time.sleep(0.05)
+    assert pid_file.exists()
+
+    os.kill(proc.pid, signal.SIGTERM)
+    proc.join(timeout=5)
+    assert proc.exitcode == 0
     assert not pid_file.exists()
 
 
