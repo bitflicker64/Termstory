@@ -678,6 +678,40 @@ def test_detect_projects_per_command_null_handling(monkeypatch):
     assert s.commands[2].project_id == real_proj.id
 
 
+def test_detect_projects_preserves_command_ids_when_session_ends_at_home(monkeypatch):
+    """#462: cd back to ~ at session end must not wipe earlier per-command project_ids."""
+    import os
+    original_listdir = os.listdir
+
+    def mock_listdir(path):
+        if path == "/Users/username/Projects/acme":
+            return [".git"]
+        return original_listdir(path)
+
+    monkeypatch.setattr(os, "listdir", mock_listdir)
+
+    s = Session(
+        id=1, start_time=1000, end_time=2000, duration_seconds=1000,
+        project_id=None,
+        commands=[
+            Command(timestamp=1000, command="cd ~/Projects/acme"),
+            Command(timestamp=1100, command="pytest"),
+            Command(timestamp=1200, command="cd ~"),
+            Command(timestamp=1300, command="ls"),
+        ],
+    )
+
+    projects = detect_projects([s])
+
+    assert len(projects) == 1
+    acme = projects[0]
+    assert s.project_id is None
+    assert s.commands[0].project_id is None
+    assert s.commands[1].project_id == acme.id
+    assert s.commands[2].project_id == acme.id
+    assert s.commands[3].project_id is None
+
+
 def test_detect_projects_with_null_end_time():
     """Active (end_time=None) session must not crash Pass 2 gap arithmetic (#312/#372).
 

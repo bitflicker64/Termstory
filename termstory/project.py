@@ -525,9 +525,9 @@ def detect_projects(sessions: List[Session]) -> List[Project]:
                 session, final_project, projects_dict, overwrite_per_command=False
             )
         else:
+            # Final cwd is home/root: session stays unattributed, but per-command
+            # project_ids assigned during the cwd walk must be preserved (#462).
             session.project_id = None
-            for cmd in session.commands:
-                cmd.project_id = None
 
         last_session_end = effective_end
     
