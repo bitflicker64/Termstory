@@ -467,6 +467,27 @@ def test_assign_missing_timestamps_fallback_clamping():
     assert commands[0].timestamp == 1748851190
 
 
+def test_bash_history_honors_date_override_not_wall_clock(tmp_path, monkeypatch):
+    """Issue #450: bash timestamp bounds must follow TERMSTORY_DATE_OVERRIDE."""
+    from datetime import datetime
+
+    monkeypatch.setenv("TERMSTORY_DATE_OVERRIDE", "2027-06-01 12:00:00")
+    monkeypatch.setattr("time.time", lambda: 1_700_000_000)
+
+    override_ts = int(datetime(2027, 6, 1, 12, 0, 0).timestamp())
+    ts1 = override_ts - 120
+    ts2 = override_ts - 60
+    temp_file = tmp_path / "bash_date_override_test"
+    temp_file.write_text(f"#{ts1}\ngit status\n#{ts2}\ndocker ps\n")
+
+    commands = parse_bash_history(str(temp_file))
+    assert len(commands) == 2
+    assert commands[0].timestamp == ts1
+    assert commands[0].command == "git status"
+    assert commands[1].timestamp == ts2
+    assert commands[1].command == "docker ps"
+
+
 def test_parse_zsh_history_getmtime_oserror_falls_back(tmp_path):
     from unittest.mock import patch
 
