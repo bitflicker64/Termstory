@@ -146,6 +146,68 @@ def parse_until(until_str: Optional[str]) -> Optional[int]:
         raise ValueError(f"Invalid date or day count format '{until_str}': {e}")
 
 
+def _project_matches_filter(proj: Optional[Project], filter_lower: str) -> bool:
+    """Return True if a resolved :class:`Project` matches the lowercased filter.
+
+    ``proj`` is ``None`` for sessions/commands carrying no project attribution.
+    In that case the filter only matches the conventional "no project" bucket
+    names, preserving the existing behaviour for sessions without a project.
+    """
+    if proj is None:
+        return filter_lower in ("other", "general", "no project")
+    return filter_lower in proj.name.lower() or filter_lower in proj.path.lower()
+
+
+def _session_matches_project_filter(
+    session: Session, project_map: Dict[int, Project], filter_lower: str
+) -> bool:
+    """Return True if *session* matches a project filter.
+
+    A session matches when the requested project is reflected in *either*:
+
+    * the session-level attribution (``session.project_id`` — the final
+      project the session ended in), **or**
+    * the per-command attribution of at least one command belonging to the
+      session (``command.project_id``) — e.g. a session that ``cd``-ed
+      between projects mid-stream.
+
+    The no-project filter (``"other"`` / ``"general"`` / ``"no project"``)
+    matches a session when the session itself is unattributed (``project_id``
+    is ``None``) *or* when at least one command in the session is explicitly
+    unattributed (``command.project_id`` is ``None``), so a mixed-practice
+    session with a named final project and some unattributed commands is
+    still included in the no-project export.
+
+    This mirrors the per-command project matching already used by
+    :mod:`termstory.search` (see #339) and fixes #498, where the export
+    path only considered the session's final project.
+
+    ``project_map`` maps resolved project IDs to :class:`Project` entities
+    (name/path). Only an actual ``None`` attribution counts as "no project";
+    a command whose ``project_id`` is not present in the map is treated as an
+    unresolvable, real project and is *not* matched — this prevents an
+    unknown/missing project ID from falsely matching the "other" bucket.
+    """
+    # Session-level attribution (the final/current project).
+    session_proj = project_map.get(session.project_id) if session.project_id is not None else None
+    if _project_matches_filter(session_proj, filter_lower):
+        return True
+    # Per-command attribution: a session matches if any of its commands was
+    # attributed to the requested project, even when the session's final
+    # project differs. An explicitly unattributed command (project_id is
+    # None) matches the no-project bucket ("other" / "general" /
+    # "no project") so that a mixed session is included there.
+    for cmd in session.commands:
+        if cmd.project_id is None:
+            if _project_matches_filter(None, filter_lower):
+                return True
+            continue
+        cmd_proj = project_map.get(cmd.project_id)
+        if cmd_proj is not None and _project_matches_filter(cmd_proj, filter_lower):
+            return True
+    return False
+
+
 def fetch_export_data(
     db: Database,
     project_filter: Optional[str] = None,
@@ -181,24 +243,27 @@ def fetch_export_data(
     # Fetch all sessions in the range (up to far in the future)
     sessions = db.get_range_sessions(start_ts, end_ts)
     
-    # Get project info to map names/paths
-    project_ids = list(set(s.project_id for s in sessions if s.project_id is not None))
+    # Get project info to map names/paths. Include project IDs attributed at
+    # the per-command level (not only the session's final project) so that
+    # command-level attribution can be matched against the project filter
+    # (see Issue #498).
+    project_ids = list(set(
+        s.project_id for s in sessions if s.project_id is not None
+    ) | set(
+        c.project_id for s in sessions for c in s.commands if c.project_id is not None
+    ))
     projects = db.get_projects_by_ids(project_ids)
     project_map = {p.id: p for p in projects}
     
-    # Filter sessions by project if specified
+    # Filter sessions by project if specified. A session matches when its
+    # session-level project OR at least one of its commands' projects
+    # matches the filter (Issue #498).
     if project_filter:
         filter_lower = project_filter.lower()
-        filtered_sessions = []
-        for s in sessions:
-            proj = project_map.get(s.project_id) if s.project_id is not None else None
-            if proj:
-                if filter_lower in proj.name.lower() or filter_lower in proj.path.lower():
-                    filtered_sessions.append(s)
-            else:
-                if filter_lower in ("other", "general", "no project"):
-                    filtered_sessions.append(s)
-        sessions = filtered_sessions
+        sessions = [
+            s for s in sessions
+            if _session_matches_project_filter(s, project_map, filter_lower)
+        ]
         
     return sessions
 
