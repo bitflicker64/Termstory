@@ -227,6 +227,34 @@ class TestPredictorEmptyHistory:
         finally:
             os.unlink(db_path)
 
+    def test_mixed_legacy_live_session_excludes_legacy_commands(self):
+        """#463: legacy commands in a mixed session must not feed prediction signals."""
+        now = datetime.now()
+        db_path = _make_db([
+            {
+                "start": now - timedelta(hours=1),
+                "project": "acme",
+                "commands": ["make", "pytest"],
+            },
+        ])
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE commands SET is_legacy=1 WHERE command='make'")
+        conn.commit()
+        conn.close()
+        try:
+            p = Predictor(db_path)
+            sessions = p._load_sessions()
+            assert len(sessions) == 1
+            assert sessions[0]["commands"] == ["pytest"]
+
+            result = p.predict(top_n=1, now=now)
+            assert result["total_sessions_analysed"] == 1
+            suggested = result["top_projects"][0]["suggested_commands"]
+            assert "pytest" in suggested
+            assert "make" not in suggested
+        finally:
+            os.unlink(db_path)
+
 
 class TestPredictorRanking:
     def test_recency_drives_top_rank(self):
