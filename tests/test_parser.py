@@ -263,6 +263,20 @@ def test_parse_fish_history(tmp_path):
     assert commands[1].timestamp == 1748851210
     assert commands[1].command == 'echo "hello world"'
 
+
+def test_parse_fish_history_replaces_invalid_utf8(tmp_path):
+    """Issue #451: invalid UTF-8 must become U+FFFD, not be silently dropped."""
+    temp_file = tmp_path / "fish_history_bad_utf8"
+    temp_file.write_bytes(
+        b"- cmd: echo hello\xffworld\n"
+        b"  when: 1748851200\n"
+    )
+    commands = parse_fish_history(str(temp_file))
+    assert len(commands) == 1
+    assert commands[0].command == "echo hello\ufffdworld"
+    assert commands[0].timestamp == 1748851200
+
+
 def test_parse_powershell_history(tmp_path):
     temp_file = tmp_path / "consolehost_history.txt"
     temp_file.write_text(
@@ -275,6 +289,16 @@ def test_parse_powershell_history(tmp_path):
     assert len(commands) == 2
     assert commands[0].command == "git status"
     assert commands[1].command == "docker ps ` -a"
+
+
+def test_parse_powershell_history_replaces_invalid_utf8(tmp_path):
+    """Issue #451: PowerShell path must keep U+FFFD for invalid UTF-8 (same as fish)."""
+    temp_file = tmp_path / "consolehost_history_bad_utf8.txt"
+    temp_file.write_bytes(b"echo hello\xffworld\n")
+    commands = parse_powershell_history(str(temp_file))
+    assert len(commands) == 1
+    assert commands[0].command == "echo hello\ufffdworld"
+
 
 def test_parser_multiplexer_boundary_resets(tmp_path):
     # Zsh multiline interrupted by kitty +kitten

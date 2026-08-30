@@ -774,7 +774,7 @@ def parse_fish_history(
         mtime = int(get_current_time().timestamp())
         
     temp_commands = []
-    with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
         current_cmd = None
         current_when = None
         
@@ -824,7 +824,7 @@ def parse_powershell_history(
         mtime = int(get_current_time().timestamp())
         
     raw_lines = []
-    with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
         for line in f:
             raw_lines.append(line)
             
