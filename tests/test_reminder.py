@@ -31,10 +31,11 @@ def _run_sleep_daemon_for_sigterm_test(data_dir: str) -> None:
         threading.Event().wait()
 
     with patch.object(reminder, "get_app_dir", lambda name: data_dir):
-        with patch("termstory.reminder.time.sleep", fake_sleep):
-            with patch("termstory.database.Database.__init__", lambda self, path: None):
-                with patch("termstory.reminder.consolidate_sleep_contexts", return_value=None):
-                    reminder.run_sleep_daemon("dummy_path")
+        with patch("termstory.config.load_config", lambda: {"reminder_poll_interval": 300}):
+            with patch("termstory.reminder.time.sleep", fake_sleep):
+                with patch("termstory.database.Database.__init__", lambda self, path: None):
+                    with patch("termstory.reminder.consolidate_sleep_contexts", return_value=None):
+                        reminder.run_sleep_daemon("dummy_path")
 
 
 def test_parse_reminder_text():
@@ -287,21 +288,31 @@ def test_run_sleep_daemon_sigterm_removes_pid_file(tmp_path):
     data_dir = str(tmp_path)
     pid_file = tmp_path / "sleep_daemon.pid"
 
-    ctx = multiprocessing.get_context("fork")
+    ctx = multiprocessing.get_context("spawn")
     proc = ctx.Process(target=_run_sleep_daemon_for_sigterm_test, args=(data_dir,))
     proc.start()
+    try:
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if pid_file.exists():
+                break
+            time.sleep(0.05)
+        assert pid_file.exists()
 
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        if pid_file.exists():
-            break
-        time.sleep(0.05)
-    assert pid_file.exists()
-
-    os.kill(proc.pid, signal.SIGTERM)
-    proc.join(timeout=5)
-    assert proc.exitcode == 0
-    assert not pid_file.exists()
+        os.kill(proc.pid, signal.SIGTERM)
+        proc.join(timeout=5)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=5)
+        assert proc.exitcode == 0
+        assert not pid_file.exists()
+    finally:
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=5)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(timeout=5)
 
 
 def test_start_sleep_daemon_spawns_when_no_daemon_running(tmp_path, monkeypatch):
