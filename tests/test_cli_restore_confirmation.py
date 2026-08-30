@@ -334,3 +334,110 @@ def test_restore_preserves_existing_error_contract_on_missing_file(tmp_path, mon
     result = runner.invoke(app, ["restore", "--yes", str(backup_db)])
     assert result.exit_code == 1, result.output
     assert "error" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# Issue #479 — CLI validation error handling
+# ---------------------------------------------------------------------------
+
+def _make_corrupt_termstory_db(path):
+    """Create a valid TermStory DB then corrupt a data page so
+    PRAGMA integrity_check fails."""
+    from termstory.database import Database
+    db = Database(path)
+    db.init_db()
+    import sqlite3
+    conn = sqlite3.connect(path)
+    conn.executemany(
+        "INSERT INTO commands (timestamp, command, session_id, project_id) "
+        "VALUES (?, ?, ?, ?)",
+        [(1730000000 + i, "cmd%d" % i, 1, 1) for i in range(5000)],
+    )
+    conn.commit()
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.commit()
+    conn.close()
+    page_size = 4096
+    with open(path, "r+b") as f:
+        f.seek(page_size * 2)
+        f.write(b"\xFF" * page_size)
+
+
+def test_restore_cli_rejects_non_sqlite_backup_cleanly(tmp_path, monkeypatch):
+    """A non-SQLite backup file must produce a clean CLI error (no traceback)
+    and the live database must remain untouched."""
+    live_db = _patch_paths(monkeypatch, tmp_path)
+    _seed_db(str(live_db), project_name="Live Project")
+
+    # Create a non-SQLite file as a fake backup
+    fake_backup = tmp_path / "not_sqlite.db"
+    fake_backup.write_text("This is not a database file at all.")
+
+    _force_non_interactive(monkeypatch)
+    runner = CliRunner()
+    result = runner.invoke(app, ["restore", "--yes", str(fake_backup)])
+
+    assert result.exit_code == 1, result.output
+    assert "error" in result.output.lower()
+    assert "Traceback" not in result.output
+    # Active DB must be unchanged
+    restored = Database(str(live_db))
+    projects = restored.search_projects("")
+    assert len(projects) == 1
+    assert projects[0].name == "Live Project"
+
+
+def test_restore_cli_rejects_corrupt_backup_cleanly(tmp_path, monkeypatch):
+    """A corrupt (integrity_check-failing) backup must produce a clean CLI
+    error (no traceback) and the live database must remain untouched."""
+    live_db = _patch_paths(monkeypatch, tmp_path)
+    _seed_db(str(live_db), project_name="Live Project")
+
+    corrupt_backup = tmp_path / "corrupt.db"
+    _make_corrupt_termstory_db(str(corrupt_backup))
+
+    _force_non_interactive(monkeypatch)
+    runner = CliRunner()
+    result = runner.invoke(app, ["restore", "--yes", str(corrupt_backup)])
+
+    assert result.exit_code == 1, result.output
+    assert "error" in result.output.lower()
+    assert "Traceback" not in result.output
+    # Active DB must be unchanged
+    restored = Database(str(live_db))
+    projects = restored.search_projects("")
+    assert len(projects) == 1
+    assert projects[0].name == "Live Project"
+
+
+def test_restore_cli_operational_failure_clean_no_traceback(tmp_path, monkeypatch):
+    """An operational failure (e.g. os.replace failing under simulated disk
+    error) must reach the clean CLI error path: exit 1, no traceback, active
+    DB untouched."""
+    live_db = _patch_paths(monkeypatch, tmp_path)
+    _seed_db(str(live_db), project_name="Live Project")
+
+    backup_db = tmp_path / "backup.db"
+    _seed_db(str(backup_db), project_name="Backup Project")
+
+    def boom_replace(src, dst):
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr("termstory.backup.os.replace", boom_replace)
+
+    _force_non_interactive(monkeypatch)
+    runner = CliRunner()
+    result = runner.invoke(app, ["restore", "--yes", str(backup_db)])
+
+    assert result.exit_code == 1, result.output
+    assert "error" in result.output.lower()
+    assert "Traceback" not in result.output
+    # Active DB must be unchanged.
+    restored = Database(str(live_db))
+    projects = restored.search_projects("")
+    assert len(projects) == 1
+    assert projects[0].name == "Live Project"
+    # No temp artifacts left behind.
+    import glob
+    leftover = glob.glob(os.path.join(str(tmp_path), ".termstory_restore_*"))
+    assert leftover == []
