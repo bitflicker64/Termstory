@@ -2055,6 +2055,168 @@ def format_mcp_snapshots(snapshots: List[Dict]) -> str:
     return render_to_string(Text.from_markup("\n".join(output_lines).strip()))
 
 
+# ── Weekly Digest Formatter ─────────────────────────────────────────
+
+
+def format_weekly_digest_output(
+    digest: dict,
+    start_ts: int,
+    end_ts: int,
+) -> str:
+    """Render a comprehensive weekly digest from the computed digest dict.
+
+    Parameters
+    ----------
+    digest:
+        Output of ``weekly_digest.build_weekly_digest()``.
+    start_ts, end_ts:
+        Unix timestamps marking the week boundaries.
+    """
+    range_str = format_date_range(start_ts, end_ts)
+    header = f"📅 Weekly Digest ({range_str})"
+
+    if not digest.get("daily_totals"):
+        return render_to_string(
+            Text.from_markup(f"{header}\n\n[yellow]No sessions recorded this week.[/]")
+        )
+
+    lines: list[str] = [header, ""]
+
+    # ── 1. Summary stats ────────────────────────────────────────────
+    lines.append("[bold]Summary[/]")
+    lines.append("─" * 44)
+    lines.append(
+        f"  Sessions  : [bold]{digest['total_sessions']}[/]"
+        f"  │  Active Days : [bold]{digest['active_days']}[/] / 7"
+    )
+    lines.append(
+        f"  Commands  : [bold]{digest['total_commands']}[/]"
+        f"  │  Commits     : [bold]{digest['total_commits']}[/]"
+    )
+    lines.append(
+        f"  Work Time : [bold green]{format_duration(digest['total_time'])}[/]"
+        f"  │  Error Rate  : [bold]{digest['error_rate']}%[/]"
+    )
+    lines.append(
+        f"  Focus     : [bold yellow]{digest['focus_score']}/10.0[/]"
+        f"  │  Best Streak : [bold]{digest['streak']} day(s)[/]"
+    )
+    lines.append("")
+
+    # ── 2. Week-over-week comparison ────────────────────────────────
+    comp = digest.get("comparison")
+    if comp is not None:
+        lines.append("[bold]vs. Previous Week[/]")
+        lines.append("─" * 44)
+        t_sign = "+" if comp["time_delta"] >= 0 else ""
+        t_color = "green" if comp["time_delta"] >= 0 else "red"
+        t_pct = f" ({comp['time_pct']:+.1f}%)" if comp["time_pct"] is not None else ""
+        lines.append(
+            f"  Time : [{t_color}]{t_sign}{format_duration(abs(comp['time_delta']))}{t_pct}[/]"
+        )
+        c_sign = "+" if comp["commit_delta"] >= 0 else ""
+        c_color = "green" if comp["commit_delta"] >= 0 else "red"
+        c_pct = f" ({comp['commit_pct']:+.1f}%)" if comp["commit_pct"] is not None else ""
+        lines.append(
+            f"  Commits : [{c_color}]{c_sign}{comp['commit_delta']}{c_pct}[/]"
+        )
+        s_sign = "+" if comp["session_delta"] >= 0 else ""
+        lines.append(f"  Sessions: {s_sign}{comp['session_delta']}")
+        f_sign = "+" if comp["focus_delta"] >= 0 else ""
+        f_color = "green" if comp["focus_delta"] >= 0 else "red"
+        lines.append(f"  Focus   : [{f_color}]{f_sign}{comp['focus_delta']}[/]")
+        lines.append("")
+
+    # ── 3. Per-day breakdown ────────────────────────────────────────
+    lines.append("[bold]Daily Breakdown[/]")
+    lines.append("─" * 44)
+    days_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    start_dt = datetime.fromtimestamp(start_ts)
+
+    # Map weekday index to YYYY-MM-DD keys
+    day_date_map: dict[int, str] = {}
+    for i in range(7):
+        d = start_dt + timedelta(days=i)
+        day_date_map[i] = d.strftime("%Y-%m-%d")
+
+    max_day_time = max(digest["daily_totals"].values()) if digest["daily_totals"] else 1
+
+    for idx, label in enumerate(days_order):
+        key = day_date_map.get(idx, "")
+        secs = digest["daily_totals"].get(key, 0)
+        sess_count = digest["daily_session_counts"].get(key, 0)
+        cmd_count = digest["daily_command_counts"].get(key, 0)
+        commit_count = digest["daily_commit_counts"].get(key, 0)
+        focus = digest["daily_focus_scores"].get(key, 0.0)
+
+        bar = make_visual_bar(secs, max_day_time, width=12) if secs > 0 else "[dim]░░░░░░░░░░░░[/]"
+
+        line = f"  {label}  {bar}  [bold green]{format_duration(secs):>7}[/]"
+        if sess_count > 0:
+            detail = f"{sess_count}s {cmd_count}c"
+            if commit_count > 0:
+                detail += f" {commit_count}📈"
+            line += f"  [dim]{detail}[/]"
+        lines.append(line)
+    lines.append("")
+
+    # ── 4. Project distribution ─────────────────────────────────────
+    lines.append("[bold]Project Focus[/]")
+    lines.append("─" * 44)
+    total = digest["total_time"] or 1
+    for name, secs in digest["project_distribution"][:6]:
+        pct = (secs / total) * 100
+        bar = make_visual_bar(secs, total, width=10)
+        lines.append(
+            f"  [bold cyan]{escape(name):<22}[/] {bar} {format_duration(secs):>7} [dim]({pct:.0f}%)[/]"
+        )
+    lines.append("")
+
+    # ── 5. Time-of-day distribution ─────────────────────────────────
+    lines.append("[bold]Active Hours[/]")
+    lines.append("─" * 44)
+    tod = digest["time_of_day"]
+    tod_max = max(tod.values()) if any(tod.values()) else 1
+    tod_labels = {
+        "morning": "🌅 Morning  (6-12)",
+        "afternoon": "☀️  Afternoon(12-18)",
+        "evening": "🌙 Evening  (18-22)",
+        "night": "🦉 Night    (22-6) ",
+    }
+    for key, label in tod_labels.items():
+        secs = tod.get(key, 0)
+        bar = make_visual_bar(secs, tod_max, width=12)
+        lines.append(f"  {label}  {bar}  {format_duration(secs):>7}")
+    lines.append("")
+
+    # ── 6. Command categories ───────────────────────────────────────
+    lines.append("[bold]Top Command Categories[/]")
+    lines.append("─" * 44)
+    for cat, count in digest["category_frequency"][:8]:
+        lines.append(f"  {cat:<22} [bold]{count:>4}[/]")
+    lines.append("")
+
+    # ── 7. Top achievements ────────────────────────────────────────
+    achievements = digest.get("top_achievements", [])
+    if achievements:
+        lines.append("[bold]Highlights[/]")
+        lines.append("─" * 44)
+        for ach in achievements[:5]:
+            ts = ach["timestamp"]
+            day_str = datetime.fromtimestamp(ts).strftime("%b %d")
+            if ach["type"] == "commit":
+                lines.append(
+                    f"  [dim]{day_str}[/]  [bold yellow]•[/] [cyan]{ach['hash']}[/] {escape(ach['description'][:60])}"
+                )
+            else:
+                lines.append(
+                    f"  [dim]{day_str}[/]  [bold yellow]•[/] {escape(ach['description'][:60])}"
+                )
+        lines.append("")
+
+    return render_to_string(Text.from_markup("\n".join(lines).strip()))
+
+
 
 
 

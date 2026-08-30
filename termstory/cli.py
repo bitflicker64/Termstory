@@ -13,7 +13,7 @@ from termstory.parser import parse_all_histories
 from termstory.session import create_sessions
 from termstory.project import detect_projects
 from termstory.database import Database
-from termstory.date_utils import get_current_time, get_today_range, parse_date_range_helper
+from termstory.date_utils import get_current_time, get_today_range, get_week_range, parse_date_range_helper
 from termstory.formatter import format_search_results, format_today_output, format_project_output, format_insights_output, format_stats_output, format_profile_output, format_necromancer_score, format_rage_quit_signatures
 import sqlite3
 
@@ -552,6 +552,48 @@ def show_tags(
             output_lines.append(f"{date_str}  {proj_name:<15}  {dur_str:<6}  {summary}")
             
         console.print("\n".join(output_lines))
+
+
+
+@app.command("weekly")
+def show_weekly(
+    last: bool = typer.Option(False, "--last", help="Show last week instead of the current week"),
+):
+    """Show a comprehensive weekly digest with daily breakdown, project focus, and week-over-week comparison"""
+    db_path = get_db_path()
+    db = Database(db_path)
+    safe_init_db(db)
+
+    run_ingestion(db)
+
+    start_ts, end_ts = get_week_range(last=last)
+    sessions = db.get_range_sessions(start_ts, end_ts)
+
+    # Previous-week sessions for comparison
+    prev_start, prev_end = get_week_range(last=True)
+    previous_sessions = db.get_range_sessions(prev_start, prev_end)
+
+    # Project names map
+    project_ids = list({s.project_id for s in sessions if s.project_id is not None})
+    project_names: dict = {}
+    if project_ids:
+        projects = db.get_projects_by_ids(project_ids)
+        project_names = {p.id: p.name for p in projects if p.id is not None}
+
+    all_projects = db.get_all_projects_with_stats()
+
+    from termstory.weekly_digest import build_weekly_digest
+    digest = build_weekly_digest(
+        sessions=sessions,
+        projects=all_projects,
+        project_names=project_names,
+        previous_sessions=previous_sessions if previous_sessions else None,
+    )
+
+    from termstory.formatter import format_weekly_digest_output
+    output = format_weekly_digest_output(digest, start_ts, end_ts)
+    from rich.text import Text
+    console.print(Text.from_ansi(output))
 
 
 
