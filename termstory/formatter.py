@@ -2055,6 +2055,125 @@ def format_mcp_snapshots(snapshots: List[Dict]) -> str:
     return render_to_string(Text.from_markup("\n".join(output_lines).strip()))
 
 
+# ── Flow Analyzer Formatter ────────────────────────────────────────
+
+
+def format_flow_output(report: dict) -> str:
+    """Render a comprehensive flow analysis report from the computed dict.
+
+    Parameters
+    ----------
+    report:
+        Output of ``flow_analyzer.build_flow_report()``.
+    """
+    header = "🧠 Flow State Analysis"
+    lines: list[str] = [header, ""]
+
+    # ── 1. Overview ────────────────────────────────────────────────
+    lines.append("[bold]Overview[/]")
+    lines.append("─" * 44)
+    lines.append(f"  Sessions     : [bold]{report['total_sessions']}[/]")
+    lines.append(f"  Commands     : [bold]{report['total_commands']}[/]")
+    lines.append(f"  Work Time    : [bold green]{format_duration(report['total_time'])}[/]")
+    lines.append(f"  Flow Blocks  : [bold yellow]{report['total_flow_blocks']}[/]")
+    lines.append(f"  Flow Time    : [bold yellow]{format_duration(report['total_flow_time'])}[/]")
+    lines.append(f"  Flow Coverage: [bold]{report['flow_coverage']}%[/]")
+    lines.append(f"  Avg Productivity: [bold]{report['avg_productivity']}/100[/]  {report['avg_tier']}")
+    lines.append("")
+
+    # ── 2. Best / worst sessions ───────────────────────────────────
+    best = report.get("best_session")
+    worst = report.get("worst_session")
+    if best or worst:
+        lines.append("[bold]Session Highlights[/]")
+        lines.append("─" * 44)
+        if best and best["total_sessions"] > 0 if "total_sessions" in best else best.get("commands", 0) > 0:
+            lines.append(
+                f"  🏆 Best   : [green]{best['date']} {best['time']}[/] "
+                f"— [bold]{best['productivity_score']}/100[/] {best['tier']}"
+            )
+            lines.append(
+                f"              {format_duration(best['duration'])} | "
+                f"{best['commands']} cmds | {best['flow_blocks']} flow block(s)"
+            )
+        if worst and worst.get("commands", 0) > 0:
+            lines.append(
+                f"  📉 Worst  : [red]{worst['date']} {worst['time']}[/] "
+                f"— [bold]{worst['productivity_score']}/100[/] {worst['tier']}"
+            )
+            lines.append(
+                f"              {format_duration(worst['duration'])} | "
+                f"{worst['commands']} cmds | {worst['flow_blocks']} flow block(s)"
+            )
+        lines.append("")
+
+    # ── 3. Best / worst days ───────────────────────────────────────
+    best_d = report.get("best_day")
+    worst_d = report.get("worst_day")
+    if best_d or worst_d:
+        lines.append("[bold]Daily Highlights[/]")
+        lines.append("─" * 44)
+        if best_d:
+            lines.append(
+                f"  🌟 Best Day  : [green]{best_d['date']} ({best_d['weekday']})[/] "
+                f"— {best_d['productivity_score']}/100 {best_d['tier']}"
+            )
+            lines.append(
+                f"                  {format_duration(best_d['total_time'])} | "
+                f"{best_d['total_commands']} cmds | {best_d['flow_blocks']} flow block(s)"
+            )
+        if worst_d and worst_d["date"] != (best_d["date"] if best_d else ""):
+            lines.append(
+                f"  💤 Worst Day : [red]{worst_d['date']} ({worst_d['weekday']})[/] "
+                f"— {worst_d['productivity_score']}/100 {worst_d['tier']}"
+            )
+        lines.append("")
+
+    # ── 4. Top flow blocks ─────────────────────────────────────────
+    top_blocks = report.get("top_flow_blocks", [])
+    if top_blocks:
+        lines.append("[bold]Top Flow Blocks[/]")
+        lines.append("─" * 44)
+        for i, b in enumerate(top_blocks, 1):
+            lines.append(
+                f"  {i}. [yellow]{b['date']} {b['time']}[/] — "
+                f"[bold]{format_duration(b['duration'])}[/] "
+                f"({b['commands']} cmds, avg gap {b['avg_gap']}s) "
+                f"[dim]{b['dominant_category']}[/]"
+            )
+        lines.append("")
+
+    # ── 5. Distraction patterns ────────────────────────────────────
+    dist = report.get("distractions", {})
+    if dist.get("noise_commands") or dist.get("error_hotspots"):
+        lines.append("[bold]Distraction Patterns[/]")
+        lines.append("─" * 44)
+        if dist.get("noise_commands"):
+            lines.append("  🌫️  Top noise commands:")
+            for cmd, count in dist["noise_commands"][:3]:
+                lines.append(f"    • {escape(cmd)} [dim]({count}x)[/]")
+        if dist.get("error_hotspots"):
+            lines.append("  ❌ Error hotspots:")
+            for cmd, count in dist["error_hotspots"][:3]:
+                lines.append(f"    • {escape(cmd)} [dim]({count}x)[/]")
+        if dist.get("context_switches", 0) > 0:
+            lines.append(f"  🔄 Context switches: [bold]{dist['context_switches']}[/]")
+        lines.append("")
+
+    # ── 6. Productivity tier distribution ───────────────────────────
+    daily = report.get("daily", [])
+    if daily:
+        lines.append("[bold]Productivity Tier Distribution[/]")
+        lines.append("─" * 44)
+        tier_counts: dict[str, int] = defaultdict(int)
+        for d in daily:
+            tier_counts[d["tier"]] += 1
+        for tier, count in sorted(tier_counts.items(), key=lambda x: x[1], reverse=True):
+            bar = "█" * count + "░" * (len(daily) - count)
+            lines.append(f"  {tier:<24} {bar} {count} day(s)")
+        lines.append("")
+
+    return render_to_string(Text.from_markup("\n".join(lines).strip()))
 
 
 

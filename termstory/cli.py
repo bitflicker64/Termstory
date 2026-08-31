@@ -1177,6 +1177,31 @@ def reset_cmd(
     perform_reset(auto_confirm=yes, dry_run=dry_run)
 
 
+@app.command("focus")
+def show_flow(
+    days: int = typer.Option(30, "--days", help="Number of days of history to analyse"),
+    limit: int = typer.Option(10, "--limit", help="Maximum number of sessions to show"),
+):
+    """Analyse flow states, deep work blocks, and distraction patterns"""
+    db_path = get_db_path()
+    db = Database(db_path)
+    safe_init_db(db)
+
+    run_ingestion(db)
+
+    cutoff = int((get_current_time() - timedelta(days=days)).timestamp())
+    end_ts = int(get_current_time().timestamp())
+    sessions = db.get_range_sessions(cutoff, end_ts)
+
+    from termstory.flow_analyzer import build_flow_report
+    report = build_flow_report(sessions)
+
+    from termstory.formatter import format_flow_output
+    output = format_flow_output(report)
+    from rich.text import Text
+    console.print(Text.from_ansi(output))
+
+
 @app.command("optimize")
 def optimize_cmd():
     """Run VACUUM on the database to defragment it and reclaim disk space"""
