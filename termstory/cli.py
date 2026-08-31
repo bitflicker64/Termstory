@@ -1225,6 +1225,42 @@ def run_agy(
     ))
 
 
+@app.command("streaks")
+def show_streaks(
+    days: int = typer.Option(365, "--days", help="Number of days of history to analyse"),
+    heatmap: int = typer.Option(90, "--heatmap", help="Number of days for the heatmap display"),
+):
+    """Show your developer streak tracker — daily, weekly, and monthly streaks with heatmap"""
+    db_path = get_db_path()
+    db = Database(db_path)
+    safe_init_db(db)
+
+    run_ingestion(db)
+
+    from datetime import timedelta
+    cutoff = int((get_current_time() - timedelta(days=days)).timestamp())
+    end_ts = int(get_current_time().timestamp())
+    sessions = db.get_range_sessions(cutoff, end_ts)
+
+    project_ids = list({s.project_id for s in sessions if s.project_id is not None})
+    project_names: dict = {}
+    if project_ids:
+        projects = db.get_projects_by_ids(project_ids)
+        project_names = {p.id: p.name for p in projects if p.id is not None}
+
+    from termstory.streak_tracker import build_streak_report
+    report = build_streak_report(
+        sessions=sessions,
+        project_names=project_names,
+        heatmap_lookback=heatmap,
+    )
+
+    from termstory.formatter import format_streak_output
+    output = format_streak_output(report)
+    from rich.text import Text
+    console.print(Text.from_ansi(output))
+
+
 @app.command("replay")
 def replay_cmd(
     session_id: Optional[int] = typer.Argument(None, help="ID of the session to replay. If not provided, the most recent session is used."),

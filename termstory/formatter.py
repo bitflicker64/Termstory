@@ -2055,6 +2055,153 @@ def format_mcp_snapshots(snapshots: List[Dict]) -> str:
     return render_to_string(Text.from_markup("\n".join(output_lines).strip()))
 
 
+# ── Streak Tracker Formatter ───────────────────────────────────────
+
+
+def format_streak_output(report: dict) -> str:
+    """Render a comprehensive streak tracker report from the computed dict.
+
+    Parameters
+    ----------
+    report:
+        Output of ``streak_tracker.build_streak_report()``.
+    """
+    header = "🔥 Developer Streak Tracker"
+    lines: list[str] = [header, ""]
+
+    # ── 1. Streak summary ──────────────────────────────────────────
+    lines.append("[bold]Streak Status[/]")
+    lines.append("─" * 44)
+    cs = report["current_streak"]
+    ls = report["longest_streak"]
+    lines.append(f"  Current Streak : [bold green]{cs} day(s)[/]")
+    lines.append(f"  Longest Streak : [bold yellow]{ls} day(s)[/]")
+    if report.get("current_start"):
+        lines.append(f"  Streak Started : [dim]{report['current_start'].strftime('%b %d, %Y')}[/]")
+    if report.get("longest_start") and report.get("longest_end"):
+        lines.append(
+            f"  Best Run       : [dim]{report['longest_start'].strftime('%b %d')} → "
+            f"{report['longest_end'].strftime('%b %d, %Y')} ({ls} days)[/]"
+        )
+    lines.append(f"  Active Days    : [bold]{report['total_active_days']}[/]")
+    lines.append("")
+
+    # ── 2. Risk assessment ──────────────────────────────────────────
+    risk = report["risk"]
+    status_icon = {"safe": "✅", "at_risk": "⚠️", "broken": "❌"}.get(risk["status"], "❓")
+    lines.append(f"{status_icon} [bold]{risk['message']}[/]")
+    lines.append("")
+
+    # ── 3. Weekly & monthly streaks ────────────────────────────────
+    lines.append("[bold]Streak Calendar[/]")
+    lines.append("─" * 44)
+    wk = report["weekly_streak"]
+    mo = report["monthly_streak"]
+    lines.append(
+        f"  Weekly  : [bold]{wk['current']}[/] consecutive week(s)"
+        f"  (longest: [yellow]{wk['longest']}[/], total active: [dim]{wk['total_weeks']}[/])"
+    )
+    lines.append(
+        f"  Monthly : [bold]{mo['current']}[/] consecutive month(s)"
+        f"  (longest: [yellow]{mo['longest']}[/], total active: [dim]{mo['total_weeks'] if 'total_weeks' in mo else mo.get('total_months', 0)}[/])"
+    )
+    lines.append("")
+
+    # ── 4. Heatmap (last 90 days) ──────────────────────────────────
+    heatmap = report.get("heatmap", [])
+    if heatmap:
+        lines.append("[bold]Activity Heatmap (Last 90 Days)[/]")
+        lines.append("─" * 44)
+        heat_icons = ["░", "▒", "▓", "█", "█"]
+        heat_colors = ["dim", "cyan", "green", "bold green", "bold yellow"]
+        # Arrange as rows of 7 (Mon→Sun)
+        # Build a grid: each row is a week
+        grid: dict[int, list] = defaultdict(list)
+        max_week = 0
+        for rec in heatmap:
+            iso = rec["date"].isocalendar()
+            wk = iso[1]
+            grid[wk].append(rec)
+            max_week = max(max_week, wk)
+
+        # Show last 13 weeks (~3 months) as rows
+        sorted_weeks = sorted(grid.keys())[-13:]
+        for wk in sorted_weeks:
+            day_recs = grid[wk]
+            row_str = ""
+            for rec in day_recs:
+                lvl = rec["level"]
+                icon = heat_icons[min(lvl, 4)]
+                color = heat_colors[min(lvl, 4)]
+                row_str += f"[{color}]{icon}[/]"
+            lines.append(f"  {row_str}")
+        lines.append("  [dim]░ = inactive  ▒ = <2h  ▓ = 2-4h  █ = 4h+[/]")
+        lines.append("")
+
+    # ── 5. Peak hours ──────────────────────────────────────────────
+    lines.append("[bold]Peak Hours[/]")
+    lines.append("─" * 44)
+    from termstory.streak_tracker import BUCKET_LABELS
+    peak = report.get("peak_hours", [])
+    peak_max = peak[0][1] if peak and peak[0][1] > 0 else 1
+    for name, secs in peak:
+        if secs == 0:
+            continue
+        label = BUCKET_LABELS.get(name, name)
+        bar = make_visual_bar(secs, peak_max, width=10)
+        lines.append(f"  {label}  {bar}  {format_duration(secs):>7}")
+    lines.append("")
+
+    # ── 6. Best weekday ────────────────────────────────────────────
+    lines.append("[bold]Weekday Distribution[/]")
+    lines.append("─" * 44)
+    wd = report.get("weekday_dist", {})
+    days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    wd_max = max(wd.values()) if wd else 1
+    for day in days_order:
+        secs = wd.get(day, 0)
+        bar = make_visual_bar(secs, wd_max, width=12) if secs > 0 else "[dim]░░░░░░░░░░░░[/]"
+        marker = " ⭐" if day == report.get("best_weekday") and secs > 0 else ""
+        lines.append(f"  {day[:3]}  {bar}  {format_duration(secs):>7}{marker}")
+    lines.append("")
+
+    # ── 7. Project streaks ─────────────────────────────────────────
+    proj_streaks = report.get("project_streaks", [])
+    if proj_streaks:
+        lines.append("[bold]Project Streaks[/]")
+        lines.append("─" * 44)
+        for ps in proj_streaks[:5]:
+            name = ps["project_name"]
+            lines.append(
+                f"  [bold cyan]{escape(name):<22}[/] "
+                f"longest: [yellow]{ps['longest_streak']}[/]d  "
+                f"current: [green]{ps['current_streak']}[/]d  "
+                f"active: [dim]{ps['active_days']}d[/]  "
+                f"[dim]{format_duration(ps['total_time'])}[/]"
+            )
+        lines.append("")
+
+    # ── 8. Milestones ──────────────────────────────────────────────
+    milestones = report.get("milestones", [])
+    next_ms = report.get("next_milestone")
+    if milestones or next_ms:
+        lines.append("[bold]Milestones[/]")
+        lines.append("─" * 44)
+        for ms in milestones:
+            lines.append(f"  ✅ {ms['title']} ({ms['days']}+ days)")
+        if next_ms:
+            lines.append(f"  🔒 {next_ms['title']} — {next_ms['remaining']} more day(s) to unlock")
+        lines.append("")
+
+    # ── 9. Summary stats ───────────────────────────────────────────
+    lines.append("[bold]Overall Stats[/]")
+    lines.append("─" * 44)
+    lines.append(f"  Total Sessions  : [bold]{report['total_sessions']}[/]")
+    lines.append(f"  Total Commands  : [bold]{report['total_commands']}[/]")
+    lines.append(f"  Total Work Time : [bold green]{format_duration(report['total_time'])}[/]")
+    lines.append("")
+
+    return render_to_string(Text.from_markup("\n".join(lines).strip()))
 
 
 
