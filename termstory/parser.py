@@ -662,8 +662,7 @@ def _assign_missing_timestamps_fallback(
     commands_to_return = []
     
     # Pre-clean raw timestamps: discard any that are out of bounds
-    import time
-    now_clean = int(time.time())
+    now_clean = int(get_current_time().timestamp())
     from termstory.config import load_config
     max_history_age_clean = load_config().get("max_history_age", 5)
     five_years_ago_clean = now_clean - (max_history_age_clean * 365 * 24 * 60 * 60)
@@ -768,8 +767,7 @@ def _assign_missing_timestamps_fallback(
         else:
             first_known_timestamp = resolved_timestamps[first_known_idx]
             
-        import time
-        now = int(time.time())
+        now = int(get_current_time().timestamp())
         
         # Bounded Interpolation
         idx = 0
