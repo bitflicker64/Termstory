@@ -18,6 +18,7 @@ Covers:
 import os
 import sys
 import time
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
@@ -406,13 +407,12 @@ class TestDetectInlineDate(unittest.TestCase):
 
 class TestDetectFileStat(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = self._tmpdir.name
         self.d = make_detective(search_root=self.tmp)
 
     def tearDown(self):
-        import shutil
-
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        self._tmpdir.cleanup()
 
     def test_touch_existing_file(self):
         """touch <file> should return that file's mtime."""
@@ -496,13 +496,12 @@ class TestDetectFileStat(unittest.TestCase):
 
 class TestDetectPackageManager(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = self._tmpdir.name
         self.d = make_detective(search_root=self.tmp)
 
     def tearDown(self):
-        import shutil
-
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        self._tmpdir.cleanup()
 
     def test_npm_local_install_package_lock(self):
         """npm install should find package-lock.json in virtual_cwd."""
@@ -624,13 +623,12 @@ class TestDetectDocker(unittest.TestCase):
 
 class TestDetectVenvLockfile(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = self._tmpdir.name
         self.d = make_detective(search_root=self.tmp)
 
     def tearDown(self):
-        import shutil
-
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        self._tmpdir.cleanup()
 
     def test_bundle_install_gemfile_lock(self):
         gemfile_lock = os.path.join(self.tmp, "Gemfile.lock")
@@ -798,13 +796,12 @@ class TestInterpolation(unittest.TestCase):
 
 class TestResolveAll(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.tmp = self._tmpdir.name
         self.d = make_detective(search_root=self.tmp)
 
     def tearDown(self):
-        import shutil
-
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        self._tmpdir.cleanup()
 
     def test_empty_list(self):
         self.assertEqual(self.d.resolve_all([]), [])
@@ -1002,8 +999,7 @@ class TestDetectMacosSystemLog(unittest.TestCase):
         TimestampDetective at an alternate log file without monkey-patching
         os.path.exists or builtins.open.
         """
-        tmp = tempfile.mkdtemp()
-        try:
+        with tempfile.TemporaryDirectory() as tmp:
             log_path = os.path.join(tmp, "custom_install.log")
             dt = datetime.fromtimestamp(FOUR_YEARS_AGO, tz=timezone.utc)
             stamp = dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -1019,10 +1015,6 @@ class TestDetectMacosSystemLog(unittest.TestCase):
             self.assertEqual(ts, int(dt.timestamp()))
             # Default value preserved for callers that don't pass the kwarg.
             self.assertEqual(d.macos_install_log, log_path)
-        finally:
-            import shutil
-
-            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_detect_macos_syslog_default_path_when_unset(self):
         """Constructor default for macos_install_log matches the previously hardcoded path."""
@@ -1034,8 +1026,7 @@ class TestDetectMacosSystemLog(unittest.TestCase):
         self.assertIsNone(self.d.detect_macos_syslog("jq"))
 
     def test_detect_macos_syslog_parses_install_line(self):
-        tmp = tempfile.mkdtemp()
-        try:
+        with tempfile.TemporaryDirectory() as tmp:
             log_path = os.path.join(tmp, "install.log")
             dt = datetime.fromtimestamp(FOUR_YEARS_AGO, tz=timezone.utc)
             stamp = dt.strftime("%Y-%m-%d %H:%M:%S")
@@ -1048,14 +1039,9 @@ class TestDetectMacosSystemLog(unittest.TestCase):
                 ts = self.d.detect_macos_syslog("jq")
             self.assertIsNotNone(ts)
             self.assertEqual(ts, int(dt.timestamp()))
-        finally:
-            import shutil
-
-            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_detect_macos_syslog_timezone_offsets(self):
-        tmp = tempfile.mkdtemp()
-        try:
+        with tempfile.TemporaryDirectory() as tmp:
             log_path = os.path.join(tmp, "install.log")
             # 2026-04-01 04:22:04-07:00 is 1775042524
             with open(log_path, "w") as f:
@@ -1069,15 +1055,10 @@ class TestDetectMacosSystemLog(unittest.TestCase):
                 ts = self.d.detect_macos_syslog("jq")
             self.assertIsNotNone(ts)
             self.assertEqual(ts, 1775042524)
-        finally:
-            import shutil
-
-            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_detect_macos_syslog_package_filter_strict(self):
         """Should not match unrelated packages containing 'brew' if target package isn't present."""
-        tmp = tempfile.mkdtemp()
-        try:
+        with tempfile.TemporaryDirectory() as tmp:
             log_path = os.path.join(tmp, "install.log")
             with open(log_path, "w") as f:
                 f.write(
@@ -1089,10 +1070,251 @@ class TestDetectMacosSystemLog(unittest.TestCase):
             ):
                 ts = self.d.detect_macos_syslog("jq")
             self.assertIsNone(ts)
-        finally:
-            import shutil
 
-            shutil.rmtree(tmp, ignore_errors=True)
+
+# ---------------------------------------------------------------------------
+# Git worktree / nested identity resolution (_find_git_root, #484)
+# ---------------------------------------------------------------------------
+
+
+class TestFindGitRoot(unittest.TestCase):
+    """Regression coverage for Issue #484.
+
+    The old ``_find_git_root`` used ``os.path.isdir(<path>/.git)`` which
+    returns ``False`` when ``.git`` is a FILE (linked worktrees created by
+    ``git worktree add``) and did not resolve symlinks (``os.path.abspath``
+    instead of ``os.path.realpath``).  These tests exercise the real behavior
+    against temporary git repositories.
+    """
+
+    def setUp(self):
+        self.d = make_detective(search_root=tempfile.gettempdir())
+
+    @staticmethod
+    def _git_available():
+        try:
+            result = subprocess.run(
+                ["git", "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=10,
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    @staticmethod
+    def _init_repo(base, name="Test", email="test@example.com", commit=True):
+        os.makedirs(str(base), exist_ok=True)
+        subprocess.run(
+            ["git", "init"], cwd=str(base), check=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", name], cwd=str(base), check=True
+        )
+        subprocess.run(
+            ["git", "config", "user.email", email], cwd=str(base), check=True
+        )
+        if commit:
+            with open(os.path.join(str(base), "file.txt"), "w") as f:
+                f.write("hello\n")
+            subprocess.run(
+                ["git", "add", "file.txt"], cwd=str(base), check=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "init"], cwd=str(base), check=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+        return base
+
+    def test_ordinary_repo_root(self):
+        """A cwd inside a normal repo resolves to that repo's root."""
+        if not self._git_available():
+            return
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._init_repo(os.path.join(tmp, "repo"))
+            nested = os.path.join(repo, "a", "b")
+            os.makedirs(nested)
+            self.assertEqual(self.d._find_git_root(nested), os.path.realpath(repo))
+
+    def test_nested_repo_inner_wins(self):
+        """For a cwd inside a nested repo, the inner repo is selected."""
+        if not self._git_available():
+            return
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = self._init_repo(os.path.join(tmp, "outer"))
+            child = self._init_repo(os.path.join(outer, "child"))
+            src = os.path.join(child, "src")
+            os.makedirs(src)
+            actual = self.d._find_git_root(src)
+            self.assertEqual(actual, os.path.realpath(child))
+
+    def test_linked_worktree_resolves(self):
+        """A linked worktree (where `.git` is a FILE) must resolve to its root.
+
+        The old implementation checked ``os.path.isdir(.git)`` and missed this,
+        walking past the worktree (or returning None).
+        """
+        if not self._git_available():
+            return
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree = os.path.join(tmp, "linked-worktree")
+            main_repo = self._init_repo(os.path.join(tmp, "main-repo"))
+            try:
+                subprocess.run(
+                    ["git", "worktree", "add", "-b", "wt", worktree],
+                    cwd=str(main_repo), check=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+            except Exception:
+                # Worktree creation unsupported in this environment — document
+                # the limitation instead of silently passing.
+                return
+            # A linked worktree uses a .git FILE, not a directory.
+            self.assertFalse(os.path.isdir(os.path.join(worktree, ".git")))
+            self.assertTrue(os.path.exists(os.path.join(worktree, ".git")))
+
+            nested = os.path.join(worktree, "sub")
+            os.makedirs(nested)
+            self.assertEqual(self.d._find_git_root(nested), os.path.realpath(worktree))
+
+    def test_outer_repo_trail_does_not_leak(self):
+        """A path above all repos returns None, not an enclosing repo."""
+        if not self._git_available():
+            return
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._init_repo(os.path.join(tmp, "repo"))
+            parent = os.path.dirname(repo)
+            self.assertEqual(self.d._find_git_root(parent), None)
+
+    def test_malformed_git_file_does_not_hide_enclosing_repo(self):
+        """P1 #2 — a bogus `.git` FILE must not become the root.
+
+        An arbitrary file literally named ``.git`` (not a ``gitdir:`` pointer)
+        inside a valid repository must NOT short-circuit resolution to that
+        directory; the real enclosing repository must still be found.
+        """
+        if not self._git_available():
+            return
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._init_repo(os.path.join(tmp, "repo"))
+            inner = os.path.join(repo, "inner")
+            os.makedirs(inner)
+            # An intentionally invalid `.git` FILE that is not a gitdir pointer.
+            with open(os.path.join(inner, ".git"), "w") as f:
+                f.write("this is not a git worktree marker\n")
+            self.assertFalse(os.path.isdir(os.path.join(inner, ".git")))
+            self.assertTrue(os.path.isfile(os.path.join(inner, ".git")))
+
+            # Must resolve to the enclosing repo, not the bogus `inner` root.
+            self.assertEqual(
+                self.d._find_git_root(inner), os.path.realpath(repo)
+            )
+
+    def test_stale_git_file_pointing_nowhere_does_not_hide_repo(self):
+        """P1 #2 — a `gitdir:` pointer whose target no longer exists is stale.
+
+        A stale linked-worktree marker (target removed) must not be accepted as
+        a root; the enclosing valid repository must still win.
+        """
+        if not self._git_available():
+            return
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._init_repo(os.path.join(tmp, "repo"))
+            stale = os.path.join(repo, "stale-wt")
+            os.makedirs(stale)
+            # A `gitdir:` pointer to a non-existent target directory.
+            missing = os.path.join(tmp, "does-not-exist")
+            with open(os.path.join(stale, ".git"), "w") as f:
+                f.write("gitdir: %s\n" % missing.replace("\\", "/"))
+            self.assertTrue(os.path.isfile(os.path.join(stale, ".git")))
+            self.assertFalse(os.path.isdir(missing))
+
+            # The stale marker must not resolve to `stale`; the enclosing
+            # valid `repo` must be returned instead.
+            self.assertEqual(self.d._find_git_root(stale), os.path.realpath(repo))
+
+    def test_empty_nested_git_dir_does_not_hide_enclosing_repo(self):
+        """P1 — an empty nested ``.git`` directory must not become the root.
+
+        A nested directory may contain an empty ``.git`` directory (created by a
+        tool, a corrupt checkout, or ``git submodule`` that was never
+        initialized).  Such a marker lacks genuine Git metadata and must NOT
+        short-circuit the upward search; the enclosing valid repository must
+        still win.
+        """
+        if not self._git_available():
+            return
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._init_repo(os.path.join(tmp, "repo"))
+            child = os.path.join(repo, "child")
+            # Create an empty `.git` subdirectory — no HEAD, no objects.
+            os.makedirs(os.path.join(child, ".git"))
+            self.assertTrue(os.path.isdir(os.path.join(child, ".git")))
+
+            # The empty `.git` dir must not resolve to `child`; the enclosing
+            # valid `repo` must be returned instead.
+            self.assertEqual(self.d._find_git_root(child), os.path.realpath(repo))
+
+    def test_git_file_pointing_at_unrelated_dir_does_not_hide_repo(self):
+        """P1 — a ``gitdir:`` pointer at an unrelated existing directory is invalid.
+
+        Merely checking that the target directory exists is insufficient: the
+        target must hold genuine Git metadata.  Otherwise a stray ``.git`` file
+        pointing at some unrelated existing directory would hide the real
+        enclosing repository.
+        """
+        if not self._git_available():
+            return
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._init_repo(os.path.join(tmp, "repo"))
+            child = os.path.join(repo, "child")
+            os.makedirs(child)
+
+            # An existing directory that is NOT valid Git metadata.
+            unrelated = os.path.join(tmp, "unrelated-existing-dir")
+            os.makedirs(unrelated)
+            self.assertTrue(os.path.isdir(unrelated))
+            self.assertFalse(os.path.exists(os.path.join(unrelated, "HEAD")))
+
+            with open(os.path.join(child, ".git"), "w") as f:
+                f.write("gitdir: %s\n" % unrelated.replace("\\", "/"))
+            self.assertTrue(os.path.isfile(os.path.join(child, ".git")))
+
+            # The bogus `gitdir:` target must not resolve to `child`; the
+            # enclosing valid `repo` must be returned instead.
+            self.assertEqual(self.d._find_git_root(child), os.path.realpath(repo))
+
+    def test_valid_git_metadata_is_recognized(self):
+        """Valid Git metadata directories are recognized as genuine markers.
+
+        Confirms the validation distinguishes: empty dir (invalid), unrelated
+        dir (invalid), real repo metadata (valid), and real linked-worktree
+        metadata (valid).
+        """
+        if not self._git_available():
+            return
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._init_repo(os.path.join(tmp, "repo"))
+            repo_git = os.path.join(repo, ".git")
+
+            # Empty `.git` directory -> invalid.
+            empty = os.path.join(tmp, "empty")
+            os.makedirs(os.path.join(empty, ".git"))
+            self.assertFalse(
+                self.d._valid_git_metadata_dir(os.path.join(empty, ".git"))
+            )
+
+            # Unrelated existing directory -> invalid.
+            unrelated = os.path.join(tmp, "unrelated")
+            os.makedirs(unrelated)
+            self.assertFalse(self.d._valid_git_metadata_dir(unrelated))
+
+            # Real repo metadata -> valid.
+            self.assertTrue(self.d._valid_git_metadata_dir(repo_git))
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 import os
 import re
 import subprocess
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 def is_git_repo(path: str) -> bool:
     """Check if the directory path is a valid git repository worktree"""
@@ -25,6 +25,56 @@ def is_git_repo(path: str) -> bool:
         return res.returncode == 0 and res.stdout.strip() == "true"
     except Exception:
         return False
+
+
+def find_git_root(path: str) -> Optional[str]:
+    """Authoritatively resolve the Git repository/worktree root for *path*.
+
+    Delegates to Git itself via ``git -C <path> rev-parse --show-toplevel``,
+    which correctly handles:
+
+    * ordinary repositories (``.git`` directory)
+    * linked worktrees (``.git`` file)
+    * nested repositories (inner-most repo wins)
+    * symlinked / ``../`` paths (Git normalises internally)
+
+    Returns the canonical top-level directory of the worktree, or ``None``
+    when *path* is not inside a Git repository, Git is unavailable, the
+    command times out, or the path does not exist.
+
+    Mirrors the conventions of :func:`is_git_repo` (10 s timeout,
+    ``check=False``, ``errors="replace"``).
+    """
+    abs_path = os.path.abspath(os.path.expanduser(path))
+    if not os.path.exists(abs_path) or not os.path.isdir(abs_path):
+        return None
+    try:
+        res = subprocess.run(
+            ["git", "-C", abs_path, "rev-parse", "--show-toplevel"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            errors="replace",
+            check=False,
+            timeout=10
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        # OSError covers a missing `git` executable (FileNotFoundError),
+        # permission errors, and invalid paths; TimeoutExpired covers a
+        # hung `git` in a slow filesystem. Any of these is a non-fatal,
+        # expected resolution failure, so return None.
+        return None
+
+    if res.returncode == 0:
+        root = res.stdout.strip()
+        if root:
+            # Git reports paths with forward slashes even on Windows
+            # (e.g. `D:/repo`), while os.path / Path use the platform
+            # separator.  Normalise so caller comparisons against native
+            # paths (from os.path.realpath etc.) are consistent (#484).
+            return os.path.normpath(root)
+    return None
+
 
 def clean_commit_message(message: str) -> str:
     """Clean commit message for display by removing emojis, JIRA codes, PR numbers, and prefixes"""

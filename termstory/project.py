@@ -163,21 +163,36 @@ _PROJECT_ROOT_CACHE_TTL: float = _get_project_root_cache_ttl()
 def _find_project_root_cached(path: str) -> str:
     """TTL-bounded cached wrapper around _find_project_root_impl (Issue #417)."""
     now = time.monotonic()
+    # Cache identity must reflect *exactly* the signals _find_project_root_impl
+    # uses to branch between distinct behaviours.  Its UNC/network guard inspects
+    # the RAW path prefix (`\\` or `//`) before any normalisation, so two raw
+    # spellings that normalise to the same realpath can still behave differently
+    # (e.g. `///workspace` triggers the UNC short-circuit on some platforms while
+    # `/workspace` does not).  Keying only on realpath would alias those distinct
+    # lookups.  We therefore key on (raw_unc_flag, normalised realpath):
+    #   * raw_unc_flag == True  -> _find_project_root_impl returns home at once;
+    #   * raw_unc_flag == False -> normal filesystem resolution.
+    # This keeps genuinely-equivalent spellings (`a/child` vs `a/child/../child`,
+    # a symlinked path vs its target) sharing one entry while never making two
+    # semantically-distinct raw paths share a cached result (#484).
+    raw_unc = path.startswith(r"\\") or path.startswith(r"//")
+    abs_path = os.path.abspath(os.path.expanduser(path))
+    cache_key = (raw_unc, os.path.realpath(abs_path))
     with _project_root_cache_lock:
-        cached = _PROJECT_ROOT_CACHE.get(path)
+        cached = _PROJECT_ROOT_CACHE.get(cache_key)
         if cached is not None and now - cached[0] < _PROJECT_ROOT_CACHE_TTL:
             # Refresh LRU position (move to most-recently-used end)
-            _PROJECT_ROOT_CACHE.pop(path, None)
-            _PROJECT_ROOT_CACHE[path] = cached
+            _PROJECT_ROOT_CACHE.pop(cache_key, None)
+            _PROJECT_ROOT_CACHE[cache_key] = cached
             return cached[1]
 
     result = _find_project_root_impl(path)
 
     with _project_root_cache_lock:
-        if path not in _PROJECT_ROOT_CACHE and len(_PROJECT_ROOT_CACHE) >= _PROJECT_ROOT_CACHE_MAXSIZE:
+        if cache_key not in _PROJECT_ROOT_CACHE and len(_PROJECT_ROOT_CACHE) >= _PROJECT_ROOT_CACHE_MAXSIZE:
             # Evict least-recently-used entry (oldest insertion order)
             _PROJECT_ROOT_CACHE.pop(next(iter(_PROJECT_ROOT_CACHE)))
-        _PROJECT_ROOT_CACHE[path] = (time.monotonic(), result)
+        _PROJECT_ROOT_CACHE[cache_key] = (time.monotonic(), result)
     return result
 
 def find_project_root(path: str) -> str:
