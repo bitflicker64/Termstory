@@ -184,3 +184,140 @@ def test_cli_replay_mcp_command(tmp_path, monkeypatch):
     assert "/mock/cwd" in result.output
     assert "VS Code" in result.output
 
+
+
+def _record_command_order(db, session_id, cmds):
+    """Run replay against an injected session and return command texts in the
+    order they are typed out (i.e. the replay execution order).
+
+    ``db.get_sessions_by_ids`` is expected to be pre-monkeypatched by the
+    caller so the session/commands used by run_replay are fully controlled.
+    """
+    written = []
+
+    def _write(char):
+        written.append(char)
+
+    with patch("time.sleep"), \
+         patch("sys.stdout.write", side_effect=_write), \
+         patch("sys.stdout.flush"), \
+         patch("termstory.replay.console.print"):
+        run_replay(db, session_id=session_id, speed=100.0)
+
+    typed = "".join(written)
+    order = []
+    for c in cmds:
+        idx = typed.find(c)
+        if idx == -1:
+            continue
+        order.append((idx, c))
+    order.sort()
+    return [c for _, c in order]
+
+
+def test_run_replay_orders_equal_timestamps_by_id(tmp_path):
+    """Issue #494: replay must execute commands with equal timestamps in
+    (timestamp ASC, id ASC) order, NOT list/insertion order.
+
+    The session.commands list is deliberately scrambled so its list order
+    DIFFERS from the persisted id order. run_replay is fed this session via a
+    monkeypatched get_sessions_by_ids (bypassing the DB, so the in-memory
+    sort in replay.py is what we are exercising), and we assert the typed
+    output follows (timestamp, id) rather than the scrambled list arrangement.
+    """
+    db_file = tmp_path / "test_replay_order.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    now = int(time.time())
+
+    # Explicit persisted ids: lower id first, higher id second.
+    cmd_lower_id = Command(id=1, timestamp=now, command="lower-id-cmd",
+                           exit_code=0, session_id=1, project_id=None)
+    cmd_higher_id = Command(id=2, timestamp=now, command="higher-id-cmd",
+                            exit_code=0, session_id=1, project_id=None)
+
+    # List arrangement is REVERSED relative to id order on purpose.
+    scrambled_session = Session(
+        id=1, start_time=now, end_time=now, duration_seconds=0,
+        project_id=None, commands=[cmd_higher_id, cmd_lower_id],
+    )
+
+    with patch.object(db, "get_sessions_by_ids", return_value=[scrambled_session]):
+        order = _record_command_order(db, 1, [cmd_lower_id.command, cmd_higher_id.command])
+
+    # Replay's (timestamp, id) sort must override the scrambled list arrangement:
+    # lower id first, despite higher id appearing first in session.commands.
+    assert order == [cmd_lower_id.command, cmd_higher_id.command]
+
+
+def test_run_replay_preserves_chronological_order(tmp_path):
+    """Issue #494: different timestamps must keep chronological ordering; the id
+    tiebreaker must NOT override a later timestamp."""
+    db_file = tmp_path / "test_replay_chrono.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    now = int(time.time())
+
+    # Three commands: two share a timestamp (ids 1, 2) and one is later (id 3).
+    cmd_a = Command(id=1, timestamp=now, command="cmd-a",
+                    exit_code=0, session_id=1, project_id=None)
+    cmd_b = Command(id=2, timestamp=now, command="cmd-b",
+                    exit_code=0, session_id=1, project_id=None)
+    cmd_c = Command(id=3, timestamp=now + 1, command="cmd-c",
+                    exit_code=0, session_id=1, project_id=None)
+
+    # List arrangement intentionally scrambled.
+    scrambled_session = Session(
+        id=1, start_time=now, end_time=now + 1, duration_seconds=1,
+        project_id=None, commands=[cmd_c, cmd_a, cmd_b],
+    )
+
+    with patch.object(db, "get_sessions_by_ids", return_value=[scrambled_session]):
+        order = _record_command_order(db, 1, [cmd_a.command, cmd_b.command, cmd_c.command])
+
+    # Chronological order wins; for the equal-timestamp pair (a, b) id order wins.
+    assert order == [cmd_a.command, cmd_b.command, cmd_c.command]
+
+
+def test_run_replay_with_none_command_ids_does_not_crash(tmp_path):
+    """Issue #494: replay must not raise TypeError when an in-memory command has
+    id=None.
+
+    - a None-ID command is accepted (no crash);
+    - timestamp stays primary (a later None-ID command still comes last);
+    - for equal timestamps, persisted IDs (>=1) sort after a None command whose
+      missing ID falls back to 0, so ordering stays deterministic.
+    """
+    db_file = tmp_path / "test_replay_none_ids.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    now = int(time.time())
+
+    # Persisted command with an explicit id.
+    cmd_persisted = Command(id=5, timestamp=now, command="persisted-cmd",
+                            exit_code=0, session_id=1, project_id=None)
+    # In-memory command without a persisted id (the default is None).
+    cmd_none = Command(id=None, timestamp=now, command="none-id-cmd",
+                       exit_code=0, session_id=1, project_id=None)
+    # Another in-memory command with a later timestamp (id stays None).
+    cmd_later = Command(id=None, timestamp=now + 5, command="later-none-id-cmd",
+                        exit_code=0, session_id=1, project_id=None)
+
+    # Scramble the list order so only the (timestamp, id or 0) sort decides.
+    scrambled_session = Session(
+        id=1, start_time=now, end_time=now + 5, duration_seconds=5,
+        project_id=None, commands=[cmd_later, cmd_persisted, cmd_none],
+    )
+
+    with patch.object(db, "get_sessions_by_ids", return_value=[scrambled_session]):
+        order = _record_command_order(
+            db, 1,
+            [cmd_none.command, cmd_persisted.command, cmd_later.command],
+        )
+
+    # Equal timestamps: the None-ID command (fallback 0) precedes the persisted
+    # id command. The later-timestamp command stays last regardless of order.
+    assert order == [cmd_none.command, cmd_persisted.command, cmd_later.command]
