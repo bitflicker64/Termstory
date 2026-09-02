@@ -106,7 +106,7 @@ def run_replay(db: Database, session_id: Optional[int] = None, speed: float = 1.
         if projects:
             project_name = projects[0].name
 
-    commands = sorted(session.commands, key=lambda c: c.timestamp)
+    commands = sorted(session.commands, key=lambda c: (c.timestamp, c.id or 0))
     if not commands:
         console.print(f"[yellow]Session #{session_id} has no commands to replay.[/yellow]")
         return

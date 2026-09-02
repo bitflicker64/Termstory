@@ -927,7 +927,7 @@ class Database:
             SELECT id, timestamp, command, exit_code, session_id, project_id, recovery_source, is_legacy
             FROM commands
             WHERE session_id IN ({s_ids_str})
-            ORDER BY timestamp ASC
+            ORDER BY timestamp ASC, id ASC
         """, session_ids)
         all_cmd_rows = cursor.fetchall()
         

@@ -930,3 +930,163 @@ def test_recovery_preserves_command_and_session_identity(tmp_path):
 
     # Session→command relationships are intact.
     assert {r[3] for r in commands_after} == {1, 2}
+
+
+# ---------------------------------------------------------------------------
+# Issue #494: deterministic command ordering for equal timestamps (id ASC)
+# ---------------------------------------------------------------------------
+
+def _seed_session_for_ordering(db, session_id, start_ts, command_pairs):
+    """Insert a session row and commands with explicit (timestamp, command) values.
+
+    ``command_pairs`` is a list of (timestamp, command_text) tuples. Commands are
+    inserted in the given order so their auto-incremented ids reflect that order.
+    Returns a dict mapping command text -> persisted id.
+    """
+    conn = db.get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO sessions (id, start_time, end_time, duration_seconds) "
+            "VALUES (?, ?, ?, ?)",
+            (session_id, start_ts, start_ts, 0),
+        )
+        id_by_cmd = {}
+        for ts, cmd_text in command_pairs:
+            cursor.execute(
+                "INSERT INTO commands (timestamp, command, exit_code, session_id, project_id, is_legacy) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (ts, cmd_text, 0, session_id, None, 0),
+            )
+            id_by_cmd[cmd_text] = cursor.lastrowid
+        conn.commit()
+        return id_by_cmd
+    finally:
+        conn.close()
+
+
+def test_command_ordering_tie_break_by_id(tmp_path):
+    """Equal timestamps must be ordered by persisted id ASC (not rowid/text)."""
+    db_file = tmp_path / "test_ordering_tie.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    # Insert two commands with identical timestamps but deliberately reversed
+    # command-text ordering relative to insertion order, so the only stable
+    # tiebreaker is the persisted id (insertion order).
+    session_id = 1
+    id_by_cmd = _seed_session_for_ordering(
+        db, session_id=session_id, start_ts=1000,
+        command_pairs=[
+            (1000, "cmd-first-id-lower"),
+            (1000, "cmd-second-id-higher"),
+        ],
+    )
+
+    # The lower id exists and precedes the higher id.
+    lower_id = id_by_cmd["cmd-first-id-lower"]
+    higher_id = id_by_cmd["cmd-second-id-higher"]
+    assert lower_id < higher_id
+
+    # Retrieve through the production session-building path (get_sessions_by_ids
+    # -> _build_sessions) with fresh connections: ordering must be stable and
+    # id-based for equal timestamps.
+    for _ in range(50):
+        sessions = Database(str(db_file)).get_sessions_by_ids([session_id])
+        assert len(sessions) == 1
+        cmds = sessions[0].commands
+        assert len(cmds) == 2
+        # lower id must appear first despite identical timestamps.
+        assert cmds[0].id == lower_id
+        assert cmds[1].id == higher_id
+        assert cmds[0].command == "cmd-first-id-lower"
+        assert cmds[1].command == "cmd-second-id-higher"
+
+
+def test_command_ordering_different_timestamps_not_overridden_by_id(tmp_path):
+    """When timestamps differ, chronological ordering wins over id ordering.
+
+    Scenario from the issue:
+        id 1 -> ts 1000
+        id 2 -> ts 1000
+        id 3 -> ts 1001
+    Expected traversal order: 1, 2, 3.
+    """
+    db_file = tmp_path / "test_ordering_chrono.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    session_id = 1
+    id_by_cmd = _seed_session_for_ordering(
+        db, session_id=session_id, start_ts=1000,
+        command_pairs=[
+            (1000, "cmd-ts-1000-a"),   # id 1
+            (1000, "cmd-ts-1000-b"),   # id 2
+            (1001, "cmd-ts-1001-c"),   # id 3
+        ],
+    )
+    expected_id_order = [
+        id_by_cmd["cmd-ts-1000-a"],
+        id_by_cmd["cmd-ts-1000-b"],
+        id_by_cmd["cmd-ts-1001-c"],
+    ]
+
+    for _ in range(50):
+        sessions = Database(str(db_file)).get_sessions_by_ids([session_id])
+        assert len(sessions) == 1
+        actual_id_order = [c.id for c in sessions[0].commands]
+        assert actual_id_order == expected_id_order
+
+
+def test_session_commands_deterministic_across_fresh_connections(tmp_path):
+    """session.commands (via get_sessions_by_ids -> _build_sessions) must be
+    deterministically ordered (timestamp ASC, id ASC) even when re-queried on
+    a brand-new database connection."""
+    db_file = tmp_path / "test_session_ordering.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    _seed_session_for_ordering(
+        db, session_id=1, start_ts=1000,
+        command_pairs=[
+            (1000, "cmd-a"),
+            (1000, "cmd-b"),
+            (1000, "cmd-c"),
+            (1001, "cmd-d"),
+        ],
+    )
+
+    # Expected: equal-timestamp group ordered by id ASC, then the ts=1001 cmd.
+    # Because insertion order == id order, "cmd-a" < "cmd-b" < "cmd-c" by id.
+    expected = ["cmd-a", "cmd-b", "cmd-c", "cmd-d"]
+
+    for _ in range(50):
+        # Fresh Database instance (new connection pool) each iteration.
+        db_fresh = Database(str(db_file))
+        sessions = db_fresh.get_sessions_by_ids([1])
+        assert len(sessions) == 1
+        cmd_texts = [c.command for c in sessions[0].commands]
+        assert cmd_texts == expected
+
+
+def test_session_commands_id_populated_and_distinct(tmp_path):
+    """Sanity: commands read back via get_sessions_by_ids must have populated,
+    distinct persisted ids so (timestamp, id) is a valid deterministic key."""
+    db_file = tmp_path / "test_session_ids.db"
+    db = Database(str(db_file))
+    db.init_db()
+
+    _seed_session_for_ordering(
+        db, session_id=1, start_ts=1000,
+        command_pairs=[
+            (1000, "cmd-a"),
+            (1000, "cmd-b"),
+            (1000, "cmd-c"),
+        ],
+    )
+
+    sessions = Database(str(db_file)).get_sessions_by_ids([1])
+    cmds = sessions[0].commands
+    ids = [c.id for c in cmds]
+    assert None not in ids
+    assert len(set(ids)) == 3
