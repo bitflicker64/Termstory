@@ -49,6 +49,35 @@ def test_daily_activity_heatmap(temp_db):
         uncolored_heatmap = daily_activity_heatmap(temp_db, days_limit=3, colored=False)
         assert uncolored_heatmap == "░ ▄ █"
 
+
+def test_daily_activity_heatmap_skips_invalid_timestamps(temp_db):
+    """#464: out-of-range command timestamps must not crash the heatmap."""
+    now_ts = int(datetime(2026, 6, 14, 12, 0, 0).timestamp())
+    cmd = Command(timestamp=now_ts, command="git commit", exit_code=0, session_id=1, project_id=1)
+    project = Project(id=1, name="ProjA", path="~/proj-a", first_seen=now_ts, last_seen=now_ts, session_count=1, total_time=10)
+    session = Session(id=1, start_time=now_ts, end_time=now_ts + 10, duration_seconds=10, project_id=1, commands=[cmd])
+    temp_db.save_data([project], [session], [cmd])
+
+    conn = temp_db.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO commands (timestamp, command, session_id, project_id) VALUES (?, ?, ?, ?)",
+            (now_ts + 1, "bad-ts", 1, 1),
+        )
+        conn.execute(
+            "UPDATE commands SET timestamp = ? WHERE command = 'bad-ts'",
+            (999999999999999,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with patch("termstory.stats.get_current_time", return_value=datetime(2026, 6, 14, 12, 0, 0)):
+        heatmap = daily_activity_heatmap(temp_db, days_limit=3, colored=False)
+
+    assert heatmap.endswith("▄")
+
+
 def test_project_breakdown(temp_db):
     now_ts = int(time.time())
     
@@ -158,6 +187,38 @@ def test_peak_hours(temp_db):
     assert hourly[14] == 2
     assert hourly[9] == 1
     assert hourly[0] == 0
+
+
+def test_peak_hours_skips_invalid_timestamps(temp_db):
+    """#464: out-of-range command timestamps must not crash peak_hours()."""
+    dt1 = datetime(2026, 6, 14, 14, 30, 0)
+    dt2 = datetime(2026, 6, 14, 9, 15, 0)
+    cmd1 = Command(timestamp=int(dt1.timestamp()), command="git diff", exit_code=0, session_id=1, project_id=1)
+    cmd2 = Command(timestamp=int(dt2.timestamp()), command="pytest", exit_code=0, session_id=1, project_id=1)
+    p = Project(id=1, name="Proj", path="~/proj", first_seen=int(dt2.timestamp()), last_seen=int(dt1.timestamp()), session_count=1, total_time=100)
+    s = Session(id=1, start_time=int(dt2.timestamp()), end_time=int(dt1.timestamp()), duration_seconds=100, project_id=1, commands=[cmd1, cmd2])
+    temp_db.save_data([p], [s], [cmd1, cmd2])
+
+    conn = temp_db.get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO commands (timestamp, command, session_id, project_id) VALUES (?, ?, ?, ?)",
+            (int(dt1.timestamp()) + 1, "bad-ts", 1, 1),
+        )
+        conn.execute(
+            "UPDATE commands SET timestamp = ? WHERE command = 'bad-ts'",
+            (999999999999999,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with patch("termstory.stats.get_current_time", return_value=datetime(2026, 8, 30, 12, 0, 0)):
+        hourly = peak_hours(temp_db)
+
+    assert hourly[14] == 1
+    assert hourly[9] == 1
+
 
 def test_format_stats_output(temp_db):
     now_ts = int(time.time())

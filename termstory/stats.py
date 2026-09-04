@@ -27,7 +27,9 @@ def daily_activity_heatmap(db: Database, days_limit: int = 30, colored: bool = T
         
     day_counts = defaultdict(int)
     for (ts,) in rows:
-        dt = datetime.fromtimestamp(ts)
+        dt = _safe_datetime_from_ts(ts)
+        if dt is None:
+            continue
         day_counts[dt.date()] += 1
         
     heatmap_blocks = []
@@ -514,7 +516,9 @@ def peak_hours(db: Database) -> Dict[int, int]:
         
     hourly_counts = {h: 0 for h in range(24)}
     for (ts,) in rows:
-        dt = datetime.fromtimestamp(ts)
+        dt = _safe_datetime_from_ts(ts)
+        if dt is None:
+            continue
         hourly_counts[dt.hour] += 1
         
     return hourly_counts
