@@ -71,7 +71,7 @@ star_gate: true
 pr_auto_assign: true
 
 # ECSOC26 event support (disabled for termstory)
-ecsoc26: True
+ecsoc26: False
 
 # Duplicate issue detection (disabled by default; opt-in via .miku.yml)
 duplicate_detection: true
